@@ -1,0 +1,63 @@
+// Prüft dist/ nach dem Build: Offline-Fallen, Schichtgrenzen im Bundle, Precache-Vollständigkeit, Größen.
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { gzipSync } from 'node:zlib';
+import { collectJsGraph, findForbiddenSignatures, findMissingPrecache, isPrecacheCandidate } from './lib/distChecks.mjs';
+
+const DIST = 'dist';
+const BUDGET = { gameJsGzip: 900 * 1024, labJsGzip: 150 * 1024, precacheTotal: 80 * 1024 * 1024 };
+
+if (!existsSync(join(DIST, 'index.html'))) {
+  console.error('dist/ fehlt – zuerst `npm run build:pages` ausführen.');
+  process.exit(1);
+}
+
+function walk(dir) {
+  return readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    return statSync(full).isDirectory() ? walk(full) : [full];
+  });
+}
+
+const files = walk(DIST).map((full) => relative(DIST, full).replaceAll('\\', '/'));
+const read = (rel) => (existsSync(join(DIST, rel)) ? readFileSync(join(DIST, rel), 'utf8') : null);
+const gzipSize = (rels) => rels.reduce((sum, rel) => sum + gzipSync(readFileSync(join(DIST, rel))).length, 0);
+const kb = (bytes) => `${(bytes / 1024).toFixed(1)} kB`;
+
+const errors = [];
+const { base, buildId } = JSON.parse(read('version.json') ?? '{"base":"/","buildId":"?"}');
+
+for (const rel of files.filter((f) => /\.(js|css|html)$/.test(f))) {
+  errors.push(...findForbiddenSignatures(rel, read(rel) ?? ''));
+}
+
+const gameGraph = collectJsGraph(read('index.html') ?? '', base, read);
+const labGraph = collectJsGraph(read('lab.html') ?? '', base, read);
+for (const rel of labGraph) {
+  if (/babylon/i.test(read(rel) ?? '')) errors.push(`${rel}: Testlabor-Bundle enthält Babylon (Lab muss schlank bleiben)`);
+}
+const gameGzip = gzipSize(gameGraph);
+const labGzip = gzipSize(labGraph);
+if (gameGzip > BUDGET.gameJsGzip) errors.push(`Spiel-JS ${kb(gameGzip)} gzip > Budget ${kb(BUDGET.gameJsGzip)}`);
+if (labGzip > BUDGET.labJsGzip) errors.push(`Lab-JS ${kb(labGzip)} gzip > Budget ${kb(BUDGET.labJsGzip)}`);
+
+const swText = read('sw.js');
+if (swText === null) {
+  errors.push('sw.js fehlt – PWA-Plugin nicht aktiv?');
+} else {
+  const candidates = files.filter(isPrecacheCandidate);
+  for (const missing of findMissingPrecache(swText, candidates)) {
+    errors.push(`${missing}: fehlt im Precache (zu groß? falscher Dateityp in globPatterns?)`);
+  }
+  const total = candidates.reduce((sum, rel) => sum + statSync(join(DIST, rel)).size, 0);
+  console.log(`Precache: ${candidates.length} Dateien, ${kb(total)}`);
+  if (total > BUDGET.precacheTotal) errors.push(`Precache ${kb(total)} > Budget ${kb(BUDGET.precacheTotal)}`);
+}
+
+console.log(`Build ${buildId} (base ${base}) – Spiel-JS ${kb(gameGzip)} gzip, Lab-JS ${kb(labGzip)} gzip`);
+if (errors.length > 0) {
+  console.error(`\n✗ check-dist: ${errors.length} Problem(e)`);
+  for (const error of errors) console.error(`  - ${error}`);
+  process.exit(1);
+}
+console.log('✓ check-dist: alles in Ordnung');
