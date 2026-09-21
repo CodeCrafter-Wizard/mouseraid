@@ -22,3 +22,6 @@ Offline-Installation, iPhone und Zwei-Handy-Tests laufen immer über die Live-UR
 - Design & Meilensteine: `docs/superpowers/specs/2026-09-21-phase0-phase1-design.md`
 - Entscheidungen & Messwerte: `docs/decisions.md`
 - Ursprüngliche Spezifikation: `Game_Design_Mouse.md`
+
+## Lizenz
+Code: [MIT](LICENSE). Fremde Assets (ab Meilenstein M18, z. B. CC0-Packs von Kenney/KayKit) werden mit Quelle und Lizenz in `ASSETS.md` aufgeführt.
