@@ -60,4 +60,19 @@ describe('ESLint-Leitplanken', () => {
     expect(bad).toContain('no-restricted-syntax');
     expect(good).not.toContain('no-restricted-syntax');
   });
+
+  it('core darf self/globalThis/location nicht als Umweg fuer verbotene Globals benutzen', async () => {
+    const ids = await ruleIds(
+      `export const a = self.Math.random();\nexport const b = globalThis.Math.random();\nexport const c = location.href;\n`,
+      'src/core/sim/z.ts',
+    );
+    expect(ids.filter((id) => id === 'no-restricted-globals').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('new self.AudioContext() ist nur in src/audio/audioBus.ts erlaubt', async () => {
+    const bad = await ruleIds(`export const c = new self.AudioContext();\n`, 'src/audio/sfx.ts');
+    const good = await ruleIds(`export const c = new self.AudioContext();\n`, 'src/audio/audioBus.ts');
+    expect(bad).toContain('no-restricted-syntax');
+    expect(good).not.toContain('no-restricted-syntax');
+  });
 });

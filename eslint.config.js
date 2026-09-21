@@ -39,6 +39,10 @@ const NO_AUDIO_CONTEXT = {
   selector: 'NewExpression[callee.name=/^(AudioContext|webkitAudioContext)$/]',
   message: 'Genau ein AudioContext: nur src/audio/audioBus.ts darf ihn erzeugen.',
 };
+const NO_AUDIO_CONTEXT_MEMBER = {
+  selector: "NewExpression[callee.type='MemberExpression'][callee.property.name=/^(AudioContext|webkitAudioContext)$/]",
+  message: 'Genau ein AudioContext: nur src/audio/audioBus.ts darf ihn erzeugen.',
+};
 const NO_NEW_DATE = { selector: "NewExpression[callee.name='Date']", message: DETERMINISM_MSG };
 
 export default tseslint.config(
@@ -50,7 +54,7 @@ export default tseslint.config(
     languageOptions: { globals: globals.browser },
     rules: {
       'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT] }],
-      'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT],
+      'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER],
     },
   },
   {
@@ -67,8 +71,9 @@ export default tseslint.config(
       'no-restricted-imports': ['error', { patterns: [BABYLON_IMPORT, NON_CORE_IMPORT] }],
       'no-restricted-properties': ['error', ...corePropertyBans],
       'no-restricted-globals': ['error', 'window', 'document', 'navigator', 'performance', 'localStorage',
-        'sessionStorage', 'indexedDB', 'fetch', 'setTimeout', 'setInterval', 'requestAnimationFrame', 'crypto'],
-      'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_NEW_DATE],
+        'sessionStorage', 'indexedDB', 'fetch', 'setTimeout', 'setInterval', 'requestAnimationFrame', 'crypto',
+        'self', 'globalThis', 'location', 'history', 'screen'],
+      'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER, NO_NEW_DATE],
     },
   },
   {
