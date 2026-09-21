@@ -4,6 +4,20 @@ import { S } from '../ui/strings';
 import { updateCheckOutcome } from './updateStatus';
 
 /**
+ * Liefert eine Funktion, die je Worker höchstens EINEN `statechange`-Listener anhängt – sonst
+ * stapelt jeder weitere Klick einen Listener auf denselben Worker. `{ once: true }` wäre falsch:
+ * der erste Zustandswechsel (`installed` → `activating`) ist noch nicht der gesuchte.
+ */
+function oncePerWorker(): (worker: ServiceWorker, listener: () => void) => void {
+  const seen = new WeakSet<ServiceWorker>();
+  return (worker, listener) => {
+    if (seen.has(worker)) return;
+    seen.add(worker);
+    worker.addEventListener('statechange', listener);
+  };
+}
+
+/**
  * Registriert den Service Worker (Update nur auf Nachfrage – nie Auto-Reload mitten im Spiel)
  * und verdrahtet Offline-Status sowie „Nach Update suchen" mit der Hülle.
  */
@@ -22,6 +36,9 @@ export function initPwa(ui: ShellHandles): void {
   }
 
   let registration: ServiceWorkerRegistration | undefined;
+  // Zwei getrennte Merker: derselbe Worker ist erst `installing` und später `waiting`.
+  const watchLoading = oncePerWorker();
+  const watchWaiting = oncePerWorker();
 
   /** Neuer Worker wartet: Chip und Knopf sagen dasselbe. Mehrfach aufrufbar. */
   function showUpdateReady(): void {
@@ -38,7 +55,7 @@ export function initPwa(ui: ShellHandles): void {
       location.reload();
       return;
     }
-    waiting.addEventListener('statechange', () => {
+    watchWaiting(waiting, () => {
       if (waiting.state === 'activated') location.reload();
     });
     void updateSW(true);
@@ -47,7 +64,7 @@ export function initPwa(ui: ShellHandles): void {
   /** `update()` ist fertig, der gefundene Worker lädt aber noch – sein Ende abwarten. */
   function watchInstalling(worker: ServiceWorker | null): void {
     if (worker === null) return;
-    worker.addEventListener('statechange', () => {
+    watchLoading(worker, () => {
       if (worker.state === 'installed' || worker.state === 'activated') showUpdateReady();
       else if (worker.state === 'redundant') ui.setSwState(S.pwa.checkFailed);
     });
