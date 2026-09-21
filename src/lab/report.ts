@@ -93,8 +93,10 @@ function createTokenizer(): TokenFor {
     const key = address.toLowerCase();
     const known = tokens.get(key);
     if (known !== undefined) return known;
-    const safeFamily = Object.hasOwn(FAMILIES, family) ? family : FALLBACK_LABEL;
-    const safeScope = Object.hasOwn(SCOPES, scope) ? scope : FALLBACK_LABEL;
+    // `Object.hasOwn` ist ES2022-Bibliothek: Safari < 15.4 kennt es nicht und würde hier werfen –
+    // also genau auf den alten iPhones, die das Labor vermessen soll. Gleiche Bedeutung, ohne neue API.
+    const safeFamily = Object.prototype.hasOwnProperty.call(FAMILIES, family) ? family : FALLBACK_LABEL;
+    const safeScope = Object.prototype.hasOwnProperty.call(SCOPES, scope) ? scope : FALLBACK_LABEL;
     const token = `${safeFamily}/${safeScope}#${tokens.size + 1}`;
     tokens.set(key, token);
     return token;
@@ -121,34 +123,81 @@ function createOrdinals(): (foundation: string) => string {
 // beim Parsen des Bundles) und nur mit BEGRENZTEN Zeichen-Wiederholungen: ein unbegrenzter Lauf vor
 // einem festen Schluss (".local", ":") kostet auf leerraumfreiem Text quadratische Zeit.
 
-/** Weicher Trennstrich, Nullbreiten-Zeichen und -Marken, BOM: unsichtbar, zerlegen aber jedes Muster. */
-const INVISIBLE_PATTERN = /[\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]/g;
-/** Der GANZE gepunktete Ziffernlauf ist ein Token – sonst bleiben bei "1.2.3.192.0.2.10" Oktette der Adresse stehen. */
-const IPV4_PATTERN = /\d{1,3}(?:\.\d{1,3}){3,}/g;
+/**
+ * Unsichtbare Zeichen: weicher Trennstrich, Nullbreiten-Zeichen und -Marken, Bidi-Steuerzeichen,
+ * Füllzeichen, Variantenselektoren, BOM und der TAG-Block. Für den Menschen unsichtbar, zerlegen
+ * aber jedes Muster – eine Adresse mit einem davon in der Mitte bliebe sonst voll lesbar.
+ * Als Codepunkt-Bereiche aufgeschrieben statt als Regex-Literal: in einem Literal stünden
+ * Kombinationszeichen (U+034F, U+1160 …) nebeneinander, was ESLint zu Recht als EIN zusammengesetztes
+ * Schriftzeichen liest (`no-misleading-character-class`) – gemeint ist aber jedes Zeichen für sich.
+ * So steht auch kein einziges dieser Zeichen wörtlich im Quelltext.
+ */
+const INVISIBLE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x00ad, 0x00ad],
+  [0x034f, 0x034f],
+  [0x061c, 0x061c],
+  [0x115f, 0x1160],
+  [0x17b4, 0x17b5],
+  [0x180b, 0x180f],
+  [0x200b, 0x200f],
+  [0x202a, 0x202e],
+  [0x2060, 0x206f],
+  [0x3164, 0x3164],
+  [0xfe00, 0xfe0f],
+  [0xfeff, 0xfeff],
+  [0xffa0, 0xffa0],
+];
+const codeToEscape = (code: number): string => `\\u${code.toString(16).toUpperCase().padStart(4, '0')}`;
+const rangeToClass = ([from, to]: readonly [number, number]): string =>
+  from === to ? codeToEscape(from) : `${codeToEscape(from)}-${codeToEscape(to)}`;
+/** TAG-Block (U+E0000 …) als Ersatzzeichen-Paar – so braucht das Muster kein `u`-Flag. */
+const TAG_PAIR = `${codeToEscape(0xdb40)}[${codeToEscape(0xdc00)}-${codeToEscape(0xdfff)}]`;
+const INVISIBLE_PATTERN = new RegExp(`[${INVISIBLE_RANGES.map(rangeToClass).join('')}]|${TAG_PAIR}`, 'g');
+/**
+ * Der GANZE gepunktete Ziffernlauf ist ein Token – sonst bleiben bei "1.2.3.192.0.2.10" Oktette der
+ * Adresse stehen. Die Gruppen-ANZAHL ist gedeckelt: ein Lauf von mehreren Megabyte lässt sonst den
+ * Backtracking-Stack der RegExp überlaufen (RangeError). Ein längerer Lauf wird als mehrere
+ * anliegende Tokens verbraucht – auch dann bleibt kein Adressrest übrig.
+ */
+const IPV4_PATTERN = /\d{1,3}(?:\.\d{1,3}){3,4096}/g;
 /** Alles außer Leerraum/Satzzeichen bis einschließlich ".local" – auch Umlaute im Namen selbst. 253 = maximale DNS-Namenslänge. */
 const MDNS_PATTERN = /[^\s,;()<>[\]{}"']{1,253}\.local/gi;
-/** Hex-Wörter mit mindestens zwei Doppelpunkten (plus optionaler Zonen-ID). Die Gruppen-ANZAHL bleibt offen: ein langer Lauf ist EIN Wort. */
-const IPV6_WORD_PATTERN = /[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}(?:%[0-9a-z]{1,32})?/gi;
+/** Hex-Wörter mit mindestens zwei Doppelpunkten (plus optionaler Zonen-ID); Gruppen-Anzahl gedeckelt wie bei IPv4. */
+const IPV6_WORD_PATTERN = /[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,4096}(?:%[0-9a-z]{1,32})?/gi;
 /** Die einzige Ausnahme vom IPv6-Muster: eine echte Uhrzeit. Mit angeklebter Zone ist es keine mehr. */
 const CLOCK_TIME = /^\d{1,2}:\d{1,2}:\d{1,2}$/;
-/** Kopf des eigenen Payload-Texts ("MB1.<modus>.") – der Rumpf wird von Hand abgelaufen, siehe `payloadEnd`. */
-const PAYLOAD_HEAD_PATTERN = /MB1\.[a-z]\./gi;
-const BASE64URL_CHAR = /[A-Za-z0-9_-]/;
-const WHITESPACE_CHAR = /\s/;
-/** Ab dieser Länge gilt ein durch Leerraum abgesetztes base64url-Stück als Fortsetzungszeile des Payloads. */
-const MIN_CONTINUATION_CHARS = 16;
+/** Eigener Payload-Text: Kopf "MB1.<modus>." samt dem base64url-Rumpf dahinter. */
+const PAYLOAD_PATTERN = /MB1\.[a-z]\.[A-Za-z0-9_-]{0,4096}/gi;
+/** Ein base64url-Lauf ab 32 Zeichen hat in einem Laborbericht nichts zu suchen: Build-IDs haben 8 Zeichen, Gerätenamen höchstens 24. */
+const BASE64URL_RUN_PATTERN = /[A-Za-z0-9_-]{32,4096}/g;
 const PAYLOAD_REMOVED = 'payload/entfernt';
 /** Eingefügte SDP-Zeilen: der Wert hinter dem Attributnamen bis zum Zeilenende (ufrag/pwd ≤ 256 Zeichen, Fingerprint ≤ 200). */
 const SDP_SECRET_PATTERN = /((?:ice-ufrag|ice-pwd|fingerprint):)[^\r\n]{1,512}/gi;
+/** "ufrag <wert>" aus einer eingefügten Kandidatenzeile – dieselbe Zusage wie in gathered[].raw, aber für JEDEN String. */
+const UFRAG_PATTERN = /(\bufrag\s{1,8})\S{1,256}/gi;
+/** Dieselbe Angabe in JSON-Form, wie RTCIceCandidate sie liefert: usernameFragment":"…", =… oder : … */
+const USERNAME_FRAGMENT_PATTERN = /(usernameFragment"?\s{0,4}[:=]\s{0,4}"?)[^\s",}]{1,256}/gi;
+/** Foundation am Anfang einer Kandidatenzeile (ältere libwebrtc leiten sie ungesalzen aus Typ, Basisadresse und Protokoll ab). */
+const CANDIDATE_FOUNDATION_PATTERN = /((?:a=)?candidate:[ \t]{0,8})(\S{1,64})/gi;
+/** Ein von uns vergebenes Ordinal ist schon sauber und bleibt stehen – sonst überschriebe die allgemeine Regel es mit "entfernt". */
+const ORDINAL_PATTERN = /^f\d{1,9}$/;
 const REMOVED = 'entfernt';
-/** Sieht aus wie ein Token dieses Moduls – nur damit ein zweiter Durchlauf einen raddr-Wert nicht erneut ersetzt. */
-const TOKEN_INSIDE = /(?:ipv4|ipv6|mdns|other)\/[a-z-]{1,16}#\d/;
+/** Sieht aus wie ein Ergebnis dieses Moduls – nur damit ein zweiter Durchlauf einen raddr-Wert nicht erneut ersetzt. */
+const TOKEN_INSIDE = /(?:ipv4|ipv6|mdns|other)\/[a-z-]{1,16}#\d|(?:payload\/)?entfernt/;
 const RAW_PREFIX = /^(?:a=)?candidate:/i;
+/** Leerraum hinter dem Präfix: `parseCandidate` erzeugt das nie, Fremddaten schon – sonst stünde jedes Feld um eins verschoben. */
+const RAW_PREFIX_SPACE = /^((?:a=)?candidate:)\s+/i;
 /** Ein Token endet auf eine Ziffer; klebt dahinter ".0.2.10", entsteht erst NACH dem Ersetzen ein neuer Treffer. */
 const MAX_SCRUB_ROUNDS = 5;
+/** Kürzeres ist keine Adresse – als bekannte Adresse würde es überall im Text zuschlagen (eine leere sowieso). */
+const MIN_KNOWN_LENGTH = 3;
+/** Eine "Adresse", die wörtlich wie ein Bestandteil unserer Tokens aussieht, zerfräße als Suchmuster die Tokens selbst. */
+const TOKEN_WORD = /^(?:f\d{1,9}|entfernt|payload|ipv4|ipv6|mdns|other|loopback|link-local|private|cgnat|ios-hotspot|ula|global)$/i;
 
 interface KnownAddress {
-  pattern: RegExp;
+  /** `null`, wenn `new RegExp` die Adresse nicht übersetzen konnte – dann wird `address` wörtlich ersetzt. */
+  pattern: RegExp | null;
+  address: string;
   token: string;
 }
 
@@ -164,62 +213,62 @@ function visibleText(text: string): string {
 /**
  * Bekannte Adressen fürs Sicherheitsnetz: längste zuerst, damit eine kürzere bekannte Adresse keine
  * längere überlappende zerschneidet; ohne Rücksicht auf Groß-/Kleinschreibung; in derselben
- * bereinigten Form wie der Text, in dem gesucht wird. Eine leere Adresse würde ÜBERALL passen.
+ * bereinigten Form wie der Text, in dem gesucht wird. Zu kurze und token-förmige "Adressen" fallen
+ * heraus: sie stünden sonst als Suchmuster für jedes Vorkommen ihrer Zeichen im Text (eine leere
+ * Adresse für JEDE Stelle) und zerfräßen die eigenen Tokens. Im Kandidaten selbst werden sie
+ * trotzdem der Position nach ersetzt.
  */
 function prepareKnown(entries: ReadonlyArray<{ address: string; token: string }>): KnownAddress[] {
   return entries
     .map(({ address, token }) => ({ address: visibleText(address), token }))
-    .filter(({ address }) => address !== '')
+    .filter(({ address }) => address.length >= MIN_KNOWN_LENGTH && !TOKEN_WORD.test(address))
     .sort((a, b) => b.address.length - a.address.length)
-    .map(({ address, token }) => ({ pattern: new RegExp(escapeForRegExp(address), 'gi'), token }));
+    .map(({ address, token }) => {
+      try {
+        return { pattern: new RegExp(escapeForRegExp(address), 'gi'), address, token };
+      } catch {
+        // Doppelter Schutz: die Formprüfung lässt schon keine Adresse über 255 Zeichen durch, aber
+        // eine zu große RegExp darf `redactReport` unter keinen Umständen zum Werfen bringen.
+        return { pattern: null, address, token };
+      }
+    });
 }
 
 /** Sicherheitsnetz nach dem Muster-Durchlauf: jede bekannte gathered[]-Adresse wird wörtlich ersetzt, wie auch immer sie angeklebt ist. */
 function scrubKnownAddresses(text: string, known: readonly KnownAddress[]): string {
   let result = text;
-  for (const { pattern, token } of known) result = result.replace(pattern, () => token);
+  // Ersetzer-FUNKTION statt Zeichenkette: heute können Tokens kein "$" enthalten (Positivliste plus
+  // Ziffern), die Funktion ist also doppelter Schutz – und bleibt es, wenn die Positivliste je fällt.
+  for (const { pattern, address, token } of known) {
+    result = pattern === null ? result.split(address).join(token) : result.replace(pattern, () => token);
+  }
   return result;
 }
 
-function skipWhile(text: string, from: number, charClass: RegExp): number {
-  let index = from;
-  while (index < text.length && charClass.test(text.charAt(index))) index += 1;
-  return index;
-}
-
 /**
- * Ende eines Payload-Rumpfs ab `from`. `decodeDesc` ignoriert Leerraum, also gehört jedes durch Leerraum
- * abgesetzte base64url-Stück ab 16 Zeichen dazu – und nach mindestens einer solchen Fortsetzung auch
- * EIN kürzeres Stück: die letzte Zeile eines umbrochenen Payloads ist fast immer kürzer.
- * Von Hand abgelaufen statt per Regex: beliebig lang, linear, kein Rest hinter einer Längengrenze.
+ * Der eigene Payload-Text enthält Adressen, ufrag und pwd – nur eben base64url-verpackt. Zwei
+ * einfache Regeln statt des Fortsetzungs-Läufers aus Runde 2 (der das erste Oktett der folgenden
+ * Adresse mitfraß): (a) Kopf "MB1.<modus>." samt Rumpf, (b) JEDER base64url-Lauf ab 32 Zeichen.
+ * (b) deckt einen Rumpf ohne Kopf, einen vom Rumpf getrennten Kopf und umbrochene Zeilen ab.
+ * Stücke unter 32 Zeichen (sehr schmale Umbrüche) bleiben stehen – für sich sind sie nicht
+ * dekodierbar, und das ist hier ausdrücklich außerhalb des Auftrags. Läuft als LETZTER Schritt von
+ * `scrubText`: base64url kennt weder "." noch ":", also kann kein Adressmuster einen Rumpf
+ * zerschneiden, und eine Adresse hinter einem Payload ist längst ein Token (Tokens sind kürzer als
+ * 32 Zeichen und enthalten "/" oder "#", werden also nie getroffen).
  */
-function payloadEnd(text: string, from: number): number {
-  let end = skipWhile(text, from, BASE64URL_CHAR);
-  let wrapped = false;
-  for (;;) {
-    const chunkStart = skipWhile(text, end, WHITESPACE_CHAR);
-    if (chunkStart === end) return end;
-    const chunkEnd = skipWhile(text, chunkStart, BASE64URL_CHAR);
-    if (chunkEnd - chunkStart >= MIN_CONTINUATION_CHARS) {
-      end = chunkEnd;
-      wrapped = true;
-    } else {
-      return wrapped && chunkEnd > chunkStart ? chunkEnd : end;
-    }
-  }
+function scrubPayloads(text: string): string {
+  return text.replace(PAYLOAD_PATTERN, () => PAYLOAD_REMOVED).replace(BASE64URL_RUN_PATTERN, () => PAYLOAD_REMOVED);
 }
 
-/** Der eigene Payload-Text enthält Adressen, ufrag und pwd – nur eben base64url-verpackt. */
-function scrubPayloads(text: string): string {
-  let result = '';
-  let done = 0;
-  for (const head of text.matchAll(PAYLOAD_HEAD_PATTERN)) {
-    const headEnd = head.index + head[0].length;
-    // Ein Kopf, der in einem schon geschluckten Stück beginnt, verlängert nur den laufenden Treffer.
-    if (head.index >= done) result += `${text.slice(done, head.index)}${PAYLOAD_REMOVED}`;
-    done = Math.max(done, payloadEnd(text, headEnd));
-  }
-  return result + text.slice(done);
+/** Kandidaten-Geheimnisse, die in JEDEM String stehen können – nicht nur in gathered[].raw. */
+function scrubCandidateSecrets(text: string): string {
+  return text
+    .replace(SDP_SECRET_PATTERN, (_match, label: string) => `${label}${REMOVED}`)
+    .replace(UFRAG_PATTERN, (_match, label: string) => `${label}${REMOVED}`)
+    .replace(USERNAME_FRAGMENT_PATTERN, (_match, label: string) => `${label}${REMOVED}`)
+    .replace(CANDIDATE_FOUNDATION_PATTERN, (_match, prefix: string, foundation: string) =>
+      ORDINAL_PATTERN.test(foundation) ? `${prefix}${foundation}` : `${prefix}${REMOVED}`,
+    );
 }
 
 function scrubOnce(text: string, tokenFor: TokenFor, known: readonly KnownAddress[]): string {
@@ -231,29 +280,36 @@ function scrubOnce(text: string, tokenFor: TokenFor, known: readonly KnownAddres
 }
 
 /**
- * Säubert einen beliebigen Text: unsichtbare Zeichen weg, eigener Payload-Text und SDP-Geheimnisse
- * weg, dann alles, was wie IPv4, ein `.local`-Name oder IPv6 aussieht, dann jede bekannte Adresse
- * wörtlich – wiederholt, bis sich nichts mehr ändert (so ist das Ergebnis ein Fixpunkt, und ein zweiter
- * `redactReport`-Durchlauf ändert nichts mehr).
+ * Säubert einen beliebigen Text, in genau dieser Reihenfolge:
+ * 1. normalisieren (NFKC, unsichtbare Zeichen weg),
+ * 2. SDP-Geheimnisse, ufrag/usernameFragment und Kandidaten-Foundations,
+ * 3. Schicht 1 (Muster) und Schicht 2 (bekannte Adressen), wiederholt bis zum Fixpunkt – so ändert
+ *    ein zweiter `redactReport`-Durchlauf nichts mehr,
+ * 4. ZULETZT der Payload-Durchlauf (siehe `scrubPayloads`: davor fräße er Adressen an).
  */
 function scrubText(text: string, tokenFor: TokenFor, known: readonly KnownAddress[]): string {
-  let current = scrubPayloads(visibleText(text)).replace(SDP_SECRET_PATTERN, (_match, label: string) => `${label}${REMOVED}`);
+  let current = scrubCandidateSecrets(visibleText(text));
   for (let round = 0; round < MAX_SCRUB_ROUNDS; round += 1) {
     const next = scrubOnce(current, tokenFor, known);
     if (next === current) break;
     current = next;
   }
-  return current;
+  return scrubPayloads(current);
 }
 
 /**
  * Kandidatenzeile: `foundation component transport priority ADRESSE port typ … [raddr ADRESSE] [ufrag WERT]`.
- * Zerlegt wie `parseCandidate` (an beliebigem Leerraum), sonst stünde hinter einem Tab oder doppelten
- * Leerzeichen der falsche Wert an der erwarteten Stelle. Den Schlussdurchlauf über die ganze Zeile
- * macht `scrubStrings` – wie für jeden anderen String des Reports.
+ * Erst normalisieren (sonst rettet ein Nullbreiten-Zeichen am Schlüsselwort den ufrag-Wert), dann ein
+ * Leerzeichen hinter "candidate:" schließen, dann zerlegen wie `parseCandidate` (an beliebigem
+ * Leerraum) – sonst stünde hinter einem Tab oder doppelten Leerzeichen der falsche Wert an der
+ * erwarteten Stelle. Den Schlussdurchlauf über die ganze Zeile macht `scrubStrings` – wie für jeden
+ * anderen String des Reports.
  */
 function redactRaw(candidate: ParsedCandidate, ordinal: string, tokenFor: TokenFor, known: readonly KnownAddress[]): string {
-  const parts = candidate.raw.trim().split(/\s+/);
+  const parts = visibleText(candidate.raw)
+    .trim()
+    .replace(RAW_PREFIX_SPACE, (_match, prefix: string) => prefix)
+    .split(/\s+/);
   const first = parts[0] ?? '';
   if (first === '') return '';
   parts[0] = `${RAW_PREFIX.exec(first)?.[0] ?? ''}${ordinal}`;
@@ -271,8 +327,17 @@ function redactRaw(candidate: ParsedCandidate, ordinal: string, tokenFor: TokenF
   return parts.join(' ');
 }
 
-/** Diese Schlüsselpfade bleiben bytegleich – alles andere, was ein String ist, wird gesäubert. */
-const EXEMPT_PATHS: readonly string[] = ['id', 'createdAt', 'buildId', 'environment.userAgent', 'environment.buildId'];
+/**
+ * Diese Schlüsselpfade bleiben bytegleich. Verglichen werden die SEGMENTE des Pfads, nicht ein mit
+ * Punkten zusammengesetzter Text: ein Schlüssel, der wörtlich "environment.userAgent" heißt (so
+ * etwas kommt nur aus fremden Speicherdaten), ist damit NICHT ausgenommen.
+ */
+const EXEMPT_PATHS: ReadonlyArray<readonly string[]> = [['id'], ['createdAt'], ['buildId'], ['environment', 'userAgent'], ['environment', 'buildId']];
+/** Platzhalter-Segment für einen Listeneintrag: in keinem ausgenommenen Pfad enthalten. */
+const ARRAY_SEGMENT = '[]';
+
+const isExempt = (path: readonly string[]): boolean =>
+  EXEMPT_PATHS.some((exempt) => exempt.length === path.length && exempt.every((segment, index) => segment === path[index]));
 
 /**
  * Positivliste statt Verbotsliste: läuft JEDEN String der Kopie ab (Listen und verschachtelte
@@ -280,15 +345,15 @@ const EXEMPT_PATHS: readonly string[] = ['id', 'createdAt', 'buildId', 'environm
  * Task oder ein neuerer Build anlegt. Schreibt an Ort und Stelle: die Kopie stammt aus JSON.parse,
  * dort ist selbst ein Schlüssel "__proto__" eine gewöhnliche eigene Eigenschaft.
  */
-function scrubStrings(node: unknown, path: string, scrub: (text: string) => string): unknown {
-  if (typeof node === 'string') return EXEMPT_PATHS.includes(path) ? node : scrub(node);
+function scrubStrings(node: unknown, path: readonly string[], scrub: (text: string) => string): unknown {
+  if (typeof node === 'string') return isExempt(path) ? node : scrub(node);
   if (Array.isArray(node)) {
-    for (let i = 0; i < node.length; i += 1) node[i] = scrubStrings(node[i], `${path}[]`, scrub);
+    for (let i = 0; i < node.length; i += 1) node[i] = scrubStrings(node[i], [...path, ARRAY_SEGMENT], scrub);
     return node;
   }
   if (typeof node === 'object' && node !== null) {
     const record = node as Record<string, unknown>;
-    for (const key of Object.keys(record)) record[key] = scrubStrings(record[key], path === '' ? key : `${path}.${key}`, scrub);
+    for (const key of Object.keys(record)) record[key] = scrubStrings(record[key], [...path, key], scrub);
   }
   return node;
 }
@@ -321,7 +386,7 @@ export function redactReport(report: LabReport): LabReport {
       candidate.foundation = ordinal;
     }
   }
-  scrubStrings(copy, '', (text) => scrubText(text, tokenFor, known));
+  scrubStrings(copy, [], (text) => scrubText(text, tokenFor, known));
   return copy;
 }
 
@@ -439,9 +504,15 @@ export interface ReportStore {
 
 type Check = (value: unknown) => boolean;
 
+// `!Array.isArray` ist doppelter Schutz: jede Form hat Pflichtfelder, an denen ein Array ohnehin
+// scheitert. Die Klausel bleibt, damit "ein Array ist kein Report" nicht von der Feldliste abhängt.
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isString: Check = (value) => typeof value === 'string';
-const isNumber: Check = (value) => typeof value === 'number';
+/** Blätter, die in einer RegExp oder in einem Token landen: gedeckelt (DNS-Maximum sind 253 Zeichen), sonst kann `new RegExp` platzen. */
+const MAX_GUARDED_LENGTH = 255;
+const isShortString: Check = (value) => typeof value === 'string' && value.length <= MAX_GUARDED_LENGTH;
+/** `Infinity` und `NaN` überstehen JSON.parse ("1e999"), nicht aber JSON.stringify – sie würden als Datenmüll im Bericht landen. */
+const isNumber: Check = (value) => typeof value === 'number' && Number.isFinite(value);
 const isBoolean: Check = (value) => typeof value === 'boolean';
 const nullOr =
   (check: Check): Check =>
@@ -504,7 +575,7 @@ const REPORT_SHAPE = shape({
     shape({
       durationMs: isNumber,
       timedOut: isBoolean,
-      gathered: listOf(shape({ address: isString, raw: isString, foundation: isString, family: isString, scope: isString })),
+      gathered: listOf(shape({ address: isShortString, raw: isString, foundation: isShortString, family: isShortString, scope: isShortString })),
       transmitted: isNumber,
     }),
   ),
@@ -573,10 +644,19 @@ export function createReportStore(
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
   max: number = DEFAULT_MAX_REPORTS,
 ): ReportStore {
+  /** Aus dem gespeicherten Text die gültigen Reports – defekte Daten ergeben eine leere Liste. */
+  const parse = (stored: string | null): LabReport[] => {
+    try {
+      const parsed: unknown = JSON.parse(stored ?? '[]');
+      return Array.isArray(parsed) ? parsed.filter(looksLikeReport) : [];
+    } catch {
+      return [];
+    }
+  };
+
   const read = (): LabReport[] => {
     try {
-      const parsed: unknown = JSON.parse(storage.getItem(REPORT_STORE_KEY) ?? '[]');
-      return Array.isArray(parsed) ? parsed.filter(looksLikeReport) : [];
+      return parse(storage.getItem(REPORT_STORE_KEY));
     } catch {
       return [];
     }
@@ -585,10 +665,19 @@ export function createReportStore(
   return {
     list: read,
     add(report) {
+      // getItem in einem EIGENEN try: scheitert das Lesen, wird gar nicht geschrieben. Sonst ersetzte
+      // ein vorübergehender Lesefehler den ganzen Verlauf durch diesen einen Report; der Aufrufer
+      // merkt am Rücklesen, dass nichts gespeichert wurde.
+      let stored: string | null;
+      try {
+        stored = storage.getItem(REPORT_STORE_KEY);
+      } catch {
+        return;
+      }
       // Serialisiert wird VOR der Schleife und je Eintrag: so halbiert ausschließlich ein scheiterndes
       // setItem den Verlauf, und ein Eintrag, der sich nicht serialisieren lässt, fällt allein heraus.
-      // Vergiftete gespeicherte Einträge hat read() schon aussortiert – sie verschwinden mit diesem Schreiben.
-      const entries = [report, ...read().filter((other) => other.id !== report.id)]
+      // Vergiftete gespeicherte Einträge hat parse() schon aussortiert – sie verschwinden mit diesem Schreiben.
+      const entries = [report, ...parse(stored).filter((other) => other.id !== report.id)]
         .map(serialise)
         .filter((text): text is string => text !== null)
         .slice(0, max);

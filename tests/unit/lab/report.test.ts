@@ -560,27 +560,29 @@ describe('redactReport – Positivliste: jeder String wird gesäubert', () => {
   });
 });
 
-describe('redactReport – Payload-Text und SDP-Geheimnisse', () => {
-  const base64Url = (text: string): string => btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  // Modus „p“ (unkomprimiert): der Rumpf ist base64url des kompakten JSON – frei erfundene Werte, Dokumentationsadressen.
-  const compactJson = JSON.stringify({
-    v: 1,
-    u: 'abcd',
-    w: 'erfundenespasswort000000',
-    c: ['1 1 udp 2122260223 192.0.2.10 50000 typ host', '2 1 udp 2122260222 2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff 50001 typ host'],
-  });
-  const body = base64Url(compactJson);
-  const payload = `MB1.p.${body}`;
-  // Umbruchbreite so gewählt, dass die letzte Zeile KÜRZER als 16 Zeichen ist – der übliche Fall beim Umbrechen.
-  const width = Array.from({ length: 40 }, (_, index) => 64 - index).find((w) => payload.length % w >= 8 && payload.length % w < 16) ?? 64;
-  const lines = payload.match(new RegExp(`.{1,${width}}`, 'g')) ?? [];
-  const chunks = (body.match(/.{1,24}/g) ?? []).filter((chunk) => chunk.length >= 12);
+const base64Url = (text: string): string => btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// Modus „p“ (unkomprimiert): der Rumpf ist base64url des kompakten JSON – frei erfundene Werte, Dokumentationsadressen.
+const COMPACT_JSON = JSON.stringify({
+  v: 1,
+  u: 'abcd',
+  w: 'erfundenespasswort000000',
+  c: ['1 1 udp 2122260223 192.0.2.10 50000 typ host', '2 1 udp 2122260222 2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff 50001 typ host'],
+});
+/** Auf ein Vielfaches von 64 aufgefüllt (samt sechs Kopfzeichen): so ist JEDE Umbruchzeile 64 Zeichen lang. */
+const PAYLOAD_BODY = ((raw: string): string => raw + 'A'.repeat((64 - ((raw.length + 6) % 64)) % 64))(base64Url(COMPACT_JSON));
+const wrapAt = (text: string, width: number): string[] => text.match(new RegExp(`.{1,${width}}`, 'g')) ?? [];
 
-  it('die Fixture ist ein mehrzeiliger Payload mit kurzer Schlusszeile', () => {
+describe('redactReport – Payload-Text und SDP-Geheimnisse', () => {
+  const payload = `MB1.p.${PAYLOAD_BODY}`;
+  // Fix-Runde 3: der Fortsetzungs-Läufer ist weg, ein umbrochener Payload verschwindet Zeile für
+  // Zeile (jede ab 32 Zeichen). Der Rumpf ist deshalb so aufgefüllt, dass JEDE Zeile 64 Zeichen hat.
+  const lines = wrapAt(payload, 64);
+  const chunks = (PAYLOAD_BODY.match(/.{1,24}/g) ?? []).filter((chunk) => chunk.length >= 12);
+
+  it('die Fixture ist ein mehrzeiliger Payload mit lauter 64-Zeichen-Zeilen', () => {
     expect(lines.length).toBeGreaterThan(3);
     expect(chunks.length).toBeGreaterThan(8);
-    expect(lines.at(-1)?.length).toBeGreaterThanOrEqual(8);
-    expect(lines.at(-1)?.length).toBeLessThan(16);
+    expect(lines.every((line) => line.length === 64)).toBe(true);
   });
 
   it('entfernt den eigenen Payload-Text – am Stück, angeklebt und mit Zeilenumbrüchen', () => {
@@ -592,9 +594,9 @@ describe('redactReport – Payload-Text und SDP-Geheimnisse', () => {
     const json = JSON.stringify(redacted);
     expect(json.toLowerCase()).not.toContain('mb1.');
     for (const chunk of chunks) expect(json.toLowerCase()).not.toContain(chunk.toLowerCase());
-    for (const line of lines.slice(1)) expect(json).not.toContain(line);
+    for (const line of lines) expect(json).not.toContain(line);
     expect(redacted.notes).toBe('Code vom Host: payload/entfernt Ende, angeklebt: xpayload/entfernt');
-    expect(redacted.timeline[0]?.detail).toBe('payload/entfernt\n\nDanach ging nichts mehr');
+    expect(redacted.timeline[0]?.detail).toBe(`${lines.map(() => 'payload/entfernt').join('\n')}\n\nDanach ging nichts mehr`);
   });
 
   it('ein Payload ohne Umbruch reißt das folgende Wort nicht mit', () => {
@@ -665,7 +667,22 @@ describe('redactReport – lange Läufe ohne Leerraum', () => {
   it('ein reiner Hex-Lauf von 800 kB ist innerhalb des normalen Zeitlimits fertig', () => {
     const notes = 'abcdef0123456789'.repeat(50_000);
     expect(notes.length).toBe(800_000);
-    expect(redactReport(sampleReport({ gather: null, notes })).notes).toBe(notes);
+    // Seit Fix-Runde 3 ist ein base64url-Lauf ab 32 Zeichen selbst ein Payload-Verdacht: vom Lauf
+    // bleiben nur noch Tokens übrig. Der Zeitbeleg für die IPv6-Grenze hängt daran nicht – die
+    // Adressmuster laufen VOR dem Payload-Durchlauf über den ganzen Text.
+    const redacted = redactReport(sampleReport({ gather: null, notes })).notes;
+    expect(redacted).not.toContain('abcdef');
+    expect(redacted.replace(/payload\/entfernt/g, '')).toBe('');
+  });
+
+  // Die Gruppen-ANZAHL beider Adressmuster ist gedeckelt: ohne Deckel läuft bei rund 8 MB der
+  // Backtracking-Stack der RegExp über (RangeError) – redactReport käme gar nicht erst zum Ergebnis.
+  it('ein 8-MB-Lauf aus Ziffern und Punkten bzw. Hex und Doppelpunkten wirft nicht', () => {
+    for (const unit of ['1.2.3.', 'ab:cd:']) {
+      const notes = unit.repeat(Math.floor(8_000_000 / unit.length));
+      expect(notes.length).toBeGreaterThanOrEqual(7_999_990);
+      expect(() => redactReport(sampleReport({ gather: null, notes }))).not.toThrow();
+    }
   });
 
   it('Adressen VOR einem 200-kB-Lauf sind trotzdem weg', () => {
@@ -1131,5 +1148,321 @@ describe('createReportStore – verschachtelte Report-Form', () => {
     expect(() => store.add(unserialisable)).not.toThrow();
 
     expect(ids(store.list())).toEqual(['c', 'b', 'a']);
+  });
+});
+
+// ───────── Fix-Runde 3 (T12–T17) ─────────
+
+describe('redactReport – Payload-Schwaerzung laeuft HINTER dem Adress-Durchlauf (T12)', () => {
+  const UNKNOWN_IPV4 = '203.0.113.77';
+  const KNOWN_IPV4 = '192.0.2.10';
+  const UNKNOWN_IPV6 = '2001:db8:9999::42';
+  const unknownMdns = (): string => `${['66666666', '6666', '6666', '6666', '666666666666'].join('-')}.local`;
+  const HEADS = ['MB1.d.', 'MB1.p.', 'mb1.d.'];
+  const WIDTHS = [21, 25, 32, 40, 64, 76];
+  /** Zeilenumbruch, Leerzeichen, Leerzeile, direkt angeklebt. */
+  const GAPS = ['\n', ' ', '\n\n', ''];
+
+  /** Was von der Adresse nirgends mehr stehen darf: zwei Oktette bzw. erkennbare Gruppen. */
+  const fragmentsOf = (address: string): string[] => {
+    if (address.endsWith('.local')) return ['6666'];
+    if (address.includes(':')) return ['db8', '9999', '::'];
+    const octets = address.split('.');
+    return [`.${octets.slice(1).join('.')}`, `.${octets.slice(2).join('.')}`];
+  };
+
+  it('kein Adressrest ueberlebt einen Payload davor – Kopf × Breite × Abstand × Adresse', () => {
+    const failures: string[] = [];
+    for (const head of HEADS) {
+      for (const width of WIDTHS) {
+        for (const gap of GAPS) {
+          for (const address of [UNKNOWN_IPV4, KNOWN_IPV4, UNKNOWN_IPV6, unknownMdns()]) {
+            const notes = `${wrapAt(`${head}${PAYLOAD_BODY}`, width).join('\n')}${gap}${address} ist das Handy`;
+            const redacted = redactReport(sampleReport({ notes }));
+            const json = JSON.stringify(redacted).toLowerCase();
+            const left = fragmentsOf(address).filter((fragment) => redacted.notes.toLowerCase().includes(fragment.toLowerCase()));
+            if (json.includes(address.toLowerCase()) || left.length > 0) {
+              failures.push(`${head} ${width} ${JSON.stringify(gap)} ${address} -> ${JSON.stringify(redacted.notes.slice(-40))}`);
+            }
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('ein auf 64 Zeichen umbrochener Rumpf ueberlebt nicht – auch ohne Kopf, mit geteiltem Kopf und zitiert', () => {
+    const chunks = (PAYLOAD_BODY.match(/.{1,32}/g) ?? []).filter((chunk) => chunk.length === 32);
+    expect(chunks.length).toBeGreaterThan(5);
+    for (const notes of [
+      wrapAt(`MB1.d.${PAYLOAD_BODY}`, 64).join('\n'),
+      wrapAt(PAYLOAD_BODY, 64).join('\n'),
+      `MB1.\nd.${PAYLOAD_BODY}`,
+      `Code: ${PAYLOAD_BODY}`,
+      `MB1.p.${wrapAt(PAYLOAD_BODY, 64).join('\n> ')}`,
+    ]) {
+      const json = JSON.stringify(redactReport(sampleReport({ gather: null, notes })));
+      for (const chunk of chunks) expect(json).not.toContain(chunk);
+    }
+  });
+
+  it('jeder Modus-Kopf verschwindet – „MB1.d.“ wie „MB1.p.“, auch klein geschrieben', () => {
+    for (const head of ['MB1.d.', 'MB1.p.', 'mb1.d.', 'MB1.D.']) {
+      expect(redactReport(sampleReport({ gather: null, notes: `Code: ${head}${PAYLOAD_BODY} Ende` })).notes).toBe('Code: payload/entfernt Ende');
+    }
+  });
+
+  it('die ausgenommenen Felder bleiben bytegleich, auch mit einem langen base64url-Lauf darin', () => {
+    const long = 'r-2026-09-21-0001-aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789';
+    expect(long).toMatch(/^[A-Za-z0-9_-]{32,}$/);
+    const original = sampleReport({ id: long, createdAt: `${long}-erstellt`, buildId: `${long}-build` });
+    original.environment = { ...original.environment, userAgent: `${long}-ua`, buildId: `${long}-env` };
+    const redacted = redactReport(original);
+    expect(redacted.id).toBe(original.id);
+    expect(redacted.createdAt).toBe(original.createdAt);
+    expect(redacted.buildId).toBe(original.buildId);
+    expect(redacted.environment.userAgent).toBe(original.environment.userAgent);
+    expect(redacted.environment.buildId).toBe(original.environment.buildId);
+  });
+
+  it('ein 2-MB-base64url-Lauf ist innerhalb des normalen Zeitlimits fertig und laesst nichts uebrig', () => {
+    const notes = 'QUJDREVGR0g0NTY3'.repeat(125_000);
+    expect(notes.length).toBe(2_000_000);
+    const redacted = redactReport(sampleReport({ gather: null, notes })).notes;
+    expect(redacted).not.toContain('QUJD');
+    expect(redacted.replace(/payload\/entfernt/g, '')).toBe('');
+  });
+});
+
+describe('redactReport – Kandidaten-Geheimnisse ueberall, nicht nur in raw (T13)', () => {
+  const SECRET = 'Zq7Kgeheim';
+  const FOUNDATION = '7771234';
+  const FORMS: Array<{ label: string; text: string; secret: string }> = [
+    { label: 'ufrag <wert>', text: `generation 0 ufrag ${SECRET} network-id 1`, secret: SECRET },
+    { label: 'UFRAG<tab><wert>', text: `generation 0 UFRAG\t${SECRET} network-id 1`, secret: SECRET },
+    { label: 'usernameFragment":"x"', text: `{"candidate":"1 1 udp 1 203.0.113.77 1 typ host","usernameFragment":"${SECRET}"}`, secret: SECRET },
+    { label: 'usernameFragment=x', text: `usernameFragment=${SECRET}`, secret: SECRET },
+    { label: 'usernameFragment: x', text: `usernameFragment: ${SECRET}`, secret: SECRET },
+    { label: 'candidate:<foundation>', text: `candidate:${FOUNDATION} 1 udp 2122260223 203.0.113.77 50001 typ host generation 0`, secret: FOUNDATION },
+    { label: 'A=CANDIDATE: <foundation>', text: `A=CANDIDATE: ${FOUNDATION} 1 udp 2122260223 203.0.113.77 50001 typ host`, secret: FOUNDATION },
+  ];
+
+  it('jede Form verliert ihren Wert – in notes, in einem Zeitleisten-Detail und in einem unbekannten Listenfeld', () => {
+    for (const { label, text, secret } of FORMS) {
+      const report = {
+        ...sampleReport({ gather: null, notes: text, timeline: [{ tMs: 1, kind: 'note', detail: text }] }),
+        remoteCandidates: [text],
+      } as unknown as LabReport;
+      expect(JSON.stringify(redactReport(report)), label).not.toContain(secret);
+    }
+  });
+
+  it('die allgemeine Foundation-Regel ueberschreibt das Ordinal in raw nicht – mit und ohne Praefix', () => {
+    const report = sampleReport({
+      gather: gatherOf([
+        sampleCandidate(7771234, 'udp', '192.0.2.10', 50001, 'ipv4', 'global'),
+        { ...sampleCandidate(7775678, 'udp', '198.51.100.7', 50002, 'ipv4', 'global'), raw: 'candidate:7775678 1 udp 2122260222 198.51.100.7 50002 typ host' },
+        { ...sampleCandidate(7779999, 'udp', '203.0.113.9', 50003, 'ipv4', 'global'), raw: 'a=candidate:7779999 1 udp 2122260221 203.0.113.9 50003 typ host' },
+      ]),
+    });
+    const redacted = redactReport(report);
+    expect(raws(redacted).map((raw) => raw.split(' ')[0])).toEqual(['f1', 'candidate:f2', 'a=candidate:f3']);
+    expect(JSON.stringify(redacted)).not.toContain('777');
+  });
+
+  it('ein Nullbreiten-Zeichen am ufrag-Schluesselwort rettet den Wert nicht (raw wird erst normalisiert)', () => {
+    const raw = `1 1 udp 2122260223 192.0.2.47 50000 typ host generation 0 ufrag\u200B ${SECRET} network-id 1`;
+    const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(1, 'udp', '192.0.2.47', 50000, 'ipv4', 'global'), raw }]) });
+    const redacted = redactReport(report);
+    expect(JSON.stringify(redacted)).not.toContain(SECRET);
+    expect(raws(redacted)[0]).toBe('f1 1 udp 2122260223 ipv4/global#1 50000 typ host generation 0 ufrag entfernt network-id 1');
+  });
+
+  it('ein Leerzeichen hinter „candidate:“ verschiebt die Felder nicht', () => {
+    const raw = 'candidate: 8889991 1 udp 2122260222 192.0.2.10 50001 typ host';
+    const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(8889991, 'udp', '192.0.2.10', 50001, 'ipv4', 'global'), raw }]) });
+    const redacted = redactReport(report);
+    expect(raws(redacted)[0]).toBe('candidate:f1 1 udp 2122260222 ipv4/global#1 50001 typ host');
+    expect(JSON.stringify(redacted)).not.toContain('8889991');
+  });
+});
+
+describe('redactReport – die ganze Klasse unsichtbarer Formatzeichen (T14)', () => {
+  /** Ein Vertreter je Bereich der Klasse – ausschliesslich als \u-Escape geschrieben. */
+  const REPRESENTATIVES: Array<{ label: string; char: string }> = [
+    { label: 'U+00AD', char: '\u00AD' },
+    { label: 'U+034F', char: '\u034F' },
+    { label: 'U+061C', char: '\u061C' },
+    { label: 'U+115F', char: '\u115F' },
+    { label: 'U+17B4', char: '\u17B4' },
+    { label: 'U+180E', char: '\u180E' },
+    { label: 'U+200B', char: '\u200B' },
+    { label: 'U+202A', char: '\u202A' },
+    { label: 'U+2066', char: '\u2066' },
+    { label: 'U+3164', char: '\u3164' },
+    { label: 'U+FE0F', char: '\uFE0F' },
+    { label: 'U+FEFF', char: '\uFEFF' },
+    { label: 'U+FFA0', char: '\uFFA0' },
+    { label: 'U+E0020', char: '\uDB40\uDC20' },
+  ];
+  const notesOf = (notes: string): string => redactReport(sampleReport({ gather: null, notes })).notes;
+
+  it('die Vertreter sind wirklich unsichtbar und zerlegen die Fixture-Adresse', () => {
+    for (const { label, char } of REPRESENTATIVES) {
+      expect(char, label).not.toMatch(/[0-9a-z.:]/i);
+      expect(`203.0.${char}113.77`, label).not.toContain('203.0.113.77');
+    }
+  });
+
+  it('jedes Formatzeichen mitten in IPv4, IPv6 und einem .local-Namen hilft nicht', () => {
+    const mdns = `${['77777777', '7777', '7777', '7777', '777777777777'].join('-')}.local`;
+    for (const { label, char } of REPRESENTATIVES) {
+      expect(notesOf(`A 203.0.${char}113.77 B`), `IPv4 ${label}`).toBe('A ipv4/other#1 B');
+      expect(notesOf(`A 2001:db${char}8::77 B`), `IPv6 ${label}`).toBe('A ipv6/other#1 B');
+      expect(notesOf(`A ${mdns.replace('.local', `.lo${char}cal`)} B`), `mDNS ${label}`).toBe('A mdns/mdns#1 B');
+    }
+  });
+});
+
+describe('redactReport – Gross-/Kleinschreibung in jedem Muster (T15)', () => {
+  it('ein unbekannter .LOCAL-Name in Grossbuchstaben wird redigiert', () => {
+    const mdns = `${['88888888', '8888', '8888', '8888', '888888888888'].join('-')}.LOCAL`;
+    expect(redactReport(sampleReport({ gather: null, notes: `A ${mdns} B` })).notes).toBe('A mdns/mdns#1 B');
+  });
+
+  it('SDP-Zeilen in Grossbuchstaben verlieren ihren Wert', () => {
+    const notes = 'A=ICE-PWD:geheimeswort\nA=ICE-UFRAG:abcd';
+    expect(redactReport(sampleReport({ gather: null, notes })).notes).toBe('A=ICE-PWD:entfernt\nA=ICE-UFRAG:entfernt');
+  });
+
+  it('UFRAG und RADDR in Grossbuchstaben innerhalb von raw', () => {
+    // Der raddr-Wert ist ein erfundener Hostname: nur die POSITION verrät ihn, kein Adressmuster.
+    const raw = '1 1 udp 1686052607 203.0.113.9 61000 typ srflx RADDR fremder-host.example rport 50001 generation 0 UFRAG GeheimWert';
+    const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(1, 'udp', '203.0.113.9', 61000, 'ipv4', 'global'), raw, type: 'srflx' }]) });
+    const redacted = redactReport(report);
+    expect(raws(redacted)[0]).toBe('f1 1 udp 1686052607 ipv4/global#1 61000 typ srflx RADDR other/other#2 rport 50001 generation 0 UFRAG entfernt');
+    expect(JSON.stringify(redacted)).not.toContain('GeheimWert');
+    expect(JSON.stringify(redacted)).not.toContain('fremder-host');
+  });
+
+  it('eine raw-Zeile, die mit A=CANDIDATE: beginnt, behaelt das Praefix und bekommt das Ordinal', () => {
+    const raw = 'A=CANDIDATE:9990001 1 udp 2122260222 192.0.2.10 50001 typ host';
+    const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(9990001, 'udp', '192.0.2.10', 50001, 'ipv4', 'global'), raw }]) });
+    const redacted = redactReport(report);
+    expect(raws(redacted)[0]).toBe('A=CANDIDATE:f1 1 udp 2122260222 ipv4/global#1 50001 typ host');
+    expect(JSON.stringify(redacted)).not.toContain('9990001');
+  });
+});
+
+describe('redactReport – vom Programm erzeugte Zeitleisten-Eintraege bleiben bytegleich (T16)', () => {
+  // Jede Art/Detail-Paarung, die src/net/rtcTransport.ts heute und Plan-Task 8/9 morgen schreibt.
+  const PAIRS: Array<[string, string]> = [
+    ['pc-created', ''],
+    ['gathering:new', ''],
+    ['gathering:gathering', ''],
+    ['gathering:complete', ''],
+    ['ice:new', ''],
+    ['ice:checking', ''],
+    ['ice:connected', ''],
+    ['ice:completed', ''],
+    ['ice:disconnected', ''],
+    ['ice:failed', ''],
+    ['ice:closed', ''],
+    ['connection:new', ''],
+    ['connection:connecting', ''],
+    ['connection:connected', ''],
+    ['connection:disconnected', ''],
+    ['connection:failed', ''],
+    ['connection:closed', ''],
+    ['candidate', 'host/ipv4'],
+    ['candidate', 'host/ipv6'],
+    ['candidate', 'host/mdns'],
+    ['candidate', 'srflx/ipv4'],
+    ['candidate', 'relay/ipv6'],
+    ['candidate', 'unparsed'],
+    ['channel-open:state', ''],
+    ['channel-open:events', ''],
+    ['channel-close:state', ''],
+    ['channel-close:events', ''],
+    ['transport:connecting', ''],
+    ['transport:open', ''],
+    ['transport:closed', ''],
+    ['transport:failed', ''],
+    ['camera:running', ''],
+    ['camera-error', 'NotAllowedError'],
+    ['camera-error', 'NotReadableError'],
+    ['permissions:handshake', 'camera=granted gum=yes lna=denied'],
+    ['selftest', ''],
+    ['run:start', ''],
+    ['run:hello', ''],
+    ['run:ping:state', '197/200'],
+    ['run:ping:events', '200/200'],
+    ['run:diagnose', 'F2, F3'],
+  ];
+
+  it('keine dieser Paarungen wird von der Anonymisierung angefasst', () => {
+    const timeline = PAIRS.map(([kind, detail], index) => ({ tMs: index * 10, kind, detail }));
+    expect(redactReport(sampleReport({ timeline })).timeline).toEqual(timeline);
+  });
+});
+
+describe('redactReport und createReportStore – Ausnahmen, Token-Integritaet, Verlaufsschutz (T17)', () => {
+  it('ein Schluessel, der woertlich „environment.userAgent“ heisst, ist NICHT ausgenommen', () => {
+    const report = { ...sampleReport({ gather: null }), 'environment.userAgent': 'x 203.0.113.201' } as unknown as LabReport;
+    const redacted = redactReport(report) as unknown as Record<string, unknown>;
+    expect(redacted['environment.userAgent']).toBe('x ipv4/other#1');
+    expect(JSON.stringify(redacted)).not.toContain('203.0.113.201');
+  });
+
+  it('eine bekannte Adresse, die wie ein Token-Wort aussieht, zerstoert die Tokens nicht', () => {
+    for (const address of ['other', 'f1', '1', 'ab', 'entfernt', 'payload', 'global']) {
+      const report = sampleReport({ gather: gatherOf([otherCandidate(1, address, 50001)]), notes: `Host war ${address} heute` });
+      const once = redactReport(report);
+      expect(once.gather?.gathered[0]?.address, address).toBe('other/other#1');
+      expect(raws(once)[0]?.split(' ')[4], address).toBe('other/other#1');
+      expect(once.notes, address).toBe(`Host war ${address} heute`);
+      expect(redactReport(once), address).toEqual(once);
+    }
+  });
+
+  it('ein raddr-Wert, der wie ein Geheimnis aussieht, bleibt nach dem ersten Durchlauf stabil', () => {
+    for (const value of ['fingerprint:x', 'ice-ufrag:abcd', 'MB1.p.AAAA']) {
+      const raw = `1 1 udp 1686052607 203.0.113.9 61000 typ srflx raddr ${value} rport 9`;
+      const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(1, 'udp', '203.0.113.9', 61000, 'ipv4', 'global'), raw, type: 'srflx' }]) });
+      const once = redactReport(report);
+      expect(redactReport(once), value).toEqual(once);
+    }
+  });
+
+  it('list() sortiert eine 40.000 Zeichen lange Adresse und ein gespeichertes 1e999 aus', () => {
+    const storage = memoryStorage();
+    const long = JSON.stringify(sampleReport({ id: 'lang' })).replace('"192.0.2.10"', JSON.stringify('x'.repeat(40_000)));
+    const infinite = JSON.stringify(sampleReport({ id: 'unendlich' })).replace('"protoV":1', '"protoV":1e999');
+    expect(infinite).toContain('1e999');
+    storage.data.set(REPORT_STORE_KEY, `[${long},${infinite},${JSON.stringify(sampleReport({ id: 'gut' }))}]`);
+    const store = createReportStore(storage);
+    expect(ids(store.list())).toEqual(['gut']);
+    for (const report of store.list()) expect(() => redactReport(report)).not.toThrow();
+  });
+
+  it('wirft getItem waehrend add(), bleibt der gespeicherte Verlauf unangetastet', () => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, `[${['g1', 'g2', 'g3'].map((id) => JSON.stringify(sampleReport({ id }))).join(',')}]`);
+    const before = storage.data.get(REPORT_STORE_KEY);
+    let calls = 0;
+    const flaky = {
+      ...storage,
+      getItem: (key: string): string | null => {
+        calls += 1;
+        if (calls === 1) throw new Error('SecurityError');
+        return storage.getItem(key);
+      },
+    };
+    const store = createReportStore(flaky);
+
+    expect(() => store.add(sampleReport({ id: 'neu' }))).not.toThrow();
+
+    expect(storage.data.get(REPORT_STORE_KEY)).toBe(before);
+    expect(ids(store.list())).toEqual(['g1', 'g2', 'g3']);
   });
 });
