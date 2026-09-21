@@ -185,8 +185,15 @@ export function createClientJoin(deps: ConnectorDeps): ClientJoin {
   let timeline: Timeline | null = null;
   let slot: number | null = null;
   let remoteSdp: string | null = null;
+  /**
+   * Nummer des jüngsten Annahme-Versuchs. Ein Versuch, dessen Nummer nicht mehr die aktuelle ist, wurde
+   * überholt. Nötig, weil `acceptOffer` zuerst ENTSCHLÜSSELT und den Peer erst danach anlegt: in diesem
+   * Fenster gibt es noch keinen Peer, den `close()` schließen könnte.
+   */
+  let generation = 0;
 
-  function close(): void {
+  /** Räumt den laufenden Versuch ab, OHNE zu überholen – der interne Aufräumschritt. */
+  function reset(): void {
     peer?.close();
     peer = null;
     timeline = null;
@@ -194,10 +201,25 @@ export function createClientJoin(deps: ConnectorDeps): ClientJoin {
     remoteSdp = null;
   }
 
+  /** Öffentliches Schließen: überholt zusätzlich einen Versuch, der noch entschlüsselt. */
+  function close(): void {
+    generation += 1;
+    reset();
+  }
+
   return {
     async acceptOffer(payloadText) {
-      const desc = await decode(payloadText, 'offer', deps.protoV);
-      close();
+      const attempt = (generation += 1);
+      let desc: SessionDesc;
+      try {
+        desc = await decode(payloadText, 'offer', deps.protoV);
+      } catch (error) {
+        // Ein überholter Versuch darf der Oberfläche nie ein F5 melden – der Nutzer hat ihn selbst abgelöst.
+        if (attempt !== generation) throw superseded('answer');
+        throw error;
+      }
+      if (attempt !== generation) throw superseded('answer');
+      reset();
       const ownTimeline = deps.makeTimeline();
       const ownPeer = newPeer('host', ownTimeline);
       peer = ownPeer;
@@ -208,13 +230,13 @@ export function createClientJoin(deps: ConnectorDeps): ClientJoin {
         const gather = await ownPeer.acceptOffer(sdp);
         // Die Antwort trägt Slot und Nonce des Angebots – daran erkennt der Host, wohin sie gehört.
         const answer = await buildArtifacts(gather, { protoV: deps.protoV, role: 'answer', slot: desc.slot, nonce: desc.nonce });
-        if (peer !== ownPeer) throw superseded('answer');
+        if (peer !== ownPeer || attempt !== generation) throw superseded('answer');
         remoteSdp = sdp;
         return answer;
       } catch (error) {
         ownPeer.close();
-        const current = peer === ownPeer;
-        if (current) close(); // die Felder eines NEUEREN Versuchs nie anfassen
+        const current = peer === ownPeer && attempt === generation;
+        if (current) reset(); // die Felder eines NEUEREN Versuchs nie anfassen
         if (!current || isAbort(error)) throw superseded('answer');
         throw toF5('apply offer', error);
       }

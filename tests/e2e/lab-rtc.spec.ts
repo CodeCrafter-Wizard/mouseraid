@@ -358,6 +358,101 @@ test('close() während des Gatherings bricht acceptOffer des Clients mit AbortEr
   expect(result).toEqual({ aborted: 'AbortError', sawCandidate: true, peerAfter: true });
 });
 
+test('close() schon während des Dekodierens überholt die Annahme', { tag: '@local' }, async ({ context }) => {
+  const page = await openLab(context);
+  const result = await page.evaluate(async () => {
+    const lab = (window as unknown as LabWindow).__mbLab;
+    const deps = {
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 1,
+    };
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    const lobby = lab.createHostLobby(deps);
+    const offer = await lobby.createOffer(1);
+    const join = lab.createClientJoin(deps);
+    // Ohne jedes Warten dazwischen: der Abbruch fällt in das Fenster, in dem `acceptOffer` noch entschlüsselt
+    // und den Peer deshalb NOCH NICHT angelegt hat.
+    const pending = join.acceptOffer(offer.payload);
+    join.close();
+    const outcome = {
+      aborted: await nameOf(pending),
+      peerNull: join.peer === null,
+      timelineNull: join.timeline === null,
+      slotNull: join.slot === null,
+    };
+    lobby.closeAll();
+    return outcome;
+  });
+  expect(result).toEqual({ aborted: 'AbortError', peerNull: true, timelineNull: true, slotNull: true });
+});
+
+test('ein zweites acceptOffer überholt das erste – auch wenn beide noch dekodieren', { tag: '@local' }, async ({ context }) => {
+  const page = await openLab(context);
+  const raced = await page.evaluate(async () => {
+    const w = window as unknown as LabWindow;
+    const lab = w.__mbLab;
+    let nonce = 100;
+    const deps = {
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => (nonce += 1),
+    };
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    const lobby = lab.createHostLobby(deps);
+    w.__lobby = lobby;
+    const offerA = await lobby.createOffer(1);
+    const offerB = await lobby.createOffer(2);
+    const join = lab.createClientJoin(deps);
+    w.__join = join;
+    // Beide Aufrufe im selben Zug – der zweite überholt den ersten, noch bevor einer von beiden
+    // mit dem Entschlüsseln fertig ist.
+    const first = join.acceptOffer(offerA.payload);
+    const second = join.acceptOffer(offerB.payload);
+    const firstName = await nameOf(first);
+    const answerB = await second;
+    // Der Host nimmt die Antwort auf sein ZWEITES Angebot an; beide Seiten liegen hier in derselben Seite.
+    w.__peer = await lobby.acceptAnswer(2, answerB.payload);
+    return { firstName, joinSlot: join.slot, slotB: offerB.desc.slot, answerSlot: answerB.desc.slot };
+  });
+  expect(raced.firstName).toBe('AbortError');
+  expect(raced.slotB).toBe(2);
+  expect(raced.joinSlot).toBe(raced.slotB);
+  expect(raced.answerSlot).toBe(raced.slotB);
+
+  // Die überholte Annahme hat nichts kaputt gemacht: mit Angebot B kommt die Verbindung zustande.
+  await page.waitForFunction(
+    () => {
+      const w = window as unknown as LabWindow;
+      return w.__peer?.transport.state === 'open' && w.__join?.peer?.transport.state === 'open';
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.evaluate(() => (window as unknown as LabWindow).__lobby?.closeAll());
+});
+
+test('ein überholter Versuch meldet AbortError statt F5 – auch bei kaputtem Code', { tag: '@local' }, async ({ context }) => {
+  const page = await openLab(context);
+  const result = await page.evaluate(async () => {
+    const lab = (window as unknown as LabWindow).__mbLab;
+    const join = lab.createClientJoin({
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 1,
+    });
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    // Der Nutzer hat selbst abgebrochen – dann darf ihn der kaputte Code nicht mehr als F5 einholen.
+    const pending = join.acceptOffer('MB1.d.garbage');
+    join.close();
+    return { aborted: await nameOf(pending), peerNull: join.peer === null };
+  });
+  expect(result).toEqual({ aborted: 'AbortError', peerNull: true });
+});
+
 test('ohne RTCPeerConnection meldet der Connector F6', { tag: '@local' }, async ({ context }) => {
   const page = await context.newPage();
   // Vor jedem Seitenskript: der Browser sieht aus wie einer ohne WebRTC.
