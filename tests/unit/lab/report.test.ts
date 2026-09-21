@@ -9,6 +9,7 @@ import {
   type CellLabel,
   type LabReport,
 } from '../../../src/lab/report';
+import type { ParsedCandidate } from '../../../src/net/candidates';
 import type { PermissionSnapshot } from '../../../src/net/environment';
 import { sampleAddresses, sampleCandidate, sampleReport } from '../../helpers/sampleReport';
 
@@ -94,10 +95,11 @@ describe('redactReport', () => {
       'ipv4/global#1',
       'ipv4/global#4',
     ]);
-    expect(gathered[0]?.raw).toBe('1001 1 udp 2122259222 ipv4/global#1 50001 typ host generation 0 network-cost 10');
-    expect(gathered[3]?.raw).toBe('1004 1 tcp 2122259219 ipv4/global#1 9 typ host tcptype active generation 0 network-cost 10');
-    // Alles außer Adresse und raw bleibt, wie es war.
-    expect(gathered[1]).toMatchObject({ foundation: '1002', port: 50002, protocol: 'udp', type: 'host', family: 'ipv6', scope: 'global' });
+    // Die Foundation wird je Report zum Ordinal f1, f2, … (Fix-Runde 2, M10) – im Feld wie am Anfang von raw.
+    expect(gathered[0]?.raw).toBe('f1 1 udp 2122259222 ipv4/global#1 50001 typ host generation 0 network-cost 10');
+    expect(gathered[3]?.raw).toBe('f4 1 tcp 2122259219 ipv4/global#1 9 typ host tcptype active generation 0 network-cost 10');
+    // Alles außer Adresse, raw und Foundation bleibt, wie es war.
+    expect(gathered[1]).toMatchObject({ foundation: 'f2', port: 50002, protocol: 'udp', type: 'host', family: 'ipv6', scope: 'global' });
   });
 
   it('das JSON des anonymisierten Reports enthält keine Adresse des Originals', () => {
@@ -123,8 +125,9 @@ describe('redactReport', () => {
 
     const raws = (redactReport(report).gather?.gathered ?? []).map((candidate) => candidate.raw);
 
-    expect(raws[1]).toBe('2001 1 udp 1686052607 ipv4/global#2 61000 typ srflx raddr ipv4/global#1 rport 50001 generation 0 ufrag entfernt network-cost 10');
-    expect(raws[2]).toBe('candidate:2002 1 udp 1686052606 ipv4/global#2 61001 typ srflx raddr ipv4/other#3 rport 50002');
+    // Erstes Token ist seit Fix-Runde 2 das Foundation-Ordinal; ein „candidate:“-Präfix bleibt stehen.
+    expect(raws[1]).toBe('f2 1 udp 1686052607 ipv4/global#2 61000 typ srflx raddr ipv4/global#1 rport 50001 generation 0 ufrag entfernt network-cost 10');
+    expect(raws[2]).toBe('candidate:f3 1 udp 1686052606 ipv4/global#2 61001 typ srflx raddr ipv4/other#3 rport 50002');
   });
 
   it('säubert Zeitleisten-Details und Notizen vorsorglich von IPs und .local-Namen', () => {
@@ -191,8 +194,15 @@ describe('redactReport – Sicherheitsnetz gegen angeklebte Adressen', () => {
   const KNOWN_IPV6_UPPER = (KNOWN_IPV6 ?? '').toUpperCase();
   const UNKNOWN_MDNS = `${['33333333', '3333', '3333', '3333', '333333333333'].join('-')}.local`;
 
-  const GLUE_PREFIXES = ['', 'x', '5', '_', '(', 'ä', 'Fehlercode'];
-  const GLUE_SUFFIXES = ['', 'x', '_', '.', ')', 'war'];
+  // Die Ziffer-Punkt-Präfixe ('1.' … '21.09.') verschieben ein Vier-Gruppen-Muster nach links (S5).
+  const GLUE_PREFIXES = ['', 'x', '5', '_', '(', 'ä', 'Fehlercode', '1.', '1.2.', '1.2.3.', '21.09.'];
+  const GLUE_SUFFIXES = ['', 'x', '_', '.', ')', 'war', '7'];
+  const DOTTED_QUAD = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+  /** Reste einer IPv4-Adresse ab zwei Oktetten: aus „192.0.2.10“ werden „.0.2.10“ und „.2.10“. */
+  const ipv4Tails = (address: string): string[] => {
+    const octets = address.split('.');
+    return DOTTED_QUAD.test(address) ? [`.${octets.slice(1).join('.')}`, `.${octets.slice(2).join('.')}`] : [];
+  };
   const GLUE_ADDRESSES = [
     KNOWN_IPV4 ?? '',
     UNKNOWN_IPV4,
@@ -211,8 +221,11 @@ describe('redactReport – Sicherheitsnetz gegen angeklebte Adressen', () => {
         for (const suffix of GLUE_SUFFIXES) {
           const glued = `${prefix}${address}${suffix}`;
           const report = sampleReport({ notes: glued, timeline: [{ tMs: 1, kind: 'note', detail: glued }] });
-          const json = JSON.stringify(redactReport(report)).toLowerCase();
-          if (json.includes(address.toLowerCase())) {
+          const redacted = redactReport(report);
+          const json = JSON.stringify(redacted).toLowerCase();
+          const freeTexts = [redacted.notes, redacted.timeline[0]?.detail ?? ''];
+          const tailLeft = ipv4Tails(address).some((tail) => freeTexts.some((text) => text.includes(tail)));
+          if (json.includes(address.toLowerCase()) || tailLeft) {
             failures.push(`prefix=${JSON.stringify(prefix)} address=${address} suffix=${JSON.stringify(suffix)}`);
           }
         }
@@ -221,7 +234,13 @@ describe('redactReport – Sicherheitsnetz gegen angeklebte Adressen', () => {
     expect(failures).toEqual([]);
   });
 
-  it('bekannte Adresse bleibt auch mit angeklebter Ziffer unauffindbar (Sicherheitsnetz greift)', () => {
+  it('eine nummerierte Liste mit angeklebten Adressen hinterlässt kein Oktett-Paar', () => {
+    const redacted = redactReport(sampleReport({ notes: '1.192.0.2.10 2.198.51.100.7' }));
+    for (const pair of ['192.0', '0.2', '2.10', '198.51', '51.100', '100.7']) expect(redacted.notes).not.toContain(pair);
+    expect(redacted.notes).toBe('ipv4/other#5 ipv4/other#6');
+  });
+
+  it('bekannte Adresse bleibt auch mit angeklebter Ziffer unauffindbar (die Muster-Schicht erwischt sie)', () => {
     const known = KNOWN_IPV4 ?? '';
     const report = sampleReport({ notes: `${known}7 und 9${known}` });
     const json = JSON.stringify(redactReport(report)).toLowerCase();
@@ -245,6 +264,419 @@ describe('redactReport – Sicherheitsnetz gegen angeklebte Adressen', () => {
   it('dieselbe bekannte IPv6-Adresse in Großbuchstaben in notes bekommt dasselbe Token wie im gesammelten Kandidaten', () => {
     const report = sampleReport({ notes: `gesehen: ${KNOWN_IPV6_UPPER}` });
     expect(redactReport(report).notes).toBe('gesehen: ipv6/global#2');
+  });
+});
+
+const gatherOf = (gathered: ParsedCandidate[]): LabReport['gather'] => ({
+  durationMs: 10,
+  timedOut: false,
+  gathered,
+  transmitted: gathered.length,
+});
+
+/** Kandidat der Familie „other“ (Hostname statt IP) – ausschließlich erfundene Namen. */
+const otherCandidate = (foundation: number, address: string, port: number): ParsedCandidate =>
+  sampleCandidate(foundation, 'udp', address, port, 'other', 'other');
+
+const raws = (report: LabReport): string[] => (report.gather?.gathered ?? []).map((candidate) => candidate.raw);
+
+describe('redactReport – Schicht 2 ersetzt bekannte Adressen wörtlich', () => {
+  const SHORT_NAME = 'labor-pc';
+  const LONG_NAME = 'labor-pc.example';
+
+  // Der kurze Name steht ZUERST in gathered: ohne „längste zuerst“ zerschnitte er den langen.
+  const hostNameReport = (): LabReport =>
+    sampleReport({
+      gather: gatherOf([
+        otherCandidate(1, SHORT_NAME, 50001),
+        otherCandidate(2, LONG_NAME, 50002),
+        {
+          ...sampleCandidate(3, 'udp', '203.0.113.9', 61000, 'ipv4', 'global'),
+          type: 'srflx',
+          raw: `3 1 udp 1686052607 203.0.113.9 61000 typ srflx raddr ${LONG_NAME} rport 50002`,
+        },
+        {
+          ...sampleCandidate(4, 'udp', '198.51.100.7', 50004, 'ipv4', 'global'),
+          raw: `4 1 udp  2122260219 198.51.100.7 50004 typ host x-name ${LONG_NAME.toUpperCase()} generation 0`,
+        },
+        {
+          ...sampleCandidate(5, 'udp', '192.0.2.10', 50005, 'ipv4', 'global'),
+          raw: ['5', '1', 'udp', '2122260218', '192.0.2.10', '50005', 'typ', 'host', 'x-name', 'Labor-PC.Example'].join('\t'),
+        },
+      ]),
+      notes: 'xLABOR-PC.EXAMPLEy, allein: Labor-PC',
+      timeline: [{ tMs: 1, kind: 'note', detail: 'xLABOR-PC.EXAMPLEy' }],
+    });
+
+  it('der serialisierte Report enthält den Hostnamen in keiner Schreibweise', () => {
+    expect(JSON.stringify(redactReport(hostNameReport())).toLowerCase()).not.toContain(SHORT_NAME);
+  });
+
+  it('längste zuerst und ohne Rücksicht auf Groß-/Kleinschreibung: beide Namen bekommen verschiedene Tokens', () => {
+    const redacted = redactReport(hostNameReport());
+    expect(redacted.notes).toBe('xother/other#2y, allein: other/other#1');
+    expect(redacted.timeline[0]?.detail).toBe('xother/other#2y');
+  });
+
+  it('gilt auch in raw: als raddr-Wert, hinter doppeltem Leerzeichen und in einer Tab-getrennten Zeile', () => {
+    expect(raws(redactReport(hostNameReport())).slice(2)).toEqual([
+      'f3 1 udp 1686052607 ipv4/global#3 61000 typ srflx raddr other/other#2 rport 50002',
+      'f4 1 udp 2122260219 ipv4/global#4 50004 typ host x-name other/other#2 generation 0',
+      'f5 1 udp 2122260218 ipv4/global#5 50005 typ host x-name other/other#2',
+    ]);
+  });
+
+  it('sucht die bekannte Adresse WÖRTLICH: Regex-Zeichen darin passen auf nichts anderes und werfen nicht', () => {
+    const dotted = sampleReport({ gather: gatherOf([otherCandidate(1, 'pc.example', 50001)]), notes: 'pcXexample bleibt, pc.example nicht' });
+    expect(redactReport(dotted).notes).toBe('pcXexample bleibt, other/other#1 nicht');
+
+    const weird = sampleReport({
+      gather: gatherOf([otherCandidate(1, 'labor(pc', 50001), otherCandidate(2, 'a+b[c', 50002)]),
+      notes: 'erst labor(pc, dann a+b[c, aber nicht aab[c',
+    });
+    expect(() => redactReport(weird)).not.toThrow();
+    expect(redactReport(weird).notes).toBe('erst other/other#1, dann other/other#2, aber nicht aab[c');
+  });
+
+  it('ein Kandidat mit leerer Adresse macht aus dem Sicherheitsnetz keinen Alles-Ersetzer', () => {
+    const report = sampleReport({ gather: gatherOf([otherCandidate(1, '', 50001)]), notes: 'abc' });
+    expect(redactReport(report).notes).toBe('abc');
+  });
+
+  it('Familie und Scope gelangen nur von der Positivliste ins Token – „$&“ holt die Adresse nicht zurück (M5)', () => {
+    const forged = { ...otherCandidate(1, 'geheim-host', 50001), family: '$&', scope: 'geheim-scope' } as unknown as ParsedCandidate;
+    const redacted = redactReport(sampleReport({ gather: gatherOf([forged]), notes: 'Host war geheim-host heute' }));
+    expect(redacted.gather?.gathered[0]?.address).toBe('other/other#1');
+    expect(redacted.notes).toBe('Host war other/other#1 heute');
+    expect(JSON.stringify(redacted)).not.toContain('geheim-host');
+  });
+});
+
+describe('redactReport – Kandidatenzeile (raw)', () => {
+  it('eine Adresse außerhalb von Feld 5 und raddr überlebt den Schlussdurchlauf nicht', () => {
+    const report = sampleReport({
+      gather: gatherOf([
+        {
+          ...sampleCandidate(1001, 'udp', '192.0.2.10', 50001, 'ipv4', 'global'),
+          raw: '1001 1 udp 2122259222 192.0.2.10 50001 typ host x-ext 203.0.113.77 generation 0',
+        },
+      ]),
+    });
+    const redacted = redactReport(report);
+    expect(raws(redacted)).toEqual(['f1 1 udp 2122259222 ipv4/global#1 50001 typ host x-ext ipv4/other#2 generation 0']);
+    expect(JSON.stringify(redacted)).not.toContain('203.0.113.77');
+  });
+
+  it('verschobene Felder (doppeltes Leerzeichen, Tabs) lassen keine Adresse stehen', () => {
+    const report = sampleReport({
+      gather: gatherOf([
+        { ...sampleCandidate(1, 'udp', '192.0.2.10', 50001, 'ipv4', 'global'), raw: '1 1 udp  2122260222 192.0.2.10 50001 typ host' },
+        { ...sampleCandidate(2, 'udp', '198.51.100.7', 50002, 'ipv4', 'global'), raw: '2\t1\tudp\t\t2122260221\t198.51.100.7\t50002\ttyp\thost' },
+      ]),
+    });
+    const redacted = redactReport(report);
+    expect(raws(redacted)).toEqual(['f1 1 udp 2122260222 ipv4/global#1 50001 typ host', 'f2 1 udp 2122260221 ipv4/global#2 50002 typ host']);
+    const json = JSON.stringify(redacted);
+    expect(json).not.toContain('192.0.2.10');
+    expect(json).not.toContain('198.51.100.7');
+  });
+
+  it('ein raddr-Wert ist der Position nach eine Adresse: auch ein unbekannter Hostname wird ersetzt', () => {
+    const report = sampleReport({
+      gather: gatherOf([
+        {
+          ...sampleCandidate(1, 'udp', '203.0.113.9', 61000, 'ipv4', 'global'),
+          type: 'srflx',
+          raw: '1 1 udp 1686052607 203.0.113.9 61000 typ srflx raddr fremder-host.example rport 9',
+        },
+        {
+          ...sampleCandidate(2, 'udp', '203.0.113.9', 61001, 'ipv4', 'global'),
+          type: 'srflx',
+          raw: '2 1 udp 1686052606 203.0.113.9 61001 typ srflx raddr 198.51.100.200 rport 9',
+        },
+      ]),
+    });
+    const redacted = redactReport(report);
+    expect(raws(redacted)).toEqual([
+      'f1 1 udp 1686052607 ipv4/global#1 61000 typ srflx raddr other/other#2 rport 9',
+      'f2 1 udp 1686052606 ipv4/global#1 61001 typ srflx raddr ipv4/other#3 rport 9',
+    ]);
+    // Ein zweiter Durchlauf erkennt das Token im raddr-Wert und vergibt kein neues („other/other#…“ statt „ipv4/other#3“).
+    expect(redactReport(redacted)).toEqual(redacted);
+  });
+
+  it('ufrag verschwindet bei jeder Trennung, die der Parser akzeptiert (Tab, doppeltes Leerzeichen, NBSP)', () => {
+    const SECRET = 'Qx9Kufrag';
+    const line = (separator: string): string => `1 1 udp 2122260223 192.0.2.47 50000 typ host generation 0 ufrag${separator}${SECRET} network-id 1`;
+    const variants = [line(' '), line('  '), line('\t'), line('\u00A0'), line(' ').split(' ').join('\t')];
+    const report = sampleReport({
+      gather: gatherOf(variants.map((raw, index) => ({ ...sampleCandidate(index + 1, 'udp', '192.0.2.47', 50000, 'ipv4', 'global'), raw }))),
+    });
+    const redacted = redactReport(report);
+    expect(JSON.stringify(redacted)).not.toContain(SECRET);
+    // Kontrollzeile mit einfachen Leerzeichen: bis auf Ordinal, Token und ufrag-Wert unverändert.
+    expect(raws(redacted)[0]).toBe('f1 1 udp 2122260223 ipv4/global#1 50000 typ host generation 0 ufrag entfernt network-id 1');
+    expect(raws(redacted).map((raw) => raw.replace(/^f\d /, 'f1 '))).toEqual(Array.from({ length: 5 }, () => raws(redacted)[0]));
+  });
+
+  it('ersetzt die Foundation je Report durch ein Ordinal – im Feld und als erstes Token von raw, Präfix bleibt', () => {
+    const udp = sampleCandidate(7770001, 'udp', '192.0.2.10', 50001, 'ipv4', 'global');
+    const tcp = sampleCandidate(7770001, 'tcp', '192.0.2.10', 9, 'ipv4', 'global');
+    const second = sampleCandidate(7770002, 'udp', '198.51.100.7', 50002, 'ipv4', 'global');
+    const report = sampleReport({
+      gather: gatherOf([udp, { ...tcp, raw: `candidate:${tcp.raw}` }, { ...second, raw: `a=candidate:${second.raw}` }]),
+    });
+    const redacted = redactReport(report);
+    expect((redacted.gather?.gathered ?? []).map((candidate) => candidate.foundation)).toEqual(['f1', 'f1', 'f2']);
+    expect(raws(redacted).map((raw) => raw.split(' ')[0])).toEqual(['f1', 'candidate:f1', 'a=candidate:f2']);
+    expect(JSON.stringify(redacted)).not.toContain('777000');
+  });
+});
+
+describe('redactReport – Textformen', () => {
+  const notesOf = (notes: string): string => redactReport(sampleReport({ gather: null, notes })).notes;
+
+  it('Nicht-ASCII-Zeichen im .local-Namen: vom Namen bleibt nichts stehen', () => {
+    expect(notesOf('Rechner müllers-läptop.local im WLAN')).toBe('Rechner mdns/mdns#1 im WLAN');
+  });
+
+  it('keine Bereichsprüfung: auch ein Oktett über 255 wird redigiert', () => {
+    expect(notesOf('Gegenstelle 203.0.113.777 antwortet nicht')).toBe('Gegenstelle ipv4/other#1 antwortet nicht');
+  });
+
+  it('kurze „::“-Form mit angeklebter Ziffer wird redigiert', () => {
+    // Gruppen sind auf vier Hex-Zeichen begrenzt: die angeklebte „5“ darf außerhalb bleiben, die Adresse nicht.
+    const redacted = notesOf('Link 5fe80::1');
+    expect(redacted).not.toContain('fe80');
+    expect(redacted).not.toContain('::');
+    expect(redacted).toBe('Link 5ipv6/other#1');
+  });
+
+  it('jedes Hex-Wort mit zwei Doppelpunkten wird redigiert – Präfix mit drei Gruppen, Adresshälften, MAC-Adresse', () => {
+    expect(notesOf('Praefix 2001:db8:aaaa/48 x')).toBe('Praefix ipv6/other#1/48 x');
+    expect(notesOf('2001:db8:aaaa\n:bbbb:cccc:dddd:eeee:ffff')).toBe('ipv6/other#1\nipv6/other#2');
+    expect(notesOf('MAC aa:bb:cc:dd:ee:ff und aa:bb:cc')).toBe('MAC ipv6/other#1 und ipv6/other#2');
+  });
+
+  it('echte Uhrzeiten und Versionsnummern bleiben bytegleich', () => {
+    const text = 'Uhrzeit 16:24:25, 9:05:07 und 1:02:03, Version 1.2.3, Verhältnis 3.4 ms';
+    expect(notesOf(text)).toBe(text);
+  });
+
+  it('eine Uhrzeit mit angeklebter Zone ist keine Uhrzeit: dahinter bleibt keine Adressgruppe stehen', () => {
+    expect(notesOf('Verlust 5%2001:db8::77')).toBe('Verlust 5%ipv6/other#1');
+    const glued = notesOf('16:24:25%2001:db8::77');
+    expect(glued).not.toContain('2001');
+    expect(glued).not.toContain('db8');
+  });
+});
+
+/** Schlüsselpfade, die laut Positivliste bytegleich bleiben. */
+const EXEMPT_PATHS = new Set(['id', 'createdAt', 'buildId', 'environment.userAgent', 'environment.buildId']);
+
+/** Hängt an JEDEN nicht ausgenommenen String des Reports eine eigene Dokumentationsadresse. */
+function plantAddressInEveryString(report: unknown): { dirty: LabReport; planted: string[] } {
+  const planted: string[] = [];
+  const next = (): string => {
+    const n = planted.length + 1;
+    const address = n % 2 === 0 ? `198.51.100.${n}` : `2001:db8:${n.toString(16)}::${n.toString(16)}`;
+    planted.push(address);
+    return address;
+  };
+  const walk = (node: unknown, path: string): unknown => {
+    if (typeof node === 'string') return EXEMPT_PATHS.has(path) ? node : `${node} ${next()}`;
+    if (Array.isArray(node)) return node.map((child) => walk(child, `${path}[]`));
+    if (typeof node === 'object' && node !== null) {
+      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, walk(child, path === '' ? key : `${path}.${key}`)]));
+    }
+    return node;
+  };
+  return { dirty: walk(report, '') as LabReport, planted };
+}
+
+describe('redactReport – Positivliste: jeder String wird gesäubert', () => {
+  // Die ausgenommenen Felder tragen absichtlich etwas Adressförmiges: nur so zeigt „bytegleich“ die Ausnahme.
+  const EXEMPT_VALUES = { id: 'r-192.0.2.201', createdAt: '2026-09-21T10:00:00.000Z 192.0.2.202', buildId: 'abc12345-192.0.2.203' };
+  const ENVIRONMENT_BUILD_ID = 'abc12345-192.0.2.204';
+
+  const dirtyReport = (): { dirty: LabReport; planted: string[] } => {
+    const base = sampleReport({ ...EXEMPT_VALUES, failures: ['F2', 'F3'], valid: false, invalidReason: 'Grund' });
+    base.environment.buildId = ENVIRONMENT_BUILD_ID;
+    // Felder, die das Typmodell (noch) nicht kennt – auch ein gleichnamiges „id“ weiter unten ist NICHT ausgenommen.
+    const extra: unknown = JSON.parse('{"id":"tief","userAgent":"tief","liste":["a",["b",{"c":"d"}]],"__proto__":"e"}');
+    return plantAddressInEveryString({ ...base, lockTest: extra, spaeter: { localSdp: 'c=IN IP4' } });
+  };
+
+  it('die Fixture erreicht wirklich jedes Feld, das der Auftrag nennt', () => {
+    const { dirty, planted } = dirtyReport();
+    expect(planted.length).toBeGreaterThan(60);
+    for (const text of [dirty.hello?.remoteBuildId, dirty.timeline[0]?.kind, dirty.cell.device, dirty.invalidReason, dirty.notes]) {
+      expect(planted.some((address) => text?.endsWith(` ${address}`))).toBe(true);
+    }
+  });
+
+  it('keine der Adressen überlebt – weder im JSON noch im Textbericht', () => {
+    const { dirty, planted } = dirtyReport();
+    const redacted = redactReport(dirty);
+    const json = JSON.stringify(redacted);
+    const text = reportToText(redacted);
+    const survivors = planted.filter((address) => json.includes(address) || text.includes(address));
+    expect(survivors).toEqual([]);
+  });
+
+  it('id, createdAt, buildId, environment.userAgent und environment.buildId bleiben bytegleich', () => {
+    const redacted = redactReport(dirtyReport().dirty);
+    expect({ id: redacted.id, createdAt: redacted.createdAt, buildId: redacted.buildId }).toEqual(EXEMPT_VALUES);
+    expect(redacted.environment.buildId).toBe(ENVIRONMENT_BUILD_ID);
+    expect(redacted.environment.userAgent).toBe(sampleReport().environment.userAgent);
+    expect(redacted.environment.userAgent).toContain('Chrome/140.0.0.0');
+  });
+
+  it('Schlüssel, Zahlen und Wahrheitswerte bleiben unangetastet', () => {
+    const { dirty } = dirtyReport();
+    const redacted = redactReport(dirty);
+    const skeleton = (value: unknown): unknown => JSON.parse(JSON.stringify(value, (_key, child: unknown) => (typeof child === 'string' ? '' : child)));
+    expect(skeleton(redacted)).toEqual(skeleton(dirty));
+  });
+
+  it('ist idempotent: ein zweiter Durchlauf ändert nichts mehr', () => {
+    for (const report of [dirtyReport().dirty, sampleReport()]) {
+      const once = redactReport(report);
+      expect(redactReport(once)).toEqual(once);
+    }
+  });
+
+  it('ist auch dann idempotent, wenn hinter einem Token Ziffern kleben', () => {
+    const mdns = `${['44444444', '4444', '4444', '4444', '444444444444'].join('-')}.local`;
+    const once = redactReport(sampleReport({ gather: null, notes: `${mdns}.0.2.10 und ${mdns}:aa:bb` }));
+    expect(once.notes).not.toContain('.0.2.10');
+    expect(redactReport(once)).toEqual(once);
+  });
+
+  it('verändert die Eingabe nicht (tief eingefroren)', () => {
+    const frozen = deepFreeze(dirtyReport().dirty);
+    redactReport(frozen);
+    expect(frozen).toEqual(dirtyReport().dirty);
+  });
+});
+
+describe('redactReport – Payload-Text und SDP-Geheimnisse', () => {
+  const base64Url = (text: string): string => btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  // Modus „p“ (unkomprimiert): der Rumpf ist base64url des kompakten JSON – frei erfundene Werte, Dokumentationsadressen.
+  const compactJson = JSON.stringify({
+    v: 1,
+    u: 'abcd',
+    w: 'erfundenespasswort000000',
+    c: ['1 1 udp 2122260223 192.0.2.10 50000 typ host', '2 1 udp 2122260222 2001:db8:aaaa:bbbb:cccc:dddd:eeee:ffff 50001 typ host'],
+  });
+  const body = base64Url(compactJson);
+  const payload = `MB1.p.${body}`;
+  // Umbruchbreite so gewählt, dass die letzte Zeile KÜRZER als 16 Zeichen ist – der übliche Fall beim Umbrechen.
+  const width = Array.from({ length: 40 }, (_, index) => 64 - index).find((w) => payload.length % w >= 8 && payload.length % w < 16) ?? 64;
+  const lines = payload.match(new RegExp(`.{1,${width}}`, 'g')) ?? [];
+  const chunks = (body.match(/.{1,24}/g) ?? []).filter((chunk) => chunk.length >= 12);
+
+  it('die Fixture ist ein mehrzeiliger Payload mit kurzer Schlusszeile', () => {
+    expect(lines.length).toBeGreaterThan(3);
+    expect(chunks.length).toBeGreaterThan(8);
+    expect(lines.at(-1)?.length).toBeGreaterThanOrEqual(8);
+    expect(lines.at(-1)?.length).toBeLessThan(16);
+  });
+
+  it('entfernt den eigenen Payload-Text – am Stück, angeklebt und mit Zeilenumbrüchen', () => {
+    const report = sampleReport({
+      notes: `Code vom Host: ${payload} Ende, angeklebt: x${payload.toLowerCase()}`,
+      timeline: [{ tMs: 1, kind: 'note', detail: `${lines.join('\n')}\n\nDanach ging nichts mehr` }],
+    });
+    const redacted = redactReport(report);
+    const json = JSON.stringify(redacted);
+    expect(json.toLowerCase()).not.toContain('mb1.');
+    for (const chunk of chunks) expect(json.toLowerCase()).not.toContain(chunk.toLowerCase());
+    for (const line of lines.slice(1)) expect(json).not.toContain(line);
+    expect(redacted.notes).toBe('Code vom Host: payload/entfernt Ende, angeklebt: xpayload/entfernt');
+    expect(redacted.timeline[0]?.detail).toBe('payload/entfernt\n\nDanach ging nichts mehr');
+  });
+
+  it('ein Payload ohne Umbruch reißt das folgende Wort nicht mit', () => {
+    expect(redactReport(sampleReport({ notes: `${payload}\nDanach` })).notes).toBe('payload/entfernt\nDanach');
+  });
+
+  it('entfernt ufrag, pwd und Fingerprint aus eingefügten SDP-Zeilen', () => {
+    const fingerprint = Array.from({ length: 32 }, () => 'AB').join(':');
+    const sdp = ['a=ice-ufrag:abcd', 'a=ice-pwd:erfundenespasswort000000', `a=fingerprint:sha-256 ${fingerprint}`, 'a=setup:actpass'];
+    for (const lineBreak of ['\n', '\r\n']) {
+      const redacted = redactReport(sampleReport({ gather: null, notes: sdp.join(lineBreak) }));
+      expect(redacted.notes).toBe(['a=ice-ufrag:entfernt', 'a=ice-pwd:entfernt', 'a=fingerprint:entfernt', 'a=setup:actpass'].join(lineBreak));
+    }
+  });
+});
+
+describe('redactReport – unsichtbare Zeichen und Breitformen', () => {
+  const ZWSP = '\u200B';
+  const ZWJ = '\u200D';
+  const SOFT_HYPHEN = '\u00AD';
+  /** ASCII-Ziffern, Punkt und Doppelpunkt als Fullwidth-Formen (U+FF10…, U+FF0E, U+FF1A). */
+  const fullwidth = (text: string): string =>
+    [...text].map((char) => (/[0-9.:]/.test(char) ? String.fromCodePoint(char.charCodeAt(0) + 0xfee0) : char)).join('');
+
+  it('die Fixtures enthalten die Adresse wirklich nicht mehr im Klartext', () => {
+    expect(fullwidth('203.0.113.77')).not.toMatch(/[0-9.]/);
+    expect(`203.0.${ZWSP}113.77`).not.toContain('203.0.113.77');
+  });
+
+  it('redigiert IPv4 und IPv6 trotz ZWSP, weichem Trennstrich und Fullwidth-Ziffern', () => {
+    const notesOf = (notes: string): string => redactReport(sampleReport({ gather: null, notes })).notes;
+    expect(notesOf(`A 203.0.${ZWSP}113.77 B`)).toBe('A ipv4/other#1 B');
+    expect(notesOf(`A 203.0.${SOFT_HYPHEN}113.77 B`)).toBe('A ipv4/other#1 B');
+    expect(notesOf(`A ${fullwidth('203.0.113.77')} B`)).toBe('A ipv4/other#1 B');
+    expect(notesOf(`A 2001:db8:${ZWSP}:77 B`)).toBe('A ipv6/other#1 B');
+    expect(notesOf(`A 2001:${SOFT_HYPHEN}db8::77 B`)).toBe('A ipv6/other#1 B');
+    expect(notesOf(`A ${fullwidth('2001:db8::77')} B`)).toBe('A ipv6/other#1 B');
+  });
+
+  it('eine bekannte Adresse bekommt auch mit unsichtbarem Zeichen ihr Token – im Text wie in gathered', () => {
+    expect(redactReport(sampleReport({ notes: `gesehen: 192.0.${ZWJ}2.10` })).notes).toBe('gesehen: ipv4/global#1');
+    const hidden = `labor${SOFT_HYPHEN}-pc.example`;
+    const report = sampleReport({ gather: gatherOf([otherCandidate(1, hidden, 50001)]), notes: `erst ${hidden}, dann LABOR-PC.EXAMPLE` });
+    const redacted = redactReport(report);
+    expect(redacted.notes).toBe('erst other/other#1, dann other/other#1');
+    expect(JSON.stringify(redacted).toLowerCase()).not.toContain('labor');
+  });
+});
+
+describe('redactReport – lange Läufe ohne Leerraum', () => {
+  const SIZE = 200_000;
+  const run = (unit: string): string => unit.repeat(Math.ceil(SIZE / unit.length));
+  // Ziffern+Punkte, Hex+Doppelpunkte, base64-artig, „.loca“-Beinahe-Treffer, reines Hex.
+  const UNITS = ['1.', 'a:', 'QUJDREVGR0g0NTY3', 'x.loca', 'abcdef0123456789'];
+
+  // Bewusst OHNE Adresse im Lauf: ein „.local“ HINTER dem Lauf ließe ein unbegrenztes mDNS-Muster den
+  // ganzen Lauf in EINEM Treffer schlucken – dann wäre gerade der quadratische Fall nicht mehr im Test.
+  it('fünf reine 200-kB-Läufe sind innerhalb des normalen Zeitlimits fertig', () => {
+    for (const unit of UNITS) {
+      const notes = run(unit);
+      expect(notes.length).toBeGreaterThanOrEqual(SIZE);
+      expect(() => redactReport(sampleReport({ gather: null, notes }))).not.toThrow();
+    }
+  });
+
+  // Ein unbegrenztes IPv6-Wortmuster ist NUR auf reinem Hex/Ziffern quadratisch und bliebe bei 200 kB
+  // (gemessen ~15 s) unter dem Zeitlimit von 30 s. Erst dieser größere Lauf macht die Grenze sichtbar.
+  it('ein reiner Hex-Lauf von 800 kB ist innerhalb des normalen Zeitlimits fertig', () => {
+    const notes = 'abcdef0123456789'.repeat(50_000);
+    expect(notes.length).toBe(800_000);
+    expect(redactReport(sampleReport({ gather: null, notes })).notes).toBe(notes);
+  });
+
+  it('Adressen VOR einem 200-kB-Lauf sind trotzdem weg', () => {
+    const mdns = `${['55555555', '5555', '5555', '5555', '555555555555'].join('-')}.local`;
+    for (const unit of UNITS) {
+      const notes = `${mdns}192.0.2.55 2001:db8::77 ${run(unit)}`;
+      const json = JSON.stringify(redactReport(sampleReport({ gather: null, notes })));
+      expect(json).not.toContain('192.0.2.55');
+      expect(json).not.toContain(mdns);
+      expect(json).not.toContain('2001:db8::77');
+    }
   });
 });
 
@@ -356,6 +788,11 @@ function memoryStorage(capacity = Number.POSITIVE_INFINITY): FakeStorage {
 }
 
 const ids = (reports: readonly LabReport[]): string[] => reports.map((report) => report.id);
+
+/** Flache Kopie ohne den genannten Schlüssel. */
+function without(value: object, key: string): unknown {
+  return Object.fromEntries(Object.entries(value).filter(([name]) => name !== key));
+}
 
 describe('createReportStore', () => {
   it('benutzt den vereinbarten Schlüssel', () => {
@@ -502,8 +939,112 @@ describe('createReportStore – verschachtelte Report-Form', () => {
         environment: { ...sampleReport().environment, features: { ...sampleReport().environment.features, barcodeFormats: 'nope' } },
       },
     },
+    // Re-Review S9: jede dieser Zeilen bricht genau EINE Klausel.
+    {
+      label: 'gather.gathered-Eintrag ohne raw',
+      report: { ...sampleReport({ id: 'm' }), gather: { durationMs: 1, timedOut: false, gathered: [without(sampleCandidate(1, 'udp', '192.0.2.77', 9, 'ipv4', 'global'), 'raw')], transmitted: 1 } },
+    },
+    {
+      label: 'gather.gathered-Eintrag ohne address',
+      report: { ...sampleReport({ id: 'n' }), gather: { durationMs: 1, timedOut: false, gathered: [without(sampleCandidate(1, 'udp', '192.0.2.77', 9, 'ipv4', 'global'), 'address')], transmitted: 1 } },
+    },
+    { label: 'ping ohne events', report: { ...sampleReport({ id: 'o' }), ping: { state: null } } },
+    { label: 'ping ist null', report: { ...sampleReport({ id: 'p' }), ping: null } },
+    { label: 'permissions ist null', report: { ...sampleReport({ id: 'q' }), permissions: null } },
+    { label: 'failures ist kein Array', report: { ...sampleReport({ id: 'r' }), failures: 'F1' } },
+    { label: 'timeline ist kein Array', report: { ...sampleReport({ id: 's' }), timeline: 'x' } },
+    { label: 'cell ist ein Array', report: { ...sampleReport({ id: 't' }), cell: [] } },
+    { label: 'hello ist ein Array', report: { ...sampleReport({ id: 'u' }), hello: [] } },
+    { label: 'protoV ist ein Objekt', report: { ...sampleReport({ id: 'v' }), protoV: { toString: 1 } } },
+    { label: 'cell.role ist ein Objekt', report: { ...sampleReport({ id: 'w' }), cell: { ...sampleReport().cell, role: { toString: 1, valueOf: 1 } } } },
   ];
   const validReport = sampleReport({ id: 'gut' });
+
+  type Path = ReadonlyArray<string | number>;
+  type Change = { set: unknown } | 'fehlt';
+
+  /** Beispiel-Report als reines JSON, an GENAU einer Stelle verändert. */
+  function changedAt(path: Path, change: Change): unknown {
+    const report: unknown = JSON.parse(JSON.stringify(sampleReport({ id: 'kaputt' })));
+    let node = report as Record<string, unknown>;
+    for (const key of path.slice(0, -1)) node = node[String(key)] as Record<string, unknown>;
+    const last = String(path[path.length - 1]);
+    if (change === 'fehlt') delete node[last];
+    else node[last] = change.set;
+    return report;
+  }
+
+  const FIRST_CANDIDATE: Path = ['gather', 'gathered', 0];
+  const FIRST_EVENT: Path = ['timeline', 0];
+  const PING_FIELDS = ['sent', 'received', 'lossPct', 'minMs', 'medianMs', 'p95Ms', 'maxMs', 'outOfOrder'];
+  const FEATURE_FLAGS = ['rtc', 'compressionStream', 'wakeLock', 'barcodeDetector', 'storagePersist', 'shareText', 'clipboardWrite'];
+  const PAIR_STRINGS = ['localType', 'localProtocol', 'localFamily', 'localScope', 'remoteType', 'remoteFamily', 'remoteScope'];
+
+  // Jede Klausel von looksLikeReport: Pfad plus die Werte, die dort NICHT stehen dürfen.
+  const CLAUSES: Array<{ kind: string; paths: Path[]; wrong: unknown[] }> = [
+    {
+      kind: 'Zeichenkette',
+      paths: [
+        ['id'], ['createdAt'], ['buildId'], ['notes'],
+        ...['role', 'hotspotOwner', 'camera', 'path', 'device'].map((key) => ['cell', key]),
+        ...['userAgent', 'engine', 'displayMode', 'buildId'].map((key) => ['environment', key]),
+        ...['camera', 'localNetwork', 'loopbackNetwork'].map((key) => ['permissions', key]),
+        ...['address', 'raw', 'foundation', 'family', 'scope'].map((key) => [...FIRST_CANDIDATE, key]),
+        ...['kind', 'detail'].map((key) => [...FIRST_EVENT, key]),
+        ...PAIR_STRINGS.map((key) => ['selectedPair', key]),
+        ['hello', 'remoteBuildId'],
+      ],
+      wrong: [42, null, true, { a: 1 }, { toString: 1 }, ['x']],
+    },
+    {
+      kind: 'Zahl',
+      paths: [
+        ['protoV'], ['gather', 'durationMs'], ['gather', 'transmitted'], [...FIRST_EVENT, 'tMs'], ['hello', 'remoteProtoV'],
+        ...['sdpBytes', 'minimisedBytes', 'packedBytes', 'textChars'].map((key) => ['payloadSizes', key]),
+        ...PING_FIELDS.map((key) => ['ping', 'state', key]),
+        ...PING_FIELDS.map((key) => ['ping', 'events', key]),
+      ],
+      wrong: ['7', null, true, { a: 1 }, { valueOf: 1 }, [1]],
+    },
+    {
+      kind: 'Wahrheitswert',
+      paths: [
+        ['valid'], ['gumCalledThisSession'], ['gather', 'timedOut'], ['payloadSizes', 'compressed'], ['hello', 'versionMatch'],
+        ...['secureContext', 'online', 'swControlled'].map((key) => ['environment', key]),
+        ...FEATURE_FLAGS.map((key) => ['environment', 'features', key]),
+      ],
+      wrong: ['ja', 0, null, { a: 1 }, [true]],
+    },
+    { kind: 'Zeichenkette oder null', paths: [['invalidReason']], wrong: [42, true, { a: 1 }, ['x']] },
+    { kind: 'Zahl oder null', paths: [['sctpMaxMessageSize'], ['selectedPair', 'currentRttMs']], wrong: ['7', true, { a: 1 }, [1]] },
+    {
+      kind: 'Objekt',
+      paths: [['cell'], ['environment'], ['environment', 'features'], ['permissions'], ['ping'], FIRST_CANDIDATE, FIRST_EVENT],
+      wrong: [null, 'x', 42, true, [], [{}]],
+    },
+    {
+      kind: 'Objekt oder null',
+      paths: [['gather'], ['payloadSizes'], ['selectedPair'], ['hello'], ['ping', 'state'], ['ping', 'events']],
+      wrong: ['x', 42, true, [], {}],
+    },
+    {
+      kind: 'Liste von Zeichenketten',
+      paths: [['failures'], ['environment', 'features', 'barcodeFormats']],
+      wrong: ['F1', 42, null, {}, [42], [null], [{}], ['F1', { toString: 1 }]],
+    },
+    { kind: 'Liste von Objekten', paths: [['timeline'], ['gather', 'gathered']], wrong: ['x', 42, null, {}, ['x'], [null], [[]]] },
+  ];
+  const clauseRows: Array<{ label: string; report: unknown }> = CLAUSES.flatMap(({ kind, paths, wrong }) =>
+    paths.flatMap((path) => [
+      { label: `${path.join('.')} fehlt (${kind})`, report: changedAt(path, 'fehlt') },
+      ...wrong.map((value) => ({ label: `${path.join('.')} = ${JSON.stringify(value)} (${kind})`, report: changedAt(path, { set: value }) })),
+    ]),
+  );
+
+  /** Gespeicherter Text eines Reports, dessen `lockTest` `depth` Ebenen tief verschachtelt ist. */
+  const nestedEntry = (id: string, depth: number): string =>
+    JSON.stringify(sampleReport({ id })).replace('"lockTest":null', `"lockTest":${'['.repeat(depth)}${']'.repeat(depth)}`);
+  const storedList = (entries: readonly string[]): string => `[${entries.join(',')}]`;
 
   it('filtert Einträge mit richtigen Top-Level-Feldern, aber falscher verschachtelter Form aus', () => {
     const storage = memoryStorage();
@@ -512,15 +1053,83 @@ describe('createReportStore – verschachtelte Report-Form', () => {
     expect(ids(store.list())).toEqual(['gut']);
   });
 
-  it('für alles, was list() zurückgibt, werfen reportToText, reportsToJson und redactReport nicht', () => {
+  it('jede Klausel der Formprüfung für sich: ein einzelner falscher oder fehlender Wert sortiert den Eintrag aus', () => {
+    expect(clauseRows.length).toBeGreaterThan(500);
     const storage = memoryStorage();
-    storage.data.set(REPORT_STORE_KEY, JSON.stringify([validReport, ...malformed.map((entry) => entry.report)]));
+    const store = createReportStore(storage);
+    const accepted: string[] = [];
+    for (const { label, report } of [...malformed, ...clauseRows]) {
+      storage.data.set(REPORT_STORE_KEY, JSON.stringify([report]));
+      if (store.list().length > 0) accepted.push(label);
+    }
+    expect(accepted).toEqual([]);
+  });
+
+  it('die Formprüfung ist nicht überstreng: leere Abschnitte, ein anonymisierter Report und ein mäßig verschachteltes lockTest bleiben', () => {
+    const empty = sampleReport({
+      id: 'leer',
+      gather: null,
+      payloadSizes: null,
+      selectedPair: null,
+      sctpMaxMessageSize: null,
+      hello: null,
+      ping: { state: null, events: null },
+      timeline: [],
+    });
+    const pair = sampleReport().selectedPair;
+    const noRtt = sampleReport({ id: 'ohne-rtt', selectedPair: pair === null ? null : { ...pair, currentRttMs: null }, valid: false, invalidReason: 'Grund' });
+    const storage = memoryStorage();
+    storage.data.set(
+      REPORT_STORE_KEY,
+      storedList([JSON.stringify(empty), JSON.stringify(noRtt), JSON.stringify(redactReport(sampleReport({ id: 'anonym' }))), nestedEntry('flach', 4)]),
+    );
+    expect(ids(createReportStore(storage).list())).toEqual(['leer', 'ohne-rtt', 'anonym', 'flach']);
+  });
+
+  it('ein zu tief verschachtelter Eintrag wird aussortiert – knapp über der Grenze wie bei 5000 Ebenen', () => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, storedList([nestedEntry('tief', 9), nestedEntry('sehr-tief', 5000), JSON.stringify(validReport)]));
+    expect(ids(createReportStore(storage).list())).toEqual(['gut']);
+  });
+
+  it('für alles, was list() zurückgibt, werfen reportToText, reportsToJson und redactReport nicht – und der Text enthält keinen Datenmüll', () => {
+    const storage = memoryStorage();
+    storage.data.set(
+      REPORT_STORE_KEY,
+      storedList([JSON.stringify(validReport), nestedEntry('sehr-tief', 5000), ...[...malformed, ...clauseRows].map((entry) => JSON.stringify(entry.report))]),
+    );
     const store = createReportStore(storage);
     const listed = store.list();
+    expect(listed.length).toBeGreaterThan(0);
     for (const report of listed) {
-      expect(() => reportToText(report)).not.toThrow();
       expect(() => redactReport(report)).not.toThrow();
+      for (const text of [reportToText(report), reportToText(redactReport(report))]) {
+        for (const garbage of ['undefined', 'NaN', '[object Object]']) expect(text).not.toContain(garbage);
+      }
     }
     expect(() => reportsToJson(listed)).not.toThrow();
+  });
+
+  it('ein vergifteter Eintrag im Speicher kostet beim nächsten add() keinen gesunden Report (M12)', () => {
+    const healthy = Array.from({ length: 10 }, (_, index) => `g${index + 1}`);
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, storedList([nestedEntry('gift', 5000), ...healthy.map((id) => JSON.stringify(sampleReport({ id })))]));
+    const store = createReportStore(storage);
+
+    store.add(sampleReport({ id: 'neu' }));
+
+    expect(ids(store.list())).toEqual(['neu', ...healthy]);
+    expect(storage.data.get(REPORT_STORE_KEY)).not.toContain('"gift"');
+  });
+
+  it('add() wirft auch dann nicht, wenn sich der neue Report nicht serialisieren lässt – der Verlauf bleibt', () => {
+    const storage = memoryStorage();
+    const store = createReportStore(storage, 3);
+    for (const id of ['a', 'b', 'c']) store.add(sampleReport({ id }));
+    const unserialisable = { ...sampleReport({ id: 'zyklus' }), lockTest: 1n } as unknown as LabReport;
+
+    expect(() => store.add(unserialisable)).not.toThrow();
+
+    expect(ids(store.list())).toEqual(['c', 'b', 'a']);
   });
 });
