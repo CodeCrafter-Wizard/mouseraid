@@ -1,0 +1,29 @@
+# Abhängigkeiten & Build
+node_modules/
+dist/
+dev-dist/
+coverage/
+*.tsbuildinfo
+
+# Test-Artefakte
+test-results/
+playwright-report/
+blob-report/
+.playwright-mcp/
+
+# Lokale Referenzbilder (Look-Vorgaben, nicht lizenzgeprüft)
+docs/refs/
+
+# Heruntergeladene Roh-Assets vor der Pipeline
+assets/raw/
+
+# Umgebung & Editor
+.env
+.env.*
+!.env.example
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.log
+.DS_Store
+Thumbs.db
