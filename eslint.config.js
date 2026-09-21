@@ -80,4 +80,9 @@ export default tseslint.config(
     files: ['*.config.{js,ts}', 'scripts/**/*.mjs', 'tests/node/**/*.ts', 'tests/e2e/**/*.ts'],
     languageOptions: { globals: globals.node },
   },
+  {
+    // adb/CDP-Spike: läuft in Node, aber page.evaluate() greift auf das Handy-DOM zu.
+    files: ['scripts/spike-adb-cdp.mjs'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
 );
