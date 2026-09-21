@@ -44,6 +44,41 @@ function normalize(relPath) {
   return out.join('/');
 }
 
+// Jede gequotete Zeichenkette, die auf ".js" endet – bewusst grob, denn Vite/Rolldown erzeugen
+// Referenzen in vielen Formen: `new URL("./x.js", import.meta.url)`, __vite__mapDeps-Preload-
+// Listen (bare, dist-root-relative Pfade), absolute `/base/…`-Importe usw. Ein Treffer wird unten
+// nur behalten, wenn er sich auf eine tatsächlich existierende dist-Datei auflösen lässt (siehe
+// resolveCandidates). Über-Erkennung ist hier gewollt: ein False Positive fällt in der Fehlerliste
+// auf und lässt sich verfeinern – ein False Negative (eine im Lab-Bundle übersehene Babylon-Datei
+// oder ein unterschätztes Gzip-Budget) bliebe dagegen unsichtbar.
+const JS_STRING_LITERAL = /(["'`])((?:(?!\1)[^\\])*\.js)\1/g;
+
+/**
+ * Lesarten, die für eine im Code gefundene ".js"-Zeichenkette infrage kommen. Der Aufrufer
+ * entscheidet per Existenzprüfung, welche (falls überhaupt eine) tatsächlich zutrifft.
+ * @param {string} raw
+ * @param {string} currentDir
+ * @param {string} base
+ * @returns {string[]}
+ */
+function resolveCandidates(raw, currentDir, base) {
+  if (raw.includes('://')) return [];
+  if (raw.startsWith(base)) return [normalize(raw.slice(base.length))];
+  if (raw.startsWith('./') || raw.startsWith('../')) return [normalize(currentDir + raw)];
+  if (raw.startsWith('/')) return [normalize(raw.slice(1))];
+  // Nackter Specifier: dist-root-relativ (z. B. __vite__mapDeps-Listen) oder relativ zur ladenden
+  // Datei – beide Lesarten probieren, die Existenzprüfung entscheidet.
+  return [normalize(raw), normalize(currentDir + raw)];
+}
+
+// sw.js registriert sich selbst per URL (`new Workbox('/base/sw.js')`) statt per ES-Modul-Import –
+// und sein eigenes Precache-Manifest nennt jede Projekt-JS-Datei als Zeichenkette. Behandelte man
+// es als Graph-Knoten, würde die Existenzprüfung oben jede dieser Zeichenketten bestätigen und
+// beide Seiten "importierten" transitiv den kompletten Build – die Grenze zwischen Spiel- und
+// Lab-Bundle (der eigentliche Zweck dieses Graphen) wäre dahin. Der von sw.js geladene Workbox-
+// Runtime-Chunk (`workbox-<hash>.js`) ist aus demselben Grund kein echter Seiten-Import.
+const NOT_A_PAGE_MODULE = /^(?:sw\.js|workbox-[\w-]+\.js)$/;
+
 /**
  * Alle JS-Dateien, die eine HTML-Seite (transitiv) lädt – relativ zu dist/.
  * @param {string} entryHtml
@@ -53,8 +88,8 @@ function normalize(relPath) {
  */
 export function collectJsGraph(entryHtml, base, readText) {
   const queue = [];
-  for (const match of entryHtml.matchAll(/(?:src|href)="([^"]+\.js)"/g)) {
-    const url = match[1];
+  for (const match of entryHtml.matchAll(/(?:src|href)=(["'])([^"']+\.js)\1/g)) {
+    const url = match[2];
     queue.push(normalize(url.startsWith(base) ? url.slice(base.length) : url.replace(/^\//, '')));
   }
   const seen = new Set();
@@ -64,8 +99,12 @@ export function collectJsGraph(entryHtml, base, readText) {
     seen.add(current);
     const text = readText(current);
     if (text === null) continue;
-    for (const match of text.matchAll(/(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"']+\.js)["']/g)) {
-      queue.push(normalize(dirOf(current) + match[1]));
+    const currentDir = dirOf(current);
+    for (const match of text.matchAll(JS_STRING_LITERAL)) {
+      for (const candidate of resolveCandidates(match[2], currentDir, base)) {
+        if (NOT_A_PAGE_MODULE.test(candidate)) continue;
+        if (!seen.has(candidate) && readText(candidate) !== null) queue.push(candidate);
+      }
     }
   }
   return [...seen];
@@ -90,4 +129,16 @@ export function isPrecacheCandidate(relPath) {
  */
 export function findMissingPrecache(swText, relPaths) {
   return relPaths.filter((rel) => !swText.includes(`"${rel}"`));
+}
+
+/** Dateien, die in jedem gültigen Build vorhanden sein müssen – fehlt eine, degradieren andere Prüfungen (Lab-Graph, Precache …) unbemerkt zum Leerlauf statt einen Fehler zu zeigen. */
+export const REQUIRED_FILES = ['index.html', 'lab.html', 'sw.js', 'manifest.webmanifest', 'version.json'];
+
+/**
+ * @param {string[]} relPaths
+ * @returns {string[]} fehlende Pflichtdateien
+ */
+export function findMissingRequiredFiles(relPaths) {
+  const present = new Set(relPaths);
+  return REQUIRED_FILES.filter((file) => !present.has(file));
 }

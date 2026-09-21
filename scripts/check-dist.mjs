@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { collectJsGraph, findForbiddenSignatures, findMissingPrecache, isPrecacheCandidate } from './lib/distChecks.mjs';
+import { collectJsGraph, findForbiddenSignatures, findMissingPrecache, findMissingRequiredFiles, isPrecacheCandidate } from './lib/distChecks.mjs';
 
 const DIST = 'dist';
 const BUDGET = { gameJsGzip: 900 * 1024, labJsGzip: 150 * 1024, precacheTotal: 80 * 1024 * 1024 };
@@ -26,6 +26,11 @@ const kb = (bytes) => `${(bytes / 1024).toFixed(1)} kB`;
 
 const errors = [];
 const { base, buildId } = JSON.parse(read('version.json') ?? '{"base":"/","buildId":"?"}');
+
+// sw.js bekommt weiter unten eine eigene, aussagekräftigere Meldung – hier nicht doppelt melden.
+for (const missing of findMissingRequiredFiles(files).filter((file) => file !== 'sw.js')) {
+  errors.push(`${missing}: fehlt im Build`);
+}
 
 for (const rel of files.filter((f) => /\.(js|css|html)$/.test(f))) {
   errors.push(...findForbiddenSignatures(rel, read(rel) ?? ''));
