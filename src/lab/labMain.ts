@@ -3,6 +3,7 @@ import { installErrorPanel } from '../platform/errorPanel';
 import { initPwa } from '../platform/pwa';
 import { mountShell, type ShellHandles } from '../ui/shell';
 import { S } from '../ui/strings';
+import { installLabHook } from './labHook';
 
 const root = document.getElementById('app');
 if (root === null) throw new Error('#app fehlt');
@@ -25,3 +26,6 @@ shell = mountShell(root, {
   ],
 });
 initPwa(shell);
+
+// Test-Haken für tests/e2e/lab-rtc.spec.ts: die Netz-Schicht ohne UI. Nur mit ?hook=1, nie im Normalbetrieb.
+if (new URLSearchParams(location.search).get('hook') === '1') installLabHook();
