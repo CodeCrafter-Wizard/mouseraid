@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { fromBase64Url, toBase64Url } from '../../../src/net/compress';
+import { deflateRaw, fromBase64Url, toBase64Url } from '../../../src/net/compress';
 import {
   CODEC_VERSION,
   CodecError,
   decodeDesc,
   encodeDesc,
+  MAX_PAYLOAD_TEXT_CHARS,
   minimise,
   rebuildSdp,
   type CodecErrorCode,
@@ -145,6 +146,13 @@ describe('minimise', () => {
     ['mit unbekanntem setup', chromiumOffer.replace('a=setup:actpass', 'a=setup:holdconn')],
     ['mit kaputtem sctp-port', chromiumOffer.replace('a=sctp-port:5000', 'a=sctp-port:abc')],
     ['leer', ''],
+    // Finding 2 (Review, Fix round 1): ein lokal gültiger, aber außerhalb des Vertrags liegender Wert
+    // würde sonst eine Beschreibung erzeugen, die die Gegenseite in decodeDesc ablehnt.
+    ['mit sctp-port über 65535', chromiumOffer.replace('a=sctp-port:5000', 'a=sctp-port:70000')],
+    [
+      'mit max-message-size über Number.MAX_SAFE_INTEGER',
+      chromiumOffer.replace('a=max-message-size:262144', 'a=max-message-size:9999999999999999'),
+    ],
   ])('wirft CodecError("sdp") %s', async (_label, sdp) => {
     expect(await codeOf(() => minimise(sdp, META))).toBe('sdp');
   });
@@ -294,6 +302,7 @@ describe('decodeDesc', () => {
     ['shape', 'Kandidaten kein Array', plainPayload(compact({ c: 'x' }))],
     ['shape', 'Kandidat keine Zeichenkette', plainPayload(compact({ c: ['ok', 5] }))],
     ['shape', 'Zeilenumbruch im Kandidaten (SDP-Injektion)', plainPayload(compact({ c: ['1 1 udp 1 192.0.2.1 9 typ host\r\na=setup:active'] }))],
+    ['shape', 'Zeilenumbruch im ufrag (SDP-Injektion)', plainPayload(compact({ u: 'a\nb' }))],
     ['shape', 'Zeilenumbruch im Passwort', plainPayload(compact({ w: 'a\nb' }))],
     ['codec-version', 'neuere Codec-Version', plainPayload(compact({ v: CODEC_VERSION + 1 }))],
     ['codec-version', 'neuere Codec-Version mit fremder Form', plainPayload({ v: CODEC_VERSION + 1 })],
@@ -313,5 +322,35 @@ describe('decodeDesc', () => {
     expect(error.name).toBe('CodecError');
     expect(error.code).toBe('prefix');
     expect(error.message).toBe('Test');
+  });
+
+  // Finding 1 (Review, Fix round 1): ein absichtlich riesiger eingefügter Text – oder ein kleiner
+  // Text, der zu einer riesigen entpackten Größe aufbläht (deflate-raw kann bis zu ~1000:1) – darf
+  // den Tab nicht hängen lassen. Beide Grenzen greifen VOR JSON.parse.
+  it('lehnt einen eingefügten Text über MAX_PAYLOAD_TEXT_CHARS ab, bevor Präfix/base64 geprüft werden', async () => {
+    const text = `MB1.p.${'A'.repeat(MAX_PAYLOAD_TEXT_CHARS - 5)}`;
+    expect(text).toHaveLength(MAX_PAYLOAD_TEXT_CHARS + 1);
+    expect(await codeOf(() => decodeDesc(text))).toBe('shape');
+  });
+
+  it('Leerraum zählt nicht zur Längengrenze – ein gültiger Code bleibt lesbar, auch grosszügig gepolstert', async () => {
+    const desc = minimise(chromiumOffer, META);
+    const { text } = await encodeDesc(desc);
+    expect(text.length).toBeLessThan(MAX_PAYLOAD_TEXT_CHARS);
+    const padded = `${' \n\t'.repeat(2000)}${text}${' \r\n'.repeat(2000)}`;
+    expect(padded.length).toBeGreaterThan(MAX_PAYLOAD_TEXT_CHARS);
+    expect(await decodeDesc(padded)).toEqual(desc);
+  });
+
+  it('eine „Zip-Bombe" (klein komprimiert, riesig entpackt) wird zügig als CodecError("inflate") abgelehnt', async () => {
+    // Mode p mit über 16384 Bytes Rumpf kann unter der 4096-Zeichen-Grenze gar nicht erst entstehen
+    // (base64url dehnt höchstens um 1/3) – die Längengrenze oben deckt diesen Fall also mit ab.
+    const huge = new TextEncoder().encode(`{"pad":"${'A'.repeat(1_000_000)}"}`);
+    const packed = await deflateRaw(huge);
+    const text = `MB1.d.${toBase64Url(packed)}`;
+    expect(text.length).toBeLessThanOrEqual(MAX_PAYLOAD_TEXT_CHARS);
+    const start = Date.now();
+    expect(await codeOf(() => decodeDesc(text))).toBe('inflate');
+    expect(Date.now() - start).toBeLessThan(5_000);
   });
 });

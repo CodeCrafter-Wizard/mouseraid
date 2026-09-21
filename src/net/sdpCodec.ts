@@ -45,6 +45,16 @@ export interface PayloadSizes {
   compressed: boolean;
 }
 
+/**
+ * Harte Obergrenze für einen eingefügten Code (nach dem Entfernen von Leerraum). Typische Payload
+ * ≤ 800 Zeichen, Fallback-Modus (unkomprimiert) rund 860, 12 Kandidaten rund 700 – 4096 lässt
+ * großzügig Luft, begrenzt aber die schlimmstmögliche Aufblähung durch deflate-raw (bis ~1000:1)
+ * auf wenige MB, bevor überhaupt entpackt wird.
+ */
+export const MAX_PAYLOAD_TEXT_CHARS = 4096;
+/** Obergrenze für die entpackten (oder unkomprimierten) Bytes vor JSON.parse. */
+export const MAX_MINIMISED_BYTES = 16384;
+
 const DEFAULT_SCTP_PORT = 5000;
 const CANDIDATE_PREFIX = 'a=candidate:';
 const SETUPS: readonly Setup[] = ['actpass', 'active', 'passive'];
@@ -96,6 +106,15 @@ export function minimise(sdp: string, meta: { protoV: number; role: SdpRole; slo
   const setup = SETUPS.find((value) => value === attributes('setup')[0]);
   if (setup === undefined) throw new CodecError('sdp', 'SDP ohne brauchbares a=setup');
 
+  // Lokal gültige, aber vertragswidrige Werte würden sonst eine Beschreibung erzeugen, die die
+  // Gegenseite in decodeDesc ablehnt – lieber hier scheitern als ein unbrauchbares SDP verschicken.
+  const sctpPort = numberAttribute('sctp-port') ?? DEFAULT_SCTP_PORT;
+  if (sctpPort > 0xffff) throw new CodecError('sdp', 'a=sctp-port ist größer als 65535');
+  const maxMessageSize = numberAttribute('max-message-size');
+  if (maxMessageSize !== null && maxMessageSize > Number.MAX_SAFE_INTEGER) {
+    throw new CodecError('sdp', 'a=max-message-size ist größer als Number.MAX_SAFE_INTEGER');
+  }
+
   return {
     codecV: CODEC_VERSION,
     protoV: meta.protoV,
@@ -106,8 +125,8 @@ export function minimise(sdp: string, meta: { protoV: number; role: SdpRole; slo
     pwd,
     fingerprint,
     setup,
-    sctpPort: numberAttribute('sctp-port') ?? DEFAULT_SCTP_PORT,
-    maxMessageSize: numberAttribute('max-message-size'),
+    sctpPort,
+    maxMessageSize,
     candidates: lines.filter((line) => line.startsWith(CANDIDATE_PREFIX)).map((line) => line.slice(CANDIDATE_PREFIX.length)),
   };
 }
@@ -213,6 +232,11 @@ function fromCompact(value: unknown): SessionDesc {
 export async function decodeDesc(text: string): Promise<SessionDesc> {
   const stripped = text.replace(/\s+/g, '');
   if (stripped === '') throw new CodecError('empty', 'Kein Code eingegeben');
+  // Vor jeder Präfix-/base64-Arbeit: ein absichtlich riesiger eingefügter Text darf die Seite nicht
+  // hängen lassen, bevor überhaupt geprüft wird, ob er zum Format passt.
+  if (stripped.length > MAX_PAYLOAD_TEXT_CHARS) {
+    throw new CodecError('shape', `Code ist länger als ${MAX_PAYLOAD_TEXT_CHARS} Zeichen`);
+  }
   const match = /^MB1\.([dp])\.(.*)$/.exec(stripped);
   if (match === null) throw new CodecError('prefix', 'Text beginnt nicht mit MB1.d. oder MB1.p.');
   const mode = match[1];
@@ -234,6 +258,14 @@ export async function decodeDesc(text: string): Promise<SessionDesc> {
     } catch {
       throw new CodecError('inflate', 'Rumpf lässt sich nicht entpacken');
     }
+  }
+  // Ein kleiner komprimierter Rumpf kann beim Entpacken auf das ~1000-fache aufblähen ("Zip-Bombe") –
+  // diese Grenze greift NACH dem Entpacken, aber VOR JSON.parse, für beide Modi.
+  if (minimised.length > MAX_MINIMISED_BYTES) {
+    throw new CodecError(
+      mode === 'd' ? 'inflate' : 'shape',
+      `Entpackter Inhalt ist größer als ${MAX_MINIMISED_BYTES} Bytes`,
+    );
   }
 
   let value: unknown;
