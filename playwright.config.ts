@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'tests/e2e',
+  // Konvention: Playwright = *.spec.ts, Vitest = *.test.ts. Ohne diese Zeile sammelt Playwright auch *.test.ts ein.
+  testMatch: '**/*.spec.ts',
   // Ein vergessenes `test.only` darf im CI nicht still die übrigen Tests überspringen.
   forbidOnly: !!process.env.CI,
   timeout: 60_000,
