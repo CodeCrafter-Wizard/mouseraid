@@ -102,4 +102,48 @@ describe('ESLint-Leitplanken', () => {
     expect(bad).toContain('no-restricted-syntax');
     expect(good).not.toContain('no-restricted-syntax');
   });
+
+  // Andere Schreibweisen desselben Ziels: `.`-Segmente, doppelte Schrägstriche, Umweg über `src/`.
+  it.each([
+    './../../render/engine',
+    '..//..//render/engine',
+    '../.././render/engine',
+    '../../../src/render/engine',
+    '../../../src/input/touch',
+    '../../../src/core/../render/engine',
+  ])('core: der Umweg %s in eine fremde Schicht ist verboten', async (source) => {
+    const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/core/sim/x.ts');
+    expect(ids).toContain('no-restricted-imports');
+  });
+
+  it.each(['./render', './sim/input', '../world/render', '../systems/audio', '../save/platform/x'])(
+    'core: das core-interne Modul %s bleibt erlaubt',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/core/sim/x.ts');
+      expect(ids).not.toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['./../render/engine', '..//render/engine', '.././render/engine', '../../src/render/engine'])(
+    'net und lab: der Umweg %s zur render-Schicht ist verboten',
+    async (source) => {
+      const code = `import { a } from '${source}';\nexport const b = a;\n`;
+      expect(await ruleIds(code, 'src/net/x.ts')).toContain('no-restricted-imports');
+      expect(await ruleIds(code, 'src/lab/x.ts')).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['./render', './signaling/render', '../ui/strings', '../net/renderQueue'])(
+    'net und lab: %s bleibt erlaubt',
+    async (source) => {
+      const code = `import { a } from '${source}';\nexport const b = a;\n`;
+      expect(await ruleIds(code, 'src/net/x.ts')).not.toContain('no-restricted-imports');
+      expect(await ruleIds(code, 'src/lab/x.ts')).not.toContain('no-restricted-imports');
+    },
+  );
+
+  it('lintet den git-ignorierten Arbeitsordner .superpowers nicht mit', async () => {
+    expect(await eslint.isPathIgnored('.superpowers/scratch/beispiel/src/x.ts')).toBe(true);
+    expect(await eslint.isPathIgnored('src/main.ts')).toBe(false);
+  });
 });

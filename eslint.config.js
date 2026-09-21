@@ -24,12 +24,22 @@ const BABYLON_IMPORT = {
   group: ['@babylonjs/*', '@babylonjs/**'],
   message: 'Diese Schicht darf Babylon nicht kennen.',
 };
-// Eine fremde Schicht erreicht man nur über den Weg nach oben (`../…`) – daran wird sie erkannt.
-// Gitignore-artige Gruppen (`**/input`) würden auch core-INTERNE Module wie `./input` oder
-// `../sim/input` (src/core/sim/input.ts ist laut Design ein Core-Modul) verbieten.
-const RENDER_IMPORT = { regex: '^(?:\\.\\./)+render(?:/|$)', message: 'Diese Schicht darf render/ nicht importieren.' };
+// Eine fremde Schicht erreicht man nur über den Weg nach oben (`../…`) oder über `src/` – daran wird
+// sie erkannt. Gitignore-artige Gruppen (`**/input`) würden auch core-INTERNE Module wie `./input`
+// oder `../sim/input` (src/core/sim/input.ts ist laut Design ein Core-Modul) verbieten.
+/**
+ * Trifft jeden Pfad, in dem direkt hinter einem Segment `..` oder `src` eine der Schichten folgt –
+ * auch mit `.`-Segmenten oder doppelten Schrägstrichen dazwischen (`./../render`, `..//render`,
+ * `.././render`, `../../../src/render`). Ein Schichtname hinter einem anderen Ordner (`../sim/input`)
+ * oder hinter `./` bleibt frei.
+ * @param {string[]} layers
+ */
+function layerImportRegex(layers) {
+  return `(?:^|/)(?:\\.\\.|src)/+(?:\\./+)*(?:${layers.join('|')})(?:/|$)`;
+}
+const RENDER_IMPORT = { regex: layerImportRegex(['render']), message: 'Diese Schicht darf render/ nicht importieren.' };
 const NON_CORE_IMPORT = {
-  regex: '^(?:\\.\\./)+(?:render|ui|net|platform|input|audio|modes|lab)(?:/|$)',
+  regex: layerImportRegex(['render', 'ui', 'net', 'platform', 'input', 'audio', 'modes', 'lab']),
   message: 'core/ darf keine andere Schicht importieren.',
 };
 
@@ -57,7 +67,8 @@ const SYNTAX_BANS = [NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_ME
 const CORE_SYNTAX_BANS = [...SYNTAX_BANS, NO_NEW_DATE, NO_EXPONENT, NO_EXPONENT_ASSIGN];
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'dev-dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'node_modules/**'] },
+  // `.superpowers/` ist git-ignoriert (Arbeitsdateien der Agenten) – Flat Config überspringt Punkt-Ordner NICHT von selbst.
+  { ignores: ['dist/**', 'dev-dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'node_modules/**', '.superpowers/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
