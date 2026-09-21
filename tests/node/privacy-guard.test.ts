@@ -15,7 +15,7 @@ const ALLOWED_IPV4 = new Set(['0.0.0.0', '127.0.0.1', '255.255.255.255']);
 const IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
 /** Mindestens drei Hextets – kürzere Treffer wären fast nur Uhrzeiten und Versionsnummern. */
 const IPV6 = /\b[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){2,7}\b/gi;
-/** Komprimierte Schreibweise (`fd00::1`), die die Regel oben sonst verfehlt. */
+/** Komprimierte Schreibweise mit `::`: eine kurze ULA hat nur zwei Hextets und verfehlt die Regel oben. */
 const IPV6_COMPRESSED = /\b[0-9a-f]{1,4}::[0-9a-f:]+\b/gi;
 const MDNS = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local\b/gi;
 
