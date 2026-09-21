@@ -24,10 +24,12 @@ const BABYLON_IMPORT = {
   group: ['@babylonjs/*', '@babylonjs/**'],
   message: 'Diese Schicht darf Babylon nicht kennen.',
 };
-const RENDER_IMPORT = { group: ['**/render', '**/render/**'], message: 'Diese Schicht darf render/ nicht importieren.' };
+// Eine fremde Schicht erreicht man nur über den Weg nach oben (`../…`) – daran wird sie erkannt.
+// Gitignore-artige Gruppen (`**/input`) würden auch core-INTERNE Module wie `./input` oder
+// `../sim/input` (src/core/sim/input.ts ist laut Design ein Core-Modul) verbieten.
+const RENDER_IMPORT = { regex: '^(?:\\.\\./)+render(?:/|$)', message: 'Diese Schicht darf render/ nicht importieren.' };
 const NON_CORE_IMPORT = {
-  group: ['**/render', '**/render/**', '**/ui', '**/ui/**', '**/net', '**/net/**', '**/platform', '**/platform/**',
-    '**/input', '**/input/**', '**/audio', '**/audio/**', '**/modes', '**/modes/**', '**/lab', '**/lab/**'],
+  regex: '^(?:\\.\\./)+(?:render|ui|net|platform|input|audio|modes|lab)(?:/|$)',
   message: 'core/ darf keine andere Schicht importieren.',
 };
 
@@ -44,6 +46,15 @@ const NO_AUDIO_CONTEXT_MEMBER = {
   message: 'Genau ein AudioContext: nur src/audio/audioBus.ts darf ihn erzeugen.',
 };
 const NO_NEW_DATE = { selector: "NewExpression[callee.name='Date']", message: DETERMINISM_MSG };
+// `**` ist laut ECMAScript genau wie Math.pow nur "implementation-approximated".
+const NO_EXPONENT = { selector: "BinaryExpression[operator='**']", message: DETERMINISM_MSG };
+const NO_EXPONENT_ASSIGN = { selector: "AssignmentExpression[operator='**=']", message: DETERMINISM_MSG };
+
+// ACHTUNG: Flat Config ERSETZT die Optionen einer Regel pro passendem Block, sie summiert sie
+// nicht. Ein Selektor, der nur unten im `src/**`-Block stünde, fehlte im core-Block still. Deshalb
+// bauen alle drei no-restricted-syntax-Listen auf diesen beiden Konstanten auf.
+const SYNTAX_BANS = [NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER];
+const CORE_SYNTAX_BANS = [...SYNTAX_BANS, NO_NEW_DATE, NO_EXPONENT, NO_EXPONENT_ASSIGN];
 
 export default tseslint.config(
   { ignores: ['dist/**', 'dev-dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'node_modules/**'] },
@@ -54,10 +65,11 @@ export default tseslint.config(
     languageOptions: { globals: globals.browser },
     rules: {
       'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT] }],
-      'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS],
     },
   },
   {
+    // Ersetzt die Liste oben absichtlich: genau hier darf der eine AudioContext entstehen.
     files: ['src/audio/audioBus.ts'],
     rules: { 'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE] },
   },
@@ -73,7 +85,7 @@ export default tseslint.config(
       'no-restricted-globals': ['error', 'window', 'document', 'navigator', 'performance', 'localStorage',
         'sessionStorage', 'indexedDB', 'fetch', 'setTimeout', 'setInterval', 'requestAnimationFrame', 'crypto',
         'self', 'globalThis', 'location', 'history', 'screen'],
-      'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER, NO_NEW_DATE],
+      'no-restricted-syntax': ['error', ...CORE_SYNTAX_BANS],
     },
   },
   {

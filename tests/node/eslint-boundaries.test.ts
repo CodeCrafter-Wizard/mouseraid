@@ -19,6 +19,32 @@ describe('ESLint-Leitplanken', () => {
     expect(ids).toContain('no-restricted-imports');
   });
 
+  it('core darf core-interne Module importieren, die wie eine andere Schicht heissen', async () => {
+    const own = await ruleIds(`import { a } from './input';\nexport const b = a;\n`, 'src/core/sim/step.ts');
+    const sibling = await ruleIds(`import { a } from '../sim/input';\nexport const b = a;\n`, 'src/core/sim/step.ts');
+    expect(own).not.toContain('no-restricted-imports');
+    expect(sibling).not.toContain('no-restricted-imports');
+  });
+
+  it('core darf die echten Schichten input/ und render/ nicht importieren', async () => {
+    const input = await ruleIds(`import { a } from '../../input/touch';\nexport const b = a;\n`, 'src/core/sim/step.ts');
+    const render = await ruleIds(`import { a } from '../../render/engine';\nexport const b = a;\n`, 'src/core/sim/step.ts');
+    expect(input).toContain('no-restricted-imports');
+    expect(render).toContain('no-restricted-imports');
+  });
+
+  it('net darf ein eigenes ./render-Modul haben, aber nicht die render-Schicht', async () => {
+    const own = await ruleIds(`import { a } from './render';\nexport const b = a;\n`, 'src/net/x.ts');
+    const layer = await ruleIds(`import { a } from '../render/engine';\nexport const b = a;\n`, 'src/net/x.ts');
+    expect(own).not.toContain('no-restricted-imports');
+    expect(layer).toContain('no-restricted-imports');
+  });
+
+  it('core darf den Potenz-Operator nicht benutzen (wie Math.pow nur angenaehert)', async () => {
+    const ids = await ruleIds(`export let a = 2 ** 8;\na **= 2;\n`, 'src/core/math/p.ts');
+    expect(ids.filter((id) => id === 'no-restricted-syntax')).toHaveLength(2);
+  });
+
   it('core darf Math.sin, Math.random, Math.hypot und Date.now nicht benutzen', async () => {
     const ids = await ruleIds(
       `export const a = Math.sin(1);\nexport const b = Math.random();\nexport const c = Math.hypot(1, 2);\nexport const d = Date.now();\n`,
@@ -61,12 +87,13 @@ describe('ESLint-Leitplanken', () => {
     expect(good).not.toContain('no-restricted-syntax');
   });
 
-  it('core darf self/globalThis/location nicht als Umweg fuer verbotene Globals benutzen', async () => {
+  it('core darf self/globalThis/location/history/screen nicht als Umweg fuer verbotene Globals benutzen', async () => {
     const ids = await ruleIds(
-      `export const a = self.Math.random();\nexport const b = globalThis.Math.random();\nexport const c = location.href;\n`,
+      `export const a = self.Math.random();\nexport const b = globalThis.Math.random();\nexport const c = location.href;\n` +
+        `export const d = history.length;\nexport const e = screen.width;\n`,
       'src/core/sim/z.ts',
     );
-    expect(ids.filter((id) => id === 'no-restricted-globals').length).toBeGreaterThanOrEqual(3);
+    expect(ids.filter((id) => id === 'no-restricted-globals').length).toBeGreaterThanOrEqual(5);
   });
 
   it('new self.AudioContext() ist nur in src/audio/audioBus.ts erlaubt', async () => {
