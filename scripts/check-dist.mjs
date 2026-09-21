@@ -36,8 +36,25 @@ for (const rel of files.filter((f) => /\.(js|css|html)$/.test(f))) {
   errors.push(...findForbiddenSignatures(rel, read(rel) ?? ''));
 }
 
-const gameGraph = collectJsGraph(read('index.html') ?? '', base, read);
-const labGraph = collectJsGraph(read('lab.html') ?? '', base, read);
+/**
+ * JS-Graph einer Seite, um nicht auflösbare Referenzen bereinigt: Ein im HTML genanntes, aber im
+ * Build fehlendes Skript wäre sonst ein ENOENT-Absturz mitten in der Größenmessung – also noch
+ * bevor die gesammelte Fehlerliste überhaupt ausgegeben wird.
+ */
+function pageGraph(page) {
+  const graph = collectJsGraph(read(page) ?? '', base, read);
+  const present = graph.filter((rel) => existsSync(join(DIST, rel)));
+  for (const rel of graph.filter((rel) => !existsSync(join(DIST, rel)))) {
+    errors.push(`${page}: referenziertes Skript ${rel} fehlt im Build`);
+  }
+  // Leerer Graph = kein Einstiegsskript erkannt. Ohne diese Prüfung liefe alles Folgende
+  // (Babylon-Suche im Lab-Bundle, Gzip-Budget) still ins Leere und meldete „alles in Ordnung".
+  if (present.length === 0) errors.push(`JS-Graph von ${page} ist leer – Einstiegsskript nicht erkannt`);
+  return present;
+}
+
+const gameGraph = pageGraph('index.html');
+const labGraph = pageGraph('lab.html');
 for (const rel of labGraph) {
   if (/babylon/i.test(read(rel) ?? '')) errors.push(`${rel}: Testlabor-Bundle enthält Babylon (Lab muss schlank bleiben)`);
 }
@@ -52,7 +69,7 @@ if (swText === null) {
 } else {
   const candidates = files.filter(isPrecacheCandidate);
   for (const missing of findMissingPrecache(swText, candidates)) {
-    errors.push(`${missing}: fehlt im Precache (zu groß? falscher Dateityp in globPatterns?)`);
+    errors.push(`${missing}: fehlt im Precache – Dateityp fehlt in globPatterns (vite.config.ts)? Datei > 30 MiB?`);
   }
   const total = candidates.reduce((sum, rel) => sum + statSync(join(DIST, rel)).size, 0);
   console.log(`Precache: ${candidates.length} Dateien, ${kb(total)}`);

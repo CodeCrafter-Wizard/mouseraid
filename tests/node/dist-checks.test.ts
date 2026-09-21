@@ -22,6 +22,12 @@ describe('findForbiddenSignatures', () => {
     expect(findForbiddenSignatures('a.js', 'iceServers:[{urls:"stun:stun.l.google.com:19302"}]')).toHaveLength(1);
   });
 
+  it('erkennt auch die TLS-Varianten stuns: und turns:', () => {
+    expect(findForbiddenSignatures('a.js', 'urls:"stuns:beispiel.invalid:5349"')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'urls:"turns:beispiel.invalid:5349"')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'urls:"turn:beispiel.invalid:3478"')).toHaveLength(1);
+  });
+
   it('löst bei harmlosem Code keinen Fehlalarm aus', () => {
     expect(findForbiddenSignatures('a.js', 'const it={next:f,return:g};function turn(){return 1}')).toEqual([]);
   });
@@ -88,18 +94,39 @@ describe('collectJsGraph', () => {
 });
 
 describe('Precache', () => {
-  it('kennt die vorzucachenden Dateitypen und Ausnahmen', () => {
+  it('haelt jede dist-Datei fuer vorzucachen – auch unbekannte Dateitypen', () => {
     expect(isPrecacheCandidate('assets/main-1.js')).toBe(true);
     expect(isPrecacheCandidate('icons/icon-192.png')).toBe(true);
+    expect(isPrecacheCandidate('manifest.webmanifest')).toBe(true);
+    expect(isPrecacheCandidate('assets/tex.jpg')).toBe(true);
+    expect(isPrecacheCandidate('assets/prop.gltf')).toBe(true);
+    expect(isPrecacheCandidate('assets/prop.bin')).toBe(true);
+    expect(isPrecacheCandidate('icons/x.PNG')).toBe(true);
+  });
+
+  it('nimmt nur die bewussten Ausnahmen aus', () => {
     expect(isPrecacheCandidate('sw.js')).toBe(false);
+    expect(isPrecacheCandidate('registerSW.js')).toBe(false);
     expect(isPrecacheCandidate('workbox-abc123.js')).toBe(false);
     expect(isPrecacheCandidate('version.json')).toBe(false);
-    expect(isPrecacheCandidate('manifest.webmanifest')).toBe(false);
+    expect(isPrecacheCandidate('assets/main-1.js.map')).toBe(false);
   });
 
   it('meldet Dateien, die im Service Worker fehlen', () => {
     const sw = 'precacheAndRoute([{url:"index.html",revision:"1"},{url:"assets/main-1.js",revision:null}])';
     expect(findMissingPrecache(sw, ['index.html', 'assets/main-1.js', 'lab.html'])).toEqual(['lab.html']);
+    expect(findMissingPrecache(sw, ['index.html', 'assets/main-1.js', 'assets/tex.jpg'])).toEqual(['assets/tex.jpg']);
+  });
+
+  it('zaehlt nur Manifest-Eintraege – createHandlerBoundToURL("index.html") ist keiner', () => {
+    const sw =
+      'precacheAndRoute([{url:"assets/main-1.js",revision:null}],{ignoreURLParametersMatching:[/.*/]}),' +
+      'e.cleanupOutdatedCaches(),e.registerRoute(new e.NavigationRoute(e.createHandlerBoundToURL("index.html"),{denylist:[/\\/lab\\.html/]}))';
+    expect(findMissingPrecache(sw, ['index.html', 'assets/main-1.js'])).toEqual(['index.html']);
+  });
+
+  it('akzeptiert die Manifest-Form auch mit gequotetem Schluessel', () => {
+    expect(findMissingPrecache('[{"url":"index.html","revision":null}]', ['index.html'])).toEqual([]);
   });
 });
 

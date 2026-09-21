@@ -9,7 +9,7 @@ const SIGNATURES = [
   { pattern: /meshopt_decoder/i, reason: 'Meshopt-Decoder (käme vom CDN → Offline-Bruch)' },
   { pattern: /basis_transcoder/i, reason: 'Basis-Transcoder (käme vom CDN → Offline-Bruch)' },
   { pattern: /@babylonjs\/core\/Legacy|\/Legacy\/legacy/, reason: 'Babylon-Legacy-Barrel im Bundle' },
-  { pattern: /["'`](?:stun|turns?):/i, reason: 'STUN/TURN-Server (Offline-Modus verlangt iceServers: [])' },
+  { pattern: /["'`](?:stuns?|turns?):/i, reason: 'STUN/TURN-Server (Offline-Modus verlangt iceServers: [])' },
 ];
 
 /**
@@ -110,25 +110,39 @@ export function collectJsGraph(entryHtml, base, readText) {
   return [...seen];
 }
 
-const PRECACHE_EXTENSIONS = /\.(js|css|html|wasm|png|webp|svg|woff2|json|glb|mp3|ogg)$/;
+// Dateien, die NICHT vorgecacht gehören: der Service Worker selbst, sein Registrierungs-Schnipsel,
+// die bewusst netzfrische version.json, der Workbox-Runtime-Chunk und Sourcemaps.
+const PRECACHE_EXCLUDED = [/^sw\.js$/, /^registerSW\.js$/, /^version\.json$/, /^workbox-[\w-]+\.js$/, /\.map$/];
 
 /**
+ * Bewusst umgekehrt gedacht: JEDE dist-Datei muss vorgecacht sein, außer den Ausnahmen oben.
+ * Diese Liste ist absichtlich KEINE Kopie von `globPatterns` (vite.config.ts) – taucht ein neuer
+ * Dateityp im Build auf (.jpg, .gltf, .bin …), den `globPatterns` nicht kennt, fällt das hier laut
+ * auf, statt still offline zu fehlen. Der Fix ist dann eine bewusste Änderung an `globPatterns`
+ * (oder, falls die Datei wirklich nicht in den Cache gehört, an dieser Liste).
  * @param {string} relPath
  * @returns {boolean}
  */
 export function isPrecacheCandidate(relPath) {
-  if (relPath === 'sw.js' || relPath === 'registerSW.js' || relPath === 'version.json') return false;
-  if (/^workbox-[\w-]+\.js$/.test(relPath)) return false;
-  return PRECACHE_EXTENSIONS.test(relPath);
+  return !PRECACHE_EXCLUDED.some((pattern) => pattern.test(relPath));
+}
+
+/** @param {string} text */
+function escapeForRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
+ * Sucht den Eintrag in MANIFEST-Form (`url:"…"` bzw. `"url":"…"`), nicht irgendeine gequotete
+ * Zeichenkette: das echte sw.js nennt "index.html" ein zweites Mal in
+ * `createHandlerBoundToURL("index.html")` – ein fehlender Manifest-Eintrag für index.html wäre
+ * mit einer reinen Teilstring-Suche unsichtbar.
  * @param {string} swText
  * @param {string[]} relPaths
  * @returns {string[]} nicht vorgecachte Dateien
  */
 export function findMissingPrecache(swText, relPaths) {
-  return relPaths.filter((rel) => !swText.includes(`"${rel}"`));
+  return relPaths.filter((rel) => !new RegExp(`(?:"url"|url)\\s*:\\s*"${escapeForRegExp(rel)}"`).test(swText));
 }
 
 /** Dateien, die in jedem gültigen Build vorhanden sein müssen – fehlt eine, degradieren andere Prüfungen (Lab-Graph, Precache …) unbemerkt zum Leerlauf statt einen Fehler zu zeigen. */
