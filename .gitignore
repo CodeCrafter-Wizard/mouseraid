@@ -5,6 +5,9 @@ dev-dist/
 coverage/
 *.tsbuildinfo
 
+# Arbeitsdateien der Agenten-Werkzeuge (Briefs, Reports, Review-Diffs)
+.superpowers/
+
 # Test-Artefakte
 test-results/
 playwright-report/

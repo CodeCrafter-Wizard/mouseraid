@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: 'tests/e2e',
+  // Ein vergessenes `test.only` darf im CI nicht still die übrigen Tests überspringen.
+  forbidOnly: !!process.env.CI,
   timeout: 60_000,
   fullyParallel: false,
   workers: 1,
