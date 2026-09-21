@@ -10,11 +10,17 @@ function git(command: string): string {
   return execSync(command, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
 }
 
-/** Build-ID = Git-Kurz-SHA; bei ungespeicherten Änderungen mit Suffix `-dirty`. */
+/**
+ * Build-ID = 8-stelliger Git-Kurz-SHA; bei ungespeicherten Änderungen `<sha>-dirty-<HHmmss>` (UTC).
+ * Die Uhrzeit macht aufeinanderfolgende Handy-Builds aus demselben HEAD unterscheidbar – sonst
+ * zeigt `?expect=` am Handy „match“, obwohl noch der vorige Build im Browser liegt.
+ */
 function resolveBuildId(): string {
   try {
     const sha = git('git rev-parse --short=8 HEAD');
-    return git('git status --porcelain') === '' ? sha : `${sha}-dirty`;
+    if (git('git status --porcelain') === '') return sha;
+    const stamp = new Date().toISOString().slice(11, 19).replaceAll(':', '');
+    return `${sha}-dirty-${stamp}`;
   } catch {
     return 'nogit';
   }
@@ -78,7 +84,9 @@ export default defineConfig(({ mode }) => {
           maximumFileSizeToCacheInBytes: 30 * 1024 * 1024,
           // Dev-/Test-Parameter (?view=2d, ?station=…, ?expect=…) dürfen den Precache nie verfehlen.
           ignoreURLParametersMatching: [/.*/],
-          navigateFallbackDenylist: [/\/lab\.html/],
+          // Eine Browser-Navigation zu version.json muss die Datei liefern, nicht die App-Hülle –
+          // sonst „bestätigt“ der Deploy-Wächter am Ende nur den alten, vorgecachten index.html.
+          navigateFallbackDenylist: [/\/lab\.html/, /\/version\.json/],
           cleanupOutdatedCaches: true,
         },
       }),

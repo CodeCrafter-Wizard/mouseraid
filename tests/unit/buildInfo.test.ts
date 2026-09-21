@@ -17,6 +17,17 @@ describe('buildInfo', () => {
     expect(checkExpectedBuild('?x=1&expect=zzz', 'abc12345')).toBe('mismatch');
   });
 
+  it('akzeptiert ein mindestens 7-stelliges Praefix einer sauberen Build-ID (git-Standard-Kurz-SHA)', () => {
+    expect(checkExpectedBuild('?expect=abc1234', 'abc12345')).toBe('match');
+    expect(checkExpectedBuild('?expect=abc123', 'abc12345')).toBe('mismatch');
+  });
+
+  it('vergleicht Dirty-Builds nur exakt – ein Praefix darf nie auf einen -dirty-Build passen', () => {
+    expect(checkExpectedBuild('?expect=abc1234', 'abc12345-dirty-101530')).toBe('mismatch');
+    expect(checkExpectedBuild('?expect=abc12345', 'abc12345-dirty-101530')).toBe('mismatch');
+    expect(checkExpectedBuild('?expect=abc12345-dirty-101530', 'abc12345-dirty-101530')).toBe('match');
+  });
+
   it('liefert den erwarteten Wert zur Anzeige', () => {
     expect(expectedBuild('?expect=zzz')).toBe('zzz');
     expect(expectedBuild('')).toBeNull();
