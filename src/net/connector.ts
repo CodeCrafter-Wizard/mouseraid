@@ -158,14 +158,16 @@ export function createHostLobby(deps: ConnectorDeps): HostLobby {
       if (desc.slot !== slot) throw new HandshakeError('F5', `answer is for slot ${desc.slot}, expected ${slot}`);
       if (desc.nonce !== entry.offer.desc.nonce) throw new HandshakeError('F5', 'answer belongs to a different offer (nonce mismatch)');
       if (slots.get(slot) !== entry) throw superseded(`answer for slot ${slot}`);
-      const remoteSdp = rebuildSdp(desc);
       try {
+        // `rebuildSdp` steht mit im try, damit auch ein Fehler beim Zusammenbauen als F5 herauskommt –
+        // genau wie auf der Client-Seite in `acceptOffer`.
+        const remoteSdp = rebuildSdp(desc);
         await entry.peer.acceptAnswer(remoteSdp);
+        entry.remoteSdp = remoteSdp;
       } catch (error) {
         if (slots.get(slot) !== entry || isAbort(error)) throw superseded(`answer for slot ${slot}`);
         throw toF5('apply answer', error);
       }
-      entry.remoteSdp = remoteSdp;
       return entry.peer;
     },
 

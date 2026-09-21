@@ -55,11 +55,18 @@ export function createRtcPeer(options: { peerId: string; timeline: Timeline; gat
   aborted.catch(() => undefined); // nie als unhandledrejection im Fehler-Panel landen
   const untilClosed = <T>(work: Promise<T>): Promise<T> => Promise.race([work, aborted]);
 
+  /** Räumt eine gerade laufende Gathering-Wartezeit ab; null, wenn keine läuft. Siehe `waitForGathering`. */
+  let disposeGathering: (() => void) | null = null;
+
   function close(): void {
     for (const dc of channels.values()) dc.close();
     pc.close();
     setState('closed');
     abort(new DOMException('peer closed', 'AbortError'));
+    // Erst NACH dem Abbruch: sonst liefen Timer und Listener der Wartezeit noch bis zu `gatherTimeoutMs`
+    // weiter. Die Reihenfolge hält den Wettlauf in `untilClosed` eindeutig – abgelehnt wird immer mit
+    // AbortError, nie mit einem halbfertigen Gathering-Ergebnis.
+    disposeGathering?.();
   }
 
   const transport: Transport = {
@@ -131,6 +138,7 @@ export function createRtcPeer(options: { peerId: string; timeline: Timeline; gat
       const finish = (timedOut: boolean): void => {
         clearTimeout(timer);
         pc.removeEventListener('icegatheringstatechange', onChange);
+        disposeGathering = null;
         resolve(timedOut);
       };
       const onChange = (): void => {
@@ -138,6 +146,9 @@ export function createRtcPeer(options: { peerId: string; timeline: Timeline; gat
       };
       const timer = setTimeout(() => finish(true), gatherTimeoutMs);
       pc.addEventListener('icegatheringstatechange', onChange);
+      // `close()` beendet die Wartezeit sofort. Das Ergebnis verwirft der Wettlauf in `untilClosed`
+      // ohnehin – wichtig ist nur, dass Timer und Listener nicht weiterlaufen.
+      disposeGathering = () => finish(false);
     });
   }
 

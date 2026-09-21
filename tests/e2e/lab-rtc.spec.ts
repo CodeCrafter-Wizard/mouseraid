@@ -207,6 +207,190 @@ test('Ungültige Codes enden als HandshakeError F5 – die richtige Antwort wird
   });
 });
 
+test('Slot außerhalb 1..3 ist ein RangeError und legt keinen Eintrag an', { tag: '@local' }, async ({ context }) => {
+  const page = await openLab(context);
+  const result = await page.evaluate(async () => {
+    const lab = (window as unknown as LabWindow).__mbLab;
+    const lobby = lab.createHostLobby({
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 1,
+    });
+    // Fehlerobjekte überleben `page.evaluate` nicht (DOMException schon gar nicht) – nur der Name verlässt die Seite.
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    const tooSmall = await nameOf(lobby.createOffer(0));
+    const tooBig = await nameOf(lobby.createOffer(4));
+    const outcome = { tooSmall, tooBig, entries: lobby.entries().size };
+    lobby.closeAll();
+    return outcome;
+  });
+  expect(result).toEqual({ tooSmall: 'RangeError', tooBig: 'RangeError', entries: 0 });
+});
+
+test('closeSlot während des Gatherings bricht das laufende createOffer mit AbortError ab', { tag: '@local' }, async ({ context }) => {
+  const page = await openLab(context);
+  const result = await page.evaluate(async () => {
+    const lab = (window as unknown as LabWindow).__mbLab;
+    const lobby = lab.createHostLobby({
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 1,
+    });
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    // Ohne jedes Warten dazwischen: `createOffer` hat den Peer schon angelegt, das Gathering dauert hier
+    // rund 130 ms – der Abbruch trifft es also sicher mitten im Lauf.
+    const pending = lobby.createOffer(1);
+    lobby.closeSlot(1);
+    const outcome = { aborted: await nameOf(pending), hasSlot1: lobby.entries().has(1), entries: lobby.entries().size };
+    lobby.closeAll();
+    return outcome;
+  });
+  expect(result).toEqual({ aborted: 'AbortError', hasSlot1: false, entries: 0 });
+});
+
+test('ein zweites createOffer überholt das erste – mit dem zweiten Code kommt die Verbindung zustande', { tag: '@local' }, async ({ context }) => {
+  const host = await openLab(context);
+  const client = await openLab(context);
+
+  const raced = await host.evaluate(async () => {
+    const w = window as unknown as LabWindow;
+    const lab = w.__mbLab;
+    const lobby = lab.createHostLobby({
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => crypto.getRandomValues(new Uint32Array(1))[0] ?? 0,
+    });
+    w.__lobby = lobby;
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    const first = lobby.createOffer(1);
+    const second = lobby.createOffer(1);
+    const firstName = await nameOf(first);
+    const winner = await second;
+    // Der Vergleich der Payloads bleibt in der Seite – nach draußen geht nur das Ergebnis (ein Bool).
+    return {
+      firstName,
+      entryIsSecond: lobby.entries().get(1)?.offer.payload === winner.payload,
+      entries: lobby.entries().size,
+      payload: winner.payload,
+    };
+  });
+  expect(raced.firstName).toBe('AbortError');
+  expect(raced.entryIsSecond).toBe(true);
+  expect(raced.entries).toBe(1);
+
+  const answerPayload = await client.evaluate(async (payload) => {
+    const w = window as unknown as LabWindow;
+    const lab = w.__mbLab;
+    const join = lab.createClientJoin({
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 0,
+    });
+    w.__join = join;
+    const made = await join.acceptOffer(payload);
+    if (join.peer === null) throw new Error('Client-Peer fehlt');
+    w.__peer = join.peer;
+    return made.payload;
+  }, raced.payload);
+
+  await host.evaluate(async (payload) => {
+    const w = window as unknown as LabWindow;
+    if (w.__lobby === undefined) throw new Error('Lobby fehlt');
+    w.__peer = await w.__lobby.acceptAnswer(1, payload);
+  }, answerPayload);
+
+  await waitUntilOpen(host);
+  await waitUntilOpen(client);
+  await host.evaluate(() => (window as unknown as LabWindow).__lobby?.closeAll());
+});
+
+test('close() während des Gatherings bricht acceptOffer des Clients mit AbortError ab', { tag: '@local' }, async ({ context }) => {
+  const page = await openLab(context);
+  const result = await page.evaluate(async () => {
+    const lab = (window as unknown as LabWindow).__mbLab;
+    const deps = {
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 1,
+    };
+    const nameOf = (work: Promise<unknown>): Promise<string> =>
+      work.then(() => 'kein Fehler', (error: unknown) => (error instanceof Error ? error.name : String(error)));
+    const lobby = lab.createHostLobby(deps);
+    const offer = await lobby.createOffer(1);
+
+    // `acceptOffer` entschlüsselt ZUERST (asynchron) und legt den Peer erst danach an – vor dem Peer gibt es
+    // nichts abzubrechen. Auf `join.peer !== null` zu warten wäre ein Wettlauf: das Gathering der ANTWORT
+    // dauert hier nur wenige Millisekunden (gemessen 4 ms). Deshalb ereignisgesteuert statt zeitgesteuert:
+    // Der Abbruch hängt am ERSTEN Kandidaten-Eintrag der Zeitleiste und fällt damit zwangsläufig mitten ins
+    // Gathering – ohne jedes Warten.
+    let onCandidate: (() => void) | null = null;
+    let candidates = 0;
+    const join = lab.createClientJoin({
+      ...deps,
+      makeTimeline: () => {
+        const inner = lab.createTimeline(() => performance.now());
+        return {
+          push: (kind: string, detail?: string) => {
+            inner.push(kind, detail);
+            if (kind !== 'candidate') return;
+            candidates += 1;
+            onCandidate?.();
+          },
+          events: () => inner.events(),
+        };
+      },
+    });
+    onCandidate = () => {
+      onCandidate = null; // nur beim allerersten Kandidaten schließen
+      join.close();
+    };
+    const outcome = {
+      aborted: await nameOf(join.acceptOffer(offer.payload)),
+      sawCandidate: candidates > 0,
+      peerAfter: join.peer === null,
+    };
+    lobby.closeAll();
+    return outcome;
+  });
+  expect(result).toEqual({ aborted: 'AbortError', sawCandidate: true, peerAfter: true });
+});
+
+test('ohne RTCPeerConnection meldet der Connector F6', { tag: '@local' }, async ({ context }) => {
+  const page = await context.newPage();
+  // Vor jedem Seitenskript: der Browser sieht aus wie einer ohne WebRTC.
+  await page.addInitScript(() => {
+    const target = window as unknown as Record<string, unknown>;
+    delete target.RTCPeerConnection;
+    delete target.webkitRTCPeerConnection;
+  });
+  await page.goto(HOOK_URL);
+  await page.waitForFunction(() => '__mbLab' in window, undefined, { timeout: 10_000 });
+  expect(await page.evaluate(() => 'RTCPeerConnection' in window)).toBe(false);
+
+  const result = await page.evaluate(async () => {
+    const lab = (window as unknown as LabWindow).__mbLab;
+    const lobby = lab.createHostLobby({
+      protoV: lab.PROTOCOL_VERSION,
+      makeTimeline: () => lab.createTimeline(() => performance.now()),
+      randomNonce: () => 1,
+    });
+    try {
+      await lobby.createOffer(1);
+      return { name: 'kein Fehler', failure: '', entries: lobby.entries().size };
+    } catch (error) {
+      return {
+        name: error instanceof Error ? error.name : String(error),
+        failure: error instanceof Error && 'failure' in error ? String(error.failure) : '',
+        entries: lobby.entries().size,
+      };
+    }
+  });
+  expect(result).toEqual({ name: 'HandshakeError', failure: 'F6', entries: 0 });
+});
+
 test('ohne ?hook=1 gibt es keinen Test-Haken', { tag: '@local' }, async ({ page }) => {
   await page.goto('lab.html');
   await expect(page.getByTestId('shell-title')).toBeVisible();
