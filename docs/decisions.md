@@ -75,7 +75,7 @@ Netzwerkadressen aus Test-Annotationen/Reports werden nie ins Repo übernommen (
 
 ## Offene Punkte
 
-- **Update-Fluss einmal echt durchspielen:** Beim zweiten Deploy auf Pages „Nach Update suchen" → „Jetzt aktualisieren" → Neuladen am Handy einmal von Hand durchlaufen und das Ergebnis hier festhalten. Headless lässt sich nur der Fall „kein Update" beweisen; der tatsächliche Wechsel auf einen neuen Worker braucht zwei echte Deploys.
+- **Update-Fluss einmal echt durchspielen:** Beim zweiten Deploy auf Pages „Nach Update suchen" → „Jetzt aktualisieren" → Neuladen am Handy einmal von Hand durchlaufen und das Ergebnis hier festhalten. Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).
 
 ## Beobachten (vor jedem Release prüfen)
 - Chrome „Local Network Access" für WebRTC: chromestatus.com/feature/5065884686876672 und /5068298146414592
