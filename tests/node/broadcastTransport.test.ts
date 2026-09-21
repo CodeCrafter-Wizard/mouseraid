@@ -105,8 +105,9 @@ describe('createBroadcastTransport', () => {
     const a = connect(room, 'a', 'b');
 
     await vi.waitUntil(() => wire.count('a', 'syn') >= 1, WAIT);
-    // toMatchObject statt toEqual: die echten Umschläge tragen zusätzlich eine `inst`-Kennung (Finding 2).
-    expect(wire.seen[0]).toMatchObject({ to: 'b', from: 'a', kind: 'syn' });
+    // toMatchObject statt toEqual: die echten Umschläge tragen zusätzlich eine `inst`-Kennung (Finding 2),
+    // die hier zusätzlich als nichtleerer String angepinnt wird (Minor 1, Runde 2).
+    expect(wire.seen[0]).toMatchObject({ to: 'b', from: 'a', kind: 'syn', inst: expect.stringMatching(/.+/) });
     expect(vi.getTimerCount()).toBe(1);
     vi.advanceTimersByTime(250);
     await vi.waitUntil(() => wire.count('a', 'syn') >= 2, WAIT);
@@ -118,7 +119,9 @@ describe('createBroadcastTransport', () => {
 
     wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'syn' });
     await vi.waitUntil(() => wire.count('a', 'ack') >= 2, WAIT);
-    expect(wire.seen.find((envelope) => envelope.kind === 'ack')).toMatchObject({ to: 'b', from: 'a', kind: 'ack' });
+    expect(wire.seen.find((envelope) => envelope.kind === 'ack')).toMatchObject({
+      to: 'b', from: 'a', kind: 'ack', inst: expect.stringMatching(/.+/),
+    });
   });
 
   it('liefert Daten in beide Richtungen auf beiden Kanälen – als Uint8Array-Kopien', async () => {
@@ -229,8 +232,11 @@ describe('createBroadcastTransport', () => {
     expect(b.send('events', new Uint8Array([1]))).toBe(false);
     expect(statesA).toEqual(['closed']);
     expect(statesB).toEqual(['closed']);
-    // toMatchObject statt toEqual: der echte bye-Umschlag trägt zusätzlich eine `inst`-Kennung (Finding 2).
-    expect(wire.seen.filter((envelope) => envelope.kind === 'bye')).toMatchObject([{ to: 'b', from: 'a', kind: 'bye' }]);
+    // toMatchObject statt toEqual: der echte bye-Umschlag trägt zusätzlich eine `inst`-Kennung (Finding 2),
+    // die hier zusätzlich als nichtleerer String angepinnt wird (Minor 1, Runde 2).
+    expect(wire.seen.filter((envelope) => envelope.kind === 'bye')).toMatchObject([
+      { to: 'b', from: 'a', kind: 'bye', inst: expect.stringMatching(/.+/) },
+    ]);
   });
 
   it('ignoriert ein bye mit fremder Instanz-ID – die Gegenstelle bleibt offen (Finding 2)', async () => {
@@ -250,6 +256,52 @@ describe('createBroadcastTransport', () => {
     expect(b.send('events', new Uint8Array([9]))).toBe(true);
     await vi.waitUntil(() => gotA.length === 1, WAIT);
     expect(gotA).toEqual([['events', [9]]]);
+    expect(a.state).toBe('open');
+  });
+
+  it('ignoriert ein data mit fremder Instanz-ID sowie ein bye derselben fremden Instanz danach (Finding, Runde 2)', async () => {
+    const room = nextRoom();
+    const wire = tapWire(room);
+    const a = connect(room, 'a', 'b');
+    const b = connect(room, 'b', 'a');
+    const gotA = record(a);
+    await vi.waitUntil(() => a.state === 'open' && b.state === 'open', WAIT);
+
+    const foreignInst = 'fremde-instanz';
+    // Ein data einer fremden Instanz darf NIE als Verkehr ankommen UND darf peerInst nicht umbiegen.
+    wire.post({ to: 'a', from: 'b', inst: foreignInst, kind: 'data', channel: 'state', data: new Uint8Array([99]) });
+
+    // Beweis statt Vermutung: B sendet danach eine echte Nachricht, und A bekommt GENAU diese eine, in
+    // der richtigen Reihenfolge – nicht das fremde Paket zusätzlich oder zuerst.
+    expect(b.send('events', new Uint8Array([1]))).toBe(true);
+    await vi.waitUntil(() => gotA.length >= 1, WAIT);
+    expect(gotA).toEqual([['events', [1]]]);
+
+    // Ein bye derselben fremden Instanz darf A ebenfalls nicht schließen (peerInst wurde ja nie umgebogen).
+    wire.post({ to: 'a', from: 'b', inst: foreignInst, kind: 'bye' });
+    expect(b.send('events', new Uint8Array([2]))).toBe(true);
+    await vi.waitUntil(() => gotA.length >= 2, WAIT);
+    expect(gotA).toEqual([['events', [1]], ['events', [2]]]);
+    expect(a.state).toBe('open');
+  });
+
+  it('ignoriert ein ack mit fremder Instanz-ID sowie ein bye derselben fremden Instanz danach (Finding, Runde 2)', async () => {
+    const room = nextRoom();
+    const wire = tapWire(room);
+    const a = connect(room, 'a', 'b');
+    const b = connect(room, 'b', 'a');
+    const gotA = record(a);
+    await vi.waitUntil(() => a.state === 'open' && b.state === 'open', WAIT);
+
+    const foreignInst = 'fremde-instanz';
+    // peerInst ist bereits bekannt (die echte Instanz von b) – ein ack einer ANDEREN Instanz darf sie
+    // nicht überschreiben.
+    wire.post({ to: 'a', from: 'b', inst: foreignInst, kind: 'ack' });
+    wire.post({ to: 'a', from: 'b', inst: foreignInst, kind: 'bye' });
+
+    expect(b.send('events', new Uint8Array([3]))).toBe(true);
+    await vi.waitUntil(() => gotA.length >= 1, WAIT);
+    expect(gotA).toEqual([['events', [3]]]);
     expect(a.state).toBe('open');
   });
 

@@ -14,6 +14,23 @@ export interface MessageRouter {
 type AnyHandler = (message: NetMessage, channel: Channel) => void;
 
 /**
+ * Reicht einen Fehler sicher an `onProtocolError` weiter. Wirft der Callback SELBST (Minor 2, Runde 2),
+ * bricht das weder die Zustellung an Geschwister-Handler noch wirft es in den Transport – die Ausnahme
+ * des Callbacks wird stattdessen asynchron über `queueMicrotask` weitergeworfen. Ohne Callback tut diese
+ * Funktion nichts; die Aufrufstelle entscheidet selbst, was dann passiert (siehe unten).
+ * @returns ob ein Callback vorhanden war (und – sicher – aufgerufen wurde).
+ */
+function reportProtocolError(onProtocolError: ((error: unknown) => void) | undefined, error: unknown): boolean {
+  if (!onProtocolError) return false;
+  try {
+    onProtocolError(error);
+  } catch (callbackError) {
+    queueMicrotask(() => { throw callbackError; });
+  }
+  return true;
+}
+
+/**
  * NetMessage-Dispatch über einem Transport.
  *
  * Der Router ÜBERNIMMT `transport.onMessage` – ein Transport hat deshalb genau EINEN Router; ein
@@ -23,7 +40,9 @@ type AnyHandler = (message: NetMessage, channel: Channel) => void;
  * darf den Transport nie zum Werfen bringen. Jeder Handler läuft isoliert: eine Ausnahme aus einem
  * Handler stoppt die übrigen Handler NICHT und wirft nie in den Transport. `onProtocolError` erhält
  * Dekodierfehler UND Ausnahmen aus Handlern; ohne Callback werden Handler-Ausnahmen asynchron
- * weitergeworfen (`queueMicrotask`), damit sie weiterhin im globalen Fehler-Panel landen.
+ * weitergeworfen (`queueMicrotask`), damit sie weiterhin im globalen Fehler-Panel landen. Wirft
+ * `onProtocolError` selbst, wird auch DAS nie in den Transport geworfen, sondern ebenfalls asynchron
+ * weitergereicht (siehe `reportProtocolError`).
  */
 export function createMessageRouter(transport: Transport, onProtocolError?: (error: unknown) => void): MessageRouter {
   const handlers = new Map<NetMessage['type'], Set<AnyHandler>>();
@@ -33,7 +52,7 @@ export function createMessageRouter(transport: Transport, onProtocolError?: (err
     try {
       message = decodeMessage(data);
     } catch (error) {
-      onProtocolError?.(error);
+      reportProtocolError(onProtocolError, error);
       return;
     }
     const registered = handlers.get(message.type);
@@ -44,8 +63,7 @@ export function createMessageRouter(transport: Transport, onProtocolError?: (err
       try {
         handler(message, channel);
       } catch (error) {
-        if (onProtocolError) onProtocolError(error);
-        else queueMicrotask(() => { throw error; });
+        if (!reportProtocolError(onProtocolError, error)) queueMicrotask(() => { throw error; });
       }
     }
   };

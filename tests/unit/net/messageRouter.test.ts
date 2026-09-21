@@ -156,6 +156,36 @@ describe('createMessageRouter', () => {
     }
   });
 
+  it('wirft onProtocolError selbst, wird SEINE Ausnahme asynchron weitergeworfen – Geschwister-Handler laufen trotzdem (Minor 2, Runde 2)', () => {
+    const queued: Array<() => void> = [];
+    const spy = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((callback) => {
+      queued.push(callback);
+    });
+    try {
+      const transport = fakeTransport();
+      const callbackError = new Error('Fehler im onProtocolError-Callback');
+      const onProtocolError = vi.fn(() => {
+        throw callbackError;
+      });
+      const router = createMessageRouter(transport, onProtocolError);
+      const thrown = new Error('Fehler im Handler');
+      const second = vi.fn();
+      router.on('ping', () => {
+        throw thrown;
+      });
+      router.on('ping', second);
+
+      expect(() => transport.onMessage?.('state', encodeMessage(PING))).not.toThrow();
+
+      expect(onProtocolError).toHaveBeenCalledWith(thrown);
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(queued).toHaveLength(1);
+      expect(() => queued[0]?.()).toThrow(callbackError);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('send kodiert die Nachricht und reicht das boolean des Transports durch', () => {
     const transport = fakeTransport();
     const router = createMessageRouter(transport);

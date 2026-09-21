@@ -33,15 +33,23 @@ function readEnvelope(raw: unknown, selfId: string, peerId: string): Incoming | 
  *
  * Handshake: jede Seite sendet sofort `syn` und wiederholt es alle 250 ms, bis sie offen ist; JEDES
  * `syn` wird mit `ack` beantwortet – so bekommt auch ein Nachzügler seine Antwort. Geöffnet wird beim
- * ersten gültigen Umschlag der Gegenstelle (`syn`, `ack` oder `data`): er beweist, dass sie zuhört.
+ * ersten gültigen Handshake-Umschlag der Gegenstelle (`syn` oder `ack`): er beweist, dass sie zuhört.
+ * (`data` kann eine Verbindung nie eröffnen – die Gegenstelle kann laut Protokoll ohnehin erst senden,
+ * nachdem sie selbst schon offen ist, also nachdem der Handshake längst gelaufen ist.)
  * `close()` sendet `bye`; die Gegenstelle wird dadurch `closed`. `closed` ist endgültig.
  *
- * Jede Instanz erzeugt eine eigene `inst` (Finding 2) und merkt sich die `inst` der Gegenstelle aus
- * deren letztem gültigen `syn`/`ack`/`data`. Ein `bye` wird nur befolgt, wenn seine `inst` zur zuletzt
- * gesehenen Instanz der Gegenstelle passt – ein Nachzügler-`bye` einer VORHERIGEN Instanz (z. B. nach
- * einem Tab-Reload mit denselben ids) darf eine frisch übernommene Verbindung nicht mehr schließen.
- * Ein `syn` mit einer NEUEN `inst`, während wir schon `open` sind, bedeutet „Gegenstelle neu
- * gestartet": wir merken uns die neue Instanz und antworten mit `ack`, bleiben aber `open`.
+ * Jede Instanz erzeugt eine eigene `inst` (Finding 2). NUR Handshake-Umschläge führen eine Instanz der
+ * Gegenstelle EIN: ein `syn` übernimmt seine `inst` immer (Erstkontakt ODER Neustart der Gegenstelle);
+ * ein `ack` übernimmt seine `inst` nur, solange noch KEINE Instanz bekannt ist – ein `ack` einer
+ * anderen Instanz, während schon eine bekannt ist, wird vollständig ignoriert. `data` führt NIE eine
+ * neue Instanz ein (Finding, Runde 2): es wird nur zugestellt, wenn seine `inst` zur bekannten Instanz
+ * passt, sonst still verworfen – ein Nachzügler einer alten Instanz darf weder als Live-Verkehr
+ * ankommen noch (über `peerInst`) ein späteres, eigentlich fremdes `bye` legitimieren. Ein `bye` wird
+ * nur befolgt, wenn seine `inst` zur zuletzt bekannten Instanz der Gegenstelle passt – ein Nachzügler-
+ * `bye` einer VORHERIGEN Instanz (z. B. nach einem Tab-Reload mit denselben ids) darf eine frisch
+ * übernommene Verbindung nicht mehr schließen. Ein `bye`, das ankommt, bevor überhaupt eine Instanz
+ * bekannt ist, wird ebenfalls ignoriert – kann in der Praxis aber nicht vorkommen, weil jede Seite vor
+ * einem `bye` immer erst ein `syn` sendet.
  *
  * Beide Kanäle laufen über denselben Bus und sind hier zuverlässig und geordnet – Verlust auf
  * `state` lässt sich nur mit echtem WebRTC messen.
@@ -96,21 +104,35 @@ export function createBroadcastTransport(options: { room: string; selfId: string
   bus.onmessage = (event: MessageEvent) => {
     const incoming = readEnvelope(event.data, selfId, peerId);
     if (incoming === null) return;
+
     if (incoming.kind === 'bye') {
       // Nur die Instanz, die wir zuletzt als „das ist die Gegenstelle" gesehen haben, darf uns schließen.
       if (incoming.inst === peerInst) shutDown();
       return;
     }
-    // Jedes gültige syn/ack/data merkt sich die sendende Instanz – so erkennen wir einen Neustart der
-    // Gegenstelle (neue inst) und ignorieren ein bye einer vorherigen Instanz.
-    peerInst = incoming.inst;
-    // Erst antworten, dann öffnen: ein im onStateChange('open') gesendetes Paket läuft so HINTER dem ack.
-    if (incoming.kind === 'syn') post({ to: peerId, from: selfId, inst, kind: 'ack' });
+
+    if (incoming.kind === 'data') {
+      // data führt NIE eine neue Instanz ein – nur zustellen, wenn sie zur bekannten Instanz passt.
+      if (state === 'open' && incoming.inst === peerInst) transport.onMessage?.(incoming.channel, incoming.data);
+      return;
+    }
+
+    if (incoming.kind === 'ack') {
+      // Ein ack einer ANDEREN, bereits bekannten Instanz wird vollständig ignoriert – nur der
+      // Erstkontakt (peerInst noch unbekannt) darf die Instanz über ein ack setzen.
+      if (peerInst !== null && incoming.inst !== peerInst) return;
+      peerInst = incoming.inst;
+    } else {
+      // syn: immer die aktuelle Instanz übernehmen (Erstkontakt ODER Neustart der Gegenstelle), dann
+      // erst antworten, dann öffnen: ein im onStateChange('open') gesendetes Paket läuft so HINTER dem ack.
+      peerInst = incoming.inst;
+      post({ to: peerId, from: selfId, inst, kind: 'ack' });
+    }
+
     if (state === 'connecting') {
       stopSyn();
       setState('open');
     }
-    if (incoming.kind === 'data' && state === 'open') transport.onMessage?.(incoming.channel, incoming.data);
   };
 
   const sendSyn = (): void => post({ to: peerId, from: selfId, inst, kind: 'syn' });
