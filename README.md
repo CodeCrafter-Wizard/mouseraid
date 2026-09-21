@@ -4,7 +4,7 @@ Kooperatives 3D-Mäuse-Abenteuer im Browser – offline spielbar, für Handy, Ta
 **Status:** Meilenstein M0 (Gerüst). Live: https://codecrafter-wizard.github.io/mouseraid/
 
 ## Entwickeln
-Voraussetzung: Node ≥ 22.12.
+Voraussetzung: Node ≥ 22.18 (`scripts/wait-for-deploy.mjs` lädt ein TypeScript-Modul direkt).
 
     npm install
     npx playwright install chromium

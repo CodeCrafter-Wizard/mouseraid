@@ -1,4 +1,8 @@
 // Wartet, bis die erwartete Build-ID auf GitHub Pages live ist (funktioniert ohne Token – das Repo ist öffentlich).
+// Die Vergleichsregel ist dieselbe Datei, die auch die Hülle für `?expect=` benutzt: Node (ab 22.18) lädt
+// das TypeScript-Modul direkt und entfernt dabei nur die Typen – es gibt weiterhin keinen Build-Schritt.
+import { matchesBuildId } from '../src/platform/buildIdMatch.ts';
+
 const SITE = 'https://codecrafter-wizard.github.io/mouseraid/';
 const expected = process.argv[2];
 if (!expected) {
@@ -6,19 +10,6 @@ if (!expected) {
   process.exit(2);
 }
 
-/**
- * Gleiche Regel wie `matchesBuildId` in src/platform/buildInfo.ts (dort als Modul, hier bewusst
- * dupliziert – dieses Skript läuft ohne Build-Schritt): exakt oder Präfix ab 7 Stellen, weil
- * `git rev-parse --short HEAD` per Voreinstellung 7 Stellen liefert. Dirty-Builds
- * (`<sha>-dirty-<HHmmss>`) nur exakt.
- * @param {string} want
- * @param {string} live
- */
-function matchesBuildId(want, live) {
-  if (want === live) return true;
-  if (want.length < 7 || live.includes('-')) return false;
-  return live.startsWith(want);
-}
 const deadline = Date.now() + 15 * 60 * 1000;
 let last = '';
 while (Date.now() < deadline) {
