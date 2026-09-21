@@ -12,6 +12,7 @@ Sprache: mit dem Nutzer und in UI-Texten **Deutsch**.
 - `npm run verify` – Lint + Typecheck + Tests + Pages-Build + check-dist + Offline-Smoke (vor jedem „fertig")
 - `npm run phone` + `adb reverse tcp:4173 tcp:4173` – Handy-Loop ohne Service-Worker-Cache → am Handy `http://localhost:4173/?expect=<Build-ID>`
 - `npm run e2e` – alle Playwright-Tests (Tooling-Spike läuft nur lokal)
+- `npm run check-dist` – prüft den vorhandenen `dist/`-Ordner (Offline-Fallen, Schichtgrenzen im Bundle, Precache, Budgets)
 - `npm run build:pages` – Pflicht vor `check-dist` **und vor jedem Playwright-Lauf**: beide prüfen immer den vorhandenen `dist/`-Ordner, nie den Quelltext
 - `Get-NetTCPConnection -LocalPort 4173` – nach Playwright-/Preview-Läufen prüfen: lokal wird ein laufender Preview **wiederverwendet** (`reuseExistingServer`). Stammt er aus `npm run phone`/`phone:pwa`, hat er die falsche `base` und die Tests scheitern an 404-/MIME-Fehlern → diesen Prozess vorher beenden.
 
