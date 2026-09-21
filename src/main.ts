@@ -1,5 +1,16 @@
-import { BUILD_ID } from './platform/buildInfo';
+import './ui/shell.css';
+import { installErrorPanel } from './platform/errorPanel';
+import { initPwa } from './platform/pwa';
+import { mountShell } from './ui/shell';
 import { S } from './ui/strings';
 
-const app = document.getElementById('app');
-if (app) app.textContent = `${S.appName} – ${S.shell.build} ${BUILD_ID}`;
+const root = document.getElementById('app');
+if (root === null) throw new Error('#app fehlt');
+
+const shell = mountShell(root, {
+  subtitle: S.shell.subtitleGame,
+  note: S.shell.stageNoteGame,
+  links: [{ href: `${import.meta.env.BASE_URL}lab.html`, label: S.shell.linkLab }],
+});
+installErrorPanel(shell.getSwState);
+initPwa(shell);

@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
+import { VitePWA } from 'vite-plugin-pwa';
 
 /** GitHub-Pages-Pfad des Repos `CodeCrafter-Wizard/mouseraid`. */
 const PAGES_BASE = '/mouseraid/';
@@ -45,6 +46,42 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-    plugins: [versionFile(buildId, base)],
+    plugins: [
+      versionFile(buildId, base),
+      VitePWA({
+        registerType: 'prompt',
+        // Modus `phone` (adb-Loop): vorhandenen SW entfernen, damit nie ein alter Build aus dem Cache kommt.
+        selfDestroying: mode === 'phone',
+        manifest: {
+          id: base,
+          name: 'Mäusebau',
+          short_name: 'Mäusebau',
+          description: 'Kooperatives Mäuse-Abenteuer im Feinkostladen – offline spielbar.',
+          lang: 'de',
+          start_url: base,
+          scope: base,
+          display: 'standalone',
+          display_override: ['fullscreen', 'standalone'],
+          orientation: 'landscape',
+          theme_color: '#1b2140',
+          background_color: '#1b2140',
+          icons: [
+            { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+            { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+            { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        workbox: {
+          // Workbox lässt alles > 2 MiB sonst STILL weg → Offline-Bruch nur auf dem Handy.
+          globPatterns: ['**/*.{js,css,html,wasm,png,webp,svg,woff2,json,glb,mp3,ogg}'],
+          globIgnores: ['**/node_modules/**/*', '**/version.json'],
+          maximumFileSizeToCacheInBytes: 30 * 1024 * 1024,
+          // Dev-/Test-Parameter (?view=2d, ?station=…, ?expect=…) dürfen den Precache nie verfehlen.
+          ignoreURLParametersMatching: [/.*/],
+          navigateFallbackDenylist: [/\/lab\.html/],
+          cleanupOutdatedCaches: true,
+        },
+      }),
+    ],
   };
 });
