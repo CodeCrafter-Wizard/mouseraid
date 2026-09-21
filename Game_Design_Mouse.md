@@ -344,3 +344,18 @@ Diese Punkte wurden im Konzept nicht festgelegt. Claude Code setzt die Annahme u
 | Beitritt mitten im Spiel | Nicht möglich; alle Spieler treten in der Lobby bei. Reconnect derselben Spieler ist möglich. | Late Join |
 | Fahrzeug im Solo-Modus | Eine Kämpfermaus übernimmt den zweiten Sitz (KI schießt automatisch). | Fahrzeug nur im Koop |
 | Zyklus-Aufteilung | Nacht 2,5 min, Tag 1 min (Tag überspringbar, wenn alle bereit) | Gleich lang |
+
+## 10. Änderungen nach Recherche (2026-09-21) – überstimmt ältere Abschnitte
+
+Verbindlich sind `docs/superpowers/specs/2026-09-21-phase0-phase1-design.md` und `docs/decisions.md`. Kurzfassung der Änderungen gegenüber den Abschnitten 2–9:
+
+- §2/§3.1: **kein** `moveWithCollisions`, Havok oder `RecastJSPlugin` – Kollision und Wegfindung liegen als reines TypeScript in `src/core`.
+- §2: Babylon **9.27.x** mit „pure"-Importen, WebGL2-Engine explizit; **kein KTX2/Draco/Meshopt** in Phase 1; TypeScript **6.0.x**.
+- §3.3/§6: Kamera-Berechtigung ist der **Standardweg** (nicht Plan B); Text-Kopieren ist gleichwertig. Regel: Wer den Hotspot aufmacht, ist Host.
+- §3.4: Determinismus-Regeln (eigenes Trig-Modul, Seeded-PRNG, Integer-Ticks) gelten ab dem ersten Core-Code.
+- §3.7: Manifest `display: standalone` + `display_override: [fullscreen, standalone]`.
+- §5: Phase 1 darf starten, sobald das Testlabor steht; die Zwei-Handy-Matrix blockiert nur die Planung von Phase 2. Nicht testbare Matrix-Zellen werden dokumentiert.
+- §6: Kamera-Kollision über eigenen Spring-Arm gegen Core-Geometrie – **nicht** `camera.checkCollisions`.
+- §7: statt `@vitejs/plugin-basic-ssl` → `npm run phone` + `adb reverse` bzw. GitHub Pages.
+- §8.3/§8.9: kein Schleich-Button in Phase 1 (analoger Joystick); Flucht unter Regale bereits in Phase 1.
+- §9: Tag/Nacht **5 min / 5 min**, beides manuell beendbar.
