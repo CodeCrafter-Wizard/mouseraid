@@ -1,26 +1,62 @@
 import { registerSW } from 'virtual:pwa-register';
 import type { ShellHandles } from '../ui/shell';
 import { S } from '../ui/strings';
+import { updateCheckOutcome } from './updateStatus';
 
 /**
  * Registriert den Service Worker (Update nur auf Nachfrage – nie Auto-Reload mitten im Spiel)
  * und verdrahtet Offline-Status sowie „Nach Update suchen" mit der Hülle.
  */
 export function initPwa(ui: ShellHandles): void {
+  // Ohne Service Worker kann nur ein Neuladen eine neue Version holen. Der Knopf bleibt sichtbar
+  // und tut etwas Ehrliches – der `?expect=`-Hinweis schickt den Nutzer genau dorthin.
   if (import.meta.env.MODE === 'phone') {
     ui.setSwState(S.pwa.phoneMode);
+    ui.onCheckUpdate(() => { location.reload(); });
     return;
   }
   if (!('serviceWorker' in navigator)) {
     ui.setSwState(S.pwa.unsupported);
+    ui.onCheckUpdate(() => { location.reload(); });
     return;
   }
 
   let registration: ServiceWorkerRegistration | undefined;
+
+  /** Neuer Worker wartet: Chip und Knopf sagen dasselbe. Mehrfach aufrufbar. */
+  function showUpdateReady(): void {
+    ui.setSwState(S.pwa.updateReady);
+    ui.setUpdateAvailable(applyUpdate);
+  }
+
+  function applyUpdate(): void {
+    // Auf einer noch unkontrollierten Seite ist der neue Worker schon aktiv – dann gibt es nichts
+    // zu „skipWaiting", und nur ein Neuladen holt die neue Version. Sonst erst nach `activated`
+    // neu laden, damit der frische Worker die Seite auch wirklich ausliefert.
+    const waiting = registration?.waiting ?? null;
+    if (waiting === null) {
+      location.reload();
+      return;
+    }
+    waiting.addEventListener('statechange', () => {
+      if (waiting.state === 'activated') location.reload();
+    });
+    void updateSW(true);
+  }
+
+  /** `update()` ist fertig, der gefundene Worker lädt aber noch – sein Ende abwarten. */
+  function watchInstalling(worker: ServiceWorker | null): void {
+    if (worker === null) return;
+    worker.addEventListener('statechange', () => {
+      if (worker.state === 'installed' || worker.state === 'activated') showUpdateReady();
+      else if (worker.state === 'redundant') ui.setSwState(S.pwa.checkFailed);
+    });
+  }
+
   const updateSW = registerSW({
     immediate: true,
     onOfflineReady: () => ui.setOfflineReady(),
-    onNeedRefresh: () => ui.setUpdateAvailable(() => { void updateSW(true); }),
+    onNeedRefresh: () => showUpdateReady(),
     onRegisteredSW(_url, reg) {
       registration = reg;
       ui.setSwState(reg === undefined ? S.pwa.notRegistered : S.pwa.registered);
@@ -33,14 +69,28 @@ export function initPwa(ui: ShellHandles): void {
   void navigator.serviceWorker.ready.then(() => ui.setOfflineReady());
 
   ui.onCheckUpdate(() => {
-    if (registration === undefined) {
+    const reg = registration;
+    if (reg === undefined) {
       ui.setSwState(S.pwa.notRegistered);
       return;
     }
     ui.setSwState(S.pwa.checking);
-    registration.update().then(
-      () => ui.setSwState(S.pwa.upToDate),
-      () => ui.setSwState(S.pwa.registerError),
+    // `update()` löst auch bei GEFUNDENEM Update auf – erst die Registrierung verrät das Ergebnis.
+    reg.update().then(
+      () => {
+        const outcome = updateCheckOutcome(reg);
+        if (outcome === 'loading') {
+          ui.setSwState(S.pwa.updateLoading);
+          watchInstalling(reg.installing);
+          return;
+        }
+        if (outcome === 'ready') {
+          showUpdateReady();
+          return;
+        }
+        ui.setSwState(S.pwa.upToDate);
+      },
+      () => ui.setSwState(S.pwa.checkFailed),
     );
   });
 }

@@ -9,7 +9,7 @@ export const S = {
     linkLab: 'Verbindungs-Testlabor',
     linkGame: 'Zurück zum Spiel',
     build: 'Build',
-    buildMismatch: 'Erwartet wurde Build {expected} – bitte „Nach Update suchen“ tippen.',
+    buildMismatch: 'Erwartet wurde Build {expected} – bitte Seite neu laden bzw. „Nach Update suchen“ tippen. (Ungespeicherte Änderungen hängen „-dirty“ an die Build-ID.)',
   },
   pwa: {
     offlinePending: 'Offline noch nicht bereit …',
@@ -17,6 +17,9 @@ export const S = {
     checkUpdate: 'Nach Update suchen',
     checking: 'Suche nach Update …',
     upToDate: 'Kein neues Update gefunden.',
+    updateLoading: 'Update gefunden – wird geladen …',
+    updateReady: 'Neue Version bereit.',
+    checkFailed: 'Update-Suche fehlgeschlagen – offline?',
     updateAvailable: 'Neue Version verfügbar',
     applyUpdate: 'Jetzt aktualisieren',
     unsupported: 'Dieser Browser unterstützt keinen Offline-Modus.',

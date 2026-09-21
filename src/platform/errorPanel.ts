@@ -44,10 +44,20 @@ export function installErrorPanel(getSwState: () => string): { report(kind: Erro
     );
 
   copy.onclick = () => {
-    navigator.clipboard.writeText(diagnosis()).then(
-      () => { copy.textContent = S.errors.copied; },
-      () => { copy.textContent = S.errors.copyFailed; },
-    );
+    const failed = (): void => { copy.textContent = S.errors.copyFailed; };
+    // Unsichere Kontexte und ältere Browser haben keine Clipboard-API, und `writeText` kann auch
+    // synchron werfen. Das darf nie im globalen Fehler-Handler landen – sonst meldet das
+    // Diagnose-Panel beim Kopieren der Diagnose einen neuen Fehler.
+    const clipboard: Clipboard | undefined = navigator.clipboard;
+    if (clipboard === undefined || typeof clipboard.writeText !== 'function') {
+      failed();
+      return;
+    }
+    try {
+      void clipboard.writeText(diagnosis()).then(() => { copy.textContent = S.errors.copied; }, failed);
+    } catch {
+      failed();
+    }
   };
   close.onclick = () => { panel.hidden = true; };
 
