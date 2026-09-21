@@ -1,5 +1,7 @@
-import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // Das Repo ist öffentlich: echte Netzwerkadressen (private IPv4, globale/ULA-IPv6, mDNS-Namen)
@@ -30,7 +32,9 @@ function isPrivateIpv4(value: string): boolean {
 }
 
 function classifyIpv6(value: string): string | null {
-  // RFC 3849 reserviert 2001:db8::/32 ausdrücklich für Dokumentation.
+  // RFC 3849 reserviert 2001:db8::/32 ausdrücklich für Dokumentation – nur dieser Bereich ist frei.
+  // Der zweite Dokumentationsbereich (RFC 9637, 3fff::/20) zählt hier bewusst als „global": so hat
+  // der Selbsttest unten ein positives Beispiel, das niemandem gehört. Fixtures nehmen 2001:db8::.
   if (/^2001:0*db8\b/i.test(value)) return null;
   const head = value.split(':')[0] ?? '';
   const first = Number.parseInt(head, 16);
@@ -56,12 +60,23 @@ function scan(file: string, text: string): string[] {
   return found;
 }
 
+/** Getrackte Dateien – oder null, wenn `dir` kein Git-Checkout ist (entpacktes Archiv) bzw. git fehlt. */
+function trackedFiles(dir: string): string[] | null {
+  try {
+    const output = execFileSync('git', ['ls-files', '-z'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return output.split('\0').filter((file) => file !== '');
+  } catch {
+    return null;
+  }
+}
+
 describe('Datenschutz-Wächter', () => {
   it('erkennt die Muster, gegen die er schützt', () => {
     // Zur Laufzeit zusammengesetzt, damit diese Testdatei nicht über den eigenen Wächter stolpert.
     const privateIpv4 = ['192', '168', '1', '23'].join('.');
     const ula = ['fd12', '3456', '789a', '1'].join(':');
-    const globalIpv6 = ['2a00', '1450', '4001', '815'].join(':');
+    // Positives Beispiel aus dem Dokumentationsbereich 3fff::/20 (RFC 9637) statt eines real vergebenen Präfixes.
+    const globalIpv6 = ['3fff', 'abc', '12', '1'].join(':');
     const compressedUla = `${['fd00', ''].join(':')}:1`;
     const documentationIpv6 = ['2001', 'db8', '85a3', '1'].join(':');
     const mdns = `${['1b9d6bcd', '4b1d', '4b1d', '9b1d', '1b9d6bcd4b1d'].join('-')}.local`;
@@ -80,8 +95,36 @@ describe('Datenschutz-Wächter', () => {
     expect(scan('x', 'http://127.0.0.1:4173/ und 0.0.0.0')).toEqual([]);
   });
 
-  it('findet in keiner getrackten Textdatei eine echte Netzwerkadresse', () => {
-    const files = execSync('git ls-files -z', { encoding: 'utf8' }).split('\0').filter((file) => file !== '');
+  it('stuft den ganzen globalen Bereich 2000::/3 als Befund ein, nicht nur das Dokumentationsbeispiel', () => {
+    // Nur der erste Block entscheidet – als Zahl notiert, damit hier keine Adresse im Klartext steht.
+    for (const head of [0x2000, 0x2600, 0x2a00, 0x3fff]) {
+      expect(scan('x', [head.toString(16), '0', '0', '1'].join(':'))).toEqual(['x: globale IPv6']);
+    }
+    for (const head of [0x1fff, 0x4000]) {
+      expect(scan('x', [head.toString(16), '0', '0', '1'].join(':'))).toEqual([]);
+    }
+  });
+
+  it('meldet null statt zu werfen, wenn das Verzeichnis kein Git-Checkout ist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'maeusebau-kein-git-'));
+    try {
+      expect(trackedFiles(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('findet in keiner getrackten Textdatei eine echte Netzwerkadresse', (context) => {
+    const files = trackedFiles(process.cwd());
+    if (files === null) {
+      // In der CI gibt es immer einen Checkout – dort wäre ein still übersprungener Wächter ein blindes Tor.
+      if (process.env.CI) throw new Error('Datenschutz-Wächter: `git ls-files` schlug in der CI fehl – ohne Checkout prüft er nichts.');
+      const reason = 'kein Git-Checkout (`git ls-files` schlug fehl) – der Wächter prüft nur getrackte Dateien';
+      // Direkt auf stderr: der Standard-Reporter zeigt weder die Skip-Notiz noch `console.warn` übersprungener Tests.
+      process.stderr.write(`\nDatenschutz-Wächter ÜBERSPRUNGEN: ${reason}\n`);
+      context.skip(reason);
+      return;
+    }
     expect(files.length).toBeGreaterThan(10);
     const findings = files
       .filter((file) => !SKIPPED_FILES.has(file) && !BINARY.test(file))
