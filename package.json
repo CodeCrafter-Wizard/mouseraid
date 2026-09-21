@@ -1,0 +1,38 @@
+{
+  "name": "maeusebau",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:pages": "vite build --mode pages",
+    "preview:pages": "vite preview --mode pages --host 127.0.0.1 --port 4173 --strictPort",
+    "phone": "vite build --mode phone && vite preview --mode phone --host 127.0.0.1 --port 4173 --strictPort",
+    "phone:pwa": "vite build && vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.core.json && tsc -p tsconfig.node.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check-dist": "node scripts/check-dist.mjs",
+    "e2e": "playwright test",
+    "e2e:smoke": "playwright test tests/e2e/offline-smoke.spec.ts",
+    "icons": "node scripts/make-icons.mjs",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run build:pages && npm run check-dist && npm run e2e:smoke"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.13.6",
+    "eslint": "10.11.0",
+    "globals": "17.12.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0",
+    "vite": "8.3.0",
+    "vite-plugin-pwa": "1.3.0",
+    "vitest": "5.0.1",
+    "workbox-window": "7.4.1"
+  }
+}
