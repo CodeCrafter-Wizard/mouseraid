@@ -225,4 +225,46 @@ describe('runPingSeries', () => {
     expect(onPing).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('count 1: ein Ping, ein Pong -> sent 1, received 1, Median = p95 = die RTT (Finding 3)', async () => {
+    const { local, remote } = setup();
+    attachPongResponder(remote);
+
+    const run = start(local, 'state', { ...OPTIONS, count: 1 });
+    await vi.advanceTimersByTimeAsync(RTT);
+
+    expect(run.stats).toEqual({
+      sent: 1, received: 1, lossPct: 0, minMs: RTT, medianMs: RTT, p95Ms: RTT, maxMs: RTT, outOfOrder: 0,
+    });
+  });
+
+  it('späte Pongs einer FRÜHEREN Serie zählen nicht in der nächsten Serie desselben Routers (Finding 3)', async () => {
+    // Laufzeit 60 ms je Richtung -> RTT 120 ms: die Pongs der ersten Serie treffen erst lange nach
+    // deren eigenem Timeout ein, aber noch WÄHREND die zweite Serie läuft.
+    const STALE_LATENCY = 60;
+    const { local, remote } = setup({ latencyMs: () => STALE_LATENCY });
+    attachPongResponder(remote);
+
+    const firstOptions: PingSeriesOptions = { count: 3, intervalMs: 20, timeoutMs: 50, now: () => Date.now() };
+    const firstSeries = runPingSeries(local, 'state', firstOptions);
+    // Letzter Ping bei 40 ms, Timeout danach bei 50 ms -> Serie 1 endet bei 90 ms ohne einen einzigen Pong.
+    await vi.advanceTimersByTimeAsync(40 + firstOptions.timeoutMs);
+    const stats1 = await firstSeries;
+    expect(stats1).toEqual({
+      sent: 3, received: 0, lossPct: 100, minMs: 0, medianMs: 0, p95Ms: 0, maxMs: 0, outOfOrder: 0,
+    });
+    // Kein vi.getTimerCount()-Check hier: der Speicher-Transport hat noch eigene Zustell-Timer offen
+    // (ping2 ist noch unterwegs, zwei Pongs sind noch unterwegs zurück) – das ist unabhängig von
+    // runPingSeries' eigener Aufräumarbeit, die schon mit dem finish() von Serie 1 erledigt ist.
+
+    // Serie 1s drei Pongs (seq 0,1,2 mit sentAtMs 0,20,40) treffen bei 120, 140 und 160 ms ein – also
+    // während Serie 2 (Start bei 90 ms) läuft. Serie 2 startet ihre eigene Zählung ebenfalls bei seq 0.
+    const secondOptions: PingSeriesOptions = { count: 2, intervalMs: 20, timeoutMs: 200, now: () => Date.now() };
+    const secondSeries = runPingSeries(local, 'state', secondOptions);
+    await vi.advanceTimersByTimeAsync(20 + secondOptions.timeoutMs);
+    const stats2 = await secondSeries;
+
+    expect(stats2).toMatchObject({ sent: 2, received: 2, lossPct: 0, outOfOrder: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

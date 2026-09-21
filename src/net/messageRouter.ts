@@ -20,9 +20,10 @@ type AnyHandler = (message: NetMessage, channel: Channel) => void;
  * zweiter `createMessageRouter` auf demselben Transport hängt den ersten still ab.
  *
  * Nicht dekodierbare Bytes gehen an `onProtocolError` und werden sonst verworfen: die Gegenstelle
- * darf den Transport nie zum Werfen bringen. Eine Ausnahme aus einem HANDLER ist dagegen ein eigener
- * Programmfehler – sie läuft durch (und landet so im Fehler-Panel), statt als Protokollfehler
- * getarnt zu werden.
+ * darf den Transport nie zum Werfen bringen. Jeder Handler läuft isoliert: eine Ausnahme aus einem
+ * Handler stoppt die übrigen Handler NICHT und wirft nie in den Transport. `onProtocolError` erhält
+ * Dekodierfehler UND Ausnahmen aus Handlern; ohne Callback werden Handler-Ausnahmen asynchron
+ * weitergeworfen (`queueMicrotask`), damit sie weiterhin im globalen Fehler-Panel landen.
  */
 export function createMessageRouter(transport: Transport, onProtocolError?: (error: unknown) => void): MessageRouter {
   const handlers = new Map<NetMessage['type'], Set<AnyHandler>>();
@@ -39,7 +40,13 @@ export function createMessageRouter(transport: Transport, onProtocolError?: (err
     if (registered === undefined) return;
     // Über eine Kopie laufen: Handler dürfen sich während der Zustellung abmelden.
     for (const handler of [...registered]) {
-      if (registered.has(handler)) handler(message, channel);
+      if (!registered.has(handler)) continue;
+      try {
+        handler(message, channel);
+      } catch (error) {
+        if (onProtocolError) onProtocolError(error);
+        else queueMicrotask(() => { throw error; });
+      }
     }
   };
 

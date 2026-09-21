@@ -114,16 +114,46 @@ describe('createMessageRouter', () => {
     expect(() => transport.onMessage?.('state', new Uint8Array([99]))).not.toThrow();
   });
 
-  it('eine Ausnahme aus einem Handler ist KEIN Protokollfehler – sie bleibt sichtbar', () => {
+  it('eine Ausnahme aus einem Handler geht an onProtocolError und stört die übrigen Handler nicht', () => {
     const transport = fakeTransport();
-    const onProtocolError = vi.fn();
-    const router = createMessageRouter(transport, onProtocolError);
+    const errors: unknown[] = [];
+    const router = createMessageRouter(transport, (error) => errors.push(error));
+    const thrown = new Error('Fehler im Handler');
+    const second = vi.fn();
     router.on('ping', () => {
-      throw new Error('Fehler im Handler');
+      throw thrown;
     });
+    router.on('ping', second);
 
-    expect(() => transport.onMessage?.('state', encodeMessage(PING))).toThrow('Fehler im Handler');
-    expect(onProtocolError).not.toHaveBeenCalled();
+    expect(() => transport.onMessage?.('state', encodeMessage(PING))).not.toThrow();
+
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual([thrown]);
+  });
+
+  it('ohne onProtocolError wird eine Handler-Ausnahme asynchron über queueMicrotask weitergeworfen', () => {
+    const queued: Array<() => void> = [];
+    const spy = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((callback) => {
+      queued.push(callback);
+    });
+    try {
+      const transport = fakeTransport();
+      const router = createMessageRouter(transport);
+      const thrown = new Error('Fehler im Handler');
+      const second = vi.fn();
+      router.on('ping', () => {
+        throw thrown;
+      });
+      router.on('ping', second);
+
+      expect(() => transport.onMessage?.('state', encodeMessage(PING))).not.toThrow();
+
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(queued).toHaveLength(1);
+      expect(() => queued[0]?.()).toThrow(thrown);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('send kodiert die Nachricht und reicht das boolean des Transports durch', () => {

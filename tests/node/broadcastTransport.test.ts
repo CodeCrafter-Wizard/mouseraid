@@ -31,6 +31,7 @@ function connect(room: string, selfId: string, peerId: string): Transport {
 interface WireEnvelope {
   to?: unknown;
   from?: unknown;
+  inst?: unknown;
   kind?: unknown;
   channel?: unknown;
   data?: unknown;
@@ -104,19 +105,20 @@ describe('createBroadcastTransport', () => {
     const a = connect(room, 'a', 'b');
 
     await vi.waitUntil(() => wire.count('a', 'syn') >= 1, WAIT);
-    expect(wire.seen[0]).toEqual({ to: 'b', from: 'a', kind: 'syn' });
+    // toMatchObject statt toEqual: die echten Umschläge tragen zusätzlich eine `inst`-Kennung (Finding 2).
+    expect(wire.seen[0]).toMatchObject({ to: 'b', from: 'a', kind: 'syn' });
     expect(vi.getTimerCount()).toBe(1);
     vi.advanceTimersByTime(250);
     await vi.waitUntil(() => wire.count('a', 'syn') >= 2, WAIT);
 
-    wire.post({ to: 'a', from: 'b', kind: 'syn' });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'syn' });
     await vi.waitUntil(() => wire.count('a', 'ack') >= 1, WAIT);
     expect(a.state).toBe('open');
     expect(vi.getTimerCount()).toBe(0);
 
-    wire.post({ to: 'a', from: 'b', kind: 'syn' });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'syn' });
     await vi.waitUntil(() => wire.count('a', 'ack') >= 2, WAIT);
-    expect(wire.seen.find((envelope) => envelope.kind === 'ack')).toEqual({ to: 'b', from: 'a', kind: 'ack' });
+    expect(wire.seen.find((envelope) => envelope.kind === 'ack')).toMatchObject({ to: 'b', from: 'a', kind: 'ack' });
   });
 
   it('liefert Daten in beide Richtungen auf beiden Kanälen – als Uint8Array-Kopien', async () => {
@@ -162,19 +164,22 @@ describe('createBroadcastTransport', () => {
     const wire = tapWire(room);
     const a = connect(room, 'a', 'b');
     const got = record(a);
-    wire.post({ to: 'a', from: 'b', kind: 'ack' });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'ack' });
     await vi.waitUntil(() => a.state === 'open', WAIT);
 
     const data = new Uint8Array([1]);
-    wire.post({ to: 'x', from: 'b', kind: 'data', channel: 'state', data });
-    wire.post({ to: 'a', from: 'fremd', kind: 'data', channel: 'state', data });
-    wire.post({ to: 'a', from: 'fremd', kind: 'bye' });
-    wire.post({ to: 'a', from: 'b', kind: 'data', channel: 'quatsch', data });
-    wire.post({ to: 'a', from: 'b', kind: 'data', channel: 'state', data: 'kein Uint8Array' });
-    wire.post({ to: 'a', from: 'b', kind: 'unbekannt' });
+    wire.post({ to: 'x', from: 'b', inst: 'b-instanz', kind: 'data', channel: 'state', data });
+    wire.post({ to: 'a', from: 'fremd', inst: 'fremd-instanz', kind: 'data', channel: 'state', data });
+    wire.post({ to: 'a', from: 'fremd', inst: 'fremd-instanz', kind: 'bye' });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'data', channel: 'quatsch', data });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'data', channel: 'state', data: 'kein Uint8Array' });
+    // Finding 2: eine leere oder fehlende inst macht den Umschlag ungültig – auch das ist Müll.
+    wire.post({ to: 'a', from: 'b', inst: '', kind: 'data', channel: 'state', data });
+    wire.post({ to: 'a', from: 'b', kind: 'data', channel: 'state', data });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'unbekannt' });
     wire.post('nur Text');
     wire.post(null);
-    wire.post({ to: 'a', from: 'b', kind: 'data', channel: 'events', data: new Uint8Array([42]) });
+    wire.post({ to: 'a', from: 'b', inst: 'b-instanz', kind: 'data', channel: 'events', data: new Uint8Array([42]) });
 
     await vi.waitUntil(() => got.length >= 1, WAIT);
     expect(got).toEqual([['events', [42]]]);
@@ -224,7 +229,71 @@ describe('createBroadcastTransport', () => {
     expect(b.send('events', new Uint8Array([1]))).toBe(false);
     expect(statesA).toEqual(['closed']);
     expect(statesB).toEqual(['closed']);
-    expect(wire.seen.filter((envelope) => envelope.kind === 'bye')).toEqual([{ to: 'b', from: 'a', kind: 'bye' }]);
+    // toMatchObject statt toEqual: der echte bye-Umschlag trägt zusätzlich eine `inst`-Kennung (Finding 2).
+    expect(wire.seen.filter((envelope) => envelope.kind === 'bye')).toMatchObject([{ to: 'b', from: 'a', kind: 'bye' }]);
+  });
+
+  it('ignoriert ein bye mit fremder Instanz-ID – die Gegenstelle bleibt offen (Finding 2)', async () => {
+    const room = nextRoom();
+    const wire = tapWire(room);
+    const a = connect(room, 'a', 'b');
+    const b = connect(room, 'b', 'a');
+    const gotA = record(a);
+    await vi.waitUntil(() => a.state === 'open' && b.state === 'open', WAIT);
+
+    // Ein bye, das nicht von der wirklich verbundenen Instanz stammt (z. B. ein Nachzügler einer
+    // anderen Sitzung mit derselben id), darf A nicht schließen.
+    // wire.count() kann das eigene Posting NICHT sehen (BroadcastChannel liefert nie an den Absender
+    // selbst zurück) – der Beweis kommt deshalb über einen echten Empfang, nicht über das Zählen.
+    wire.post({ to: 'a', from: 'b', inst: 'fremde-instanz', kind: 'bye' });
+
+    expect(b.send('events', new Uint8Array([9]))).toBe(true);
+    await vi.waitUntil(() => gotA.length === 1, WAIT);
+    expect(gotA).toEqual([['events', [9]]]);
+    expect(a.state).toBe('open');
+  });
+
+  it('close() mit passender Instanz-ID schließt die Gegenstelle weiterhin (Finding 2)', async () => {
+    const room = nextRoom();
+    const a = connect(room, 'a', 'b');
+    const b = connect(room, 'b', 'a');
+    await vi.waitUntil(() => a.state === 'open' && b.state === 'open', WAIT);
+
+    b.close();
+
+    await vi.waitUntil(() => a.state === 'closed', WAIT);
+    expect(a.send('events', new Uint8Array([1]))).toBe(false);
+  });
+
+  it('Peer-Neustart: eine neue Instanz übernimmt, ein verspätetes bye der alten Instanz schließt A nicht (Finding 2)', async () => {
+    const room = nextRoom();
+    const wire = tapWire(room);
+    const a = connect(room, 'a', 'b');
+    const bOld = connect(room, 'b', 'a');
+    await vi.waitUntil(() => a.state === 'open' && bOld.state === 'open', WAIT);
+
+    // Neustart der Gegenstelle (z. B. Tab-Reload): eine zweite Instanz mit denselben ids übernimmt,
+    // OHNE dass bOld vorher ein bye gesendet hat.
+    const bNew = connect(room, 'b', 'a');
+    const gotA = record(a);
+    const gotBNew = record(bNew);
+    await vi.waitUntil(() => bNew.state === 'open', WAIT);
+    expect(a.state).toBe('open');
+
+    // Verspätetes bye der ALTEN Instanz (z. B. ein Tab, der jetzt erst tatsächlich schließt) darf die
+    // frisch übernommene Verbindung nicht kappen.
+    bOld.close();
+    await vi.waitUntil(() => wire.count('b', 'bye') >= 1, WAIT);
+    expect(a.state).toBe('open');
+
+    expect(a.send('state', new Uint8Array([1]))).toBe(true);
+    expect(bNew.send('state', new Uint8Array([2]))).toBe(true);
+    await vi.waitUntil(() => gotBNew.length === 1 && gotA.length === 1, WAIT);
+    expect(gotBNew).toEqual([['state', [1]]]);
+    expect(gotA).toEqual([['state', [2]]]);
+
+    bNew.close();
+    await vi.waitUntil(() => a.state === 'closed', WAIT);
   });
 
   it('close() während des Verbindens stoppt die syn-Wiederholung', () => {
