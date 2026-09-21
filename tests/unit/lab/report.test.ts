@@ -181,6 +181,73 @@ describe('redactReport', () => {
   });
 });
 
+describe('redactReport – Sicherheitsnetz gegen angeklebte Adressen', () => {
+  const [KNOWN_IPV4, KNOWN_IPV6] = sampleAddresses();
+  const KNOWN_MDNS = sampleAddresses()[2] ?? '';
+  const UNKNOWN_IPV4 = '203.0.113.77';
+  const KNOWN_IPV6_FULL = '2001:0db8:0000:0000:0000:0000:0000:0010';
+  const UNKNOWN_IPV6_COMPRESSED = '2001:db8:9999::42';
+  const UNKNOWN_IPV6_FULL = '2001:0db8:0000:0000:0000:0000:0000:0099';
+  const KNOWN_IPV6_UPPER = (KNOWN_IPV6 ?? '').toUpperCase();
+  const UNKNOWN_MDNS = `${['33333333', '3333', '3333', '3333', '333333333333'].join('-')}.local`;
+
+  const GLUE_PREFIXES = ['', 'x', '5', '_', '(', 'ä', 'Fehlercode'];
+  const GLUE_SUFFIXES = ['', 'x', '_', '.', ')', 'war'];
+  const GLUE_ADDRESSES = [
+    KNOWN_IPV4 ?? '',
+    UNKNOWN_IPV4,
+    KNOWN_IPV6_FULL,
+    UNKNOWN_IPV6_COMPRESSED,
+    UNKNOWN_IPV6_FULL,
+    KNOWN_IPV6_UPPER,
+    KNOWN_MDNS,
+    UNKNOWN_MDNS,
+  ];
+
+  it('lässt keine angeklebte Adresse im serialisierten Report übrig (Präfix × Suffix × Adresse)', () => {
+    const failures: string[] = [];
+    for (const address of GLUE_ADDRESSES) {
+      for (const prefix of GLUE_PREFIXES) {
+        for (const suffix of GLUE_SUFFIXES) {
+          const glued = `${prefix}${address}${suffix}`;
+          const report = sampleReport({ notes: glued, timeline: [{ tMs: 1, kind: 'note', detail: glued }] });
+          const json = JSON.stringify(redactReport(report)).toLowerCase();
+          if (json.includes(address.toLowerCase())) {
+            failures.push(`prefix=${JSON.stringify(prefix)} address=${address} suffix=${JSON.stringify(suffix)}`);
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('bekannte Adresse bleibt auch mit angeklebter Ziffer unauffindbar (Sicherheitsnetz greift)', () => {
+    const known = KNOWN_IPV4 ?? '';
+    const report = sampleReport({ notes: `${known}7 und 9${known}` });
+    const json = JSON.stringify(redactReport(report)).toLowerCase();
+    expect(json).not.toContain(known.toLowerCase());
+  });
+
+  it('Uhrzeit und Versionsnummern bleiben unangetastet; ein Chrome-Versionsstring in notes wird (bewusst zu viel) redigiert, userAgent bleibt bytegleich', () => {
+    const original = sampleReport({
+      notes: 'Uhrzeit 16:24:25, Version 1.2.3, Browser Chrome/128.0.0.0 gestartet',
+      timeline: [{ tMs: 1, kind: 'note', detail: '16:24:25 und 1.2.3' }],
+    });
+    const redacted = redactReport(original);
+    expect(redacted.notes).toContain('16:24:25');
+    expect(redacted.notes).toContain('1.2.3');
+    expect(redacted.notes).not.toContain('Chrome/128.0.0.0');
+    expect(redacted.timeline[0]?.detail).toBe('16:24:25 und 1.2.3');
+    expect(redacted.environment).toEqual(original.environment);
+    expect(redacted.environment.userAgent).toBe(original.environment.userAgent);
+  });
+
+  it('dieselbe bekannte IPv6-Adresse in Großbuchstaben in notes bekommt dasselbe Token wie im gesammelten Kandidaten', () => {
+    const report = sampleReport({ notes: `gesehen: ${KNOWN_IPV6_UPPER}` });
+    expect(redactReport(report).notes).toBe('gesehen: ipv6/global#2');
+  });
+});
+
 describe('reportToText', () => {
   it('beginnt mit Kopf: ID, Zeitpunkt, Build, Zellenlabel, Gültigkeit', () => {
     const lines = reportToText(sampleReport()).split('\n');
@@ -403,5 +470,57 @@ describe('createReportStore', () => {
     store.clear();
     expect(store.list()).toEqual([]);
     expect(storage.data.has(REPORT_STORE_KEY)).toBe(false);
+  });
+});
+
+describe('createReportStore – verschachtelte Report-Form', () => {
+  const malformed: Array<{ label: string; report: unknown }> = [
+    { label: 'gather ist leeres Objekt', report: { ...sampleReport({ id: 'a' }), gather: {} } },
+    {
+      label: 'gather.gathered ist kein Array',
+      report: { ...sampleReport({ id: 'b' }), gather: { durationMs: 1, timedOut: false, gathered: 'nope', transmitted: 1 } },
+    },
+    {
+      label: 'gather.gathered-Eintrag ohne address/raw',
+      report: { ...sampleReport({ id: 'c' }), gather: { durationMs: 1, timedOut: false, gathered: [{ foo: 1 }], transmitted: 1 } },
+    },
+    {
+      label: 'gather.transmitted ist keine Zahl',
+      report: { ...sampleReport({ id: 'd' }), gather: { durationMs: 1, timedOut: false, gathered: [], transmitted: 'x' } },
+    },
+    { label: 'payloadSizes ist kein Objekt/null', report: { ...sampleReport({ id: 'e' }), payloadSizes: 'nope' } },
+    { label: 'selectedPair ist kein Objekt/null', report: { ...sampleReport({ id: 'f' }), selectedPair: 'nope' } },
+    { label: 'hello ist kein Objekt/null', report: { ...sampleReport({ id: 'g' }), hello: 'nope' } },
+    { label: 'ping.state ist kein Objekt/null', report: { ...sampleReport({ id: 'h' }), ping: { state: 'nope', events: null } } },
+    { label: 'timeline-Eintrag ohne detail', report: { ...sampleReport({ id: 'i' }), timeline: [{ tMs: 1, kind: 'x' }] } },
+    { label: 'notes ist keine Zeichenkette', report: { ...sampleReport({ id: 'j' }), notes: 42 } },
+    { label: 'cell.device ist keine Zeichenkette', report: { ...sampleReport({ id: 'k' }), cell: { ...sampleReport().cell, device: 42 } } },
+    {
+      label: 'environment.features.barcodeFormats ist kein Array',
+      report: {
+        ...sampleReport({ id: 'l' }),
+        environment: { ...sampleReport().environment, features: { ...sampleReport().environment.features, barcodeFormats: 'nope' } },
+      },
+    },
+  ];
+  const validReport = sampleReport({ id: 'gut' });
+
+  it('filtert Einträge mit richtigen Top-Level-Feldern, aber falscher verschachtelter Form aus', () => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, JSON.stringify([validReport, ...malformed.map((entry) => entry.report)]));
+    const store = createReportStore(storage);
+    expect(ids(store.list())).toEqual(['gut']);
+  });
+
+  it('für alles, was list() zurückgibt, werfen reportToText, reportsToJson und redactReport nicht', () => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, JSON.stringify([validReport, ...malformed.map((entry) => entry.report)]));
+    const store = createReportStore(storage);
+    const listed = store.list();
+    for (const report of listed) {
+      expect(() => reportToText(report)).not.toThrow();
+      expect(() => redactReport(report)).not.toThrow();
+    }
+    expect(() => reportsToJson(listed)).not.toThrow();
   });
 });

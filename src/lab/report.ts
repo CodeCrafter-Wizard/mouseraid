@@ -79,17 +79,18 @@ function createTokenizer(): TokenFor {
   };
 }
 
+// Layer 1 (Muster) redigiert bewusst GROSSZÜGIG – keine \b-Grenzen, keine Bereichsprüfung mehr:
+// eine angeklebte Adresse ("Fehlercode192.0.2.55war") darf nie überleben, notfalls auf Kosten von
+// ein paar mitgerissenen Nachbarzeichen. Layer 2 (`scrubKnownAddresses`) ist das Sicherheitsnetz
+// danach: jede bekannte gathered[]-Adresse, die trotzdem noch im Text steht, wird wörtlich ersetzt.
 // Bewusst ohne Lookbehind: ältere Safari-Versionen scheitern daran schon beim Parsen des Bundles.
-const IPV4_PATTERN = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
-const MDNS_PATTERN = /\b[0-9a-z][0-9a-z-]*(?:\.[0-9a-z-]+)*\.local\b/gi;
-/** Wörter mit mindestens zwei Doppelpunkten (plus Zonen-ID); ob es IPv6 ist, entscheidet `isIpv6`. */
-const IPV6_WORD_PATTERN = /[0-9a-z]*(?::[0-9a-z]*){2,}(?:%[0-9a-z]+)?/gi;
+const IPV4_PATTERN = /\d{1,3}(?:\.\d{1,3}){3}/g;
+/** Alles außer Leerraum/Satzzeichen bis einschließlich ".local" – auch Umlaute im Namen selbst. */
+const MDNS_PATTERN = /[^\s,;()<>[\]{}"']+\.local/gi;
+/** Hex-Wörter mit mindestens zwei Doppelpunkten (plus optionaler Zonen-ID); ob geredigiert wird, entscheidet `looksLikeIpv6`. */
+const IPV6_WORD_PATTERN = /[0-9a-f]*(?::[0-9a-f]*){2,}(?:%[0-9a-z]+)?/gi;
 
-function isIpv4(text: string): boolean {
-  return text.split('.').every((octet) => Number(octet) <= 255);
-}
-
-function isIpv6(word: string): boolean {
+function isValidIpv6(word: string): boolean {
   const halves = (word.split('%')[0] ?? '').split('::');
   if (halves.length > 2) return false;
   const groups = halves.flatMap((half) => (half === '' ? [] : half.split(':')));
@@ -98,23 +99,60 @@ function isIpv6(word: string): boolean {
   return halves.length === 2 ? groups.length <= 7 : groups.length === 8;
 }
 
-/** Ersetzt alles, was wie IPv4, IPv6 oder ein `.local`-Name aussieht. Bekannte Adressen behalten ihr Token. */
-function scrubText(text: string, tokenFor: TokenFor): string {
-  return text
-    .replace(IPV4_PATTERN, (match) => (isIpv4(match) ? tokenFor(match, 'ipv4', 'other') : match))
+/**
+ * Grosszügiger als reines IPv6: auch Beinahe-Treffer (z. B. durch angeklebte Ziffern verschoben)
+ * werden vorsorglich redigiert. Eine Uhrzeit wie „16:24:25“ hat nur drei Gruppen und kein „::“ –
+ * die bleibt unangetastet, sonst wäre jede Uhrzeit im Report betroffen.
+ */
+function looksLikeIpv6(word: string): boolean {
+  if (isValidIpv6(word)) return true;
+  const withoutZone = word.split('%')[0] ?? '';
+  if (withoutZone.includes('::')) return true;
+  return withoutZone.split(':').length >= 4;
+}
+
+interface KnownAddress {
+  address: string;
+  token: string;
+}
+
+function escapeForRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Sicherheitsnetz nach dem Muster-Durchlauf: jede bekannte gathered[]-Adresse, die trotzdem noch im
+ * Text steht (wie auch immer angeklebt), wird wörtlich ersetzt – längste zuerst, damit eine kürzere
+ * bekannte Adresse keine längere überlappende zerschneidet.
+ */
+function scrubKnownAddresses(text: string, known: readonly KnownAddress[]): string {
+  let result = text;
+  const byLengthDesc = [...known].sort((a, b) => b.address.length - a.address.length);
+  for (const { address, token } of byLengthDesc) {
+    if (address === '') continue;
+    result = result.replace(new RegExp(escapeForRegExp(address), 'gi'), token);
+  }
+  return result;
+}
+
+/** Ersetzt alles, was wie IPv4, IPv6 oder ein `.local`-Name aussieht, dann jede bekannte Adresse wörtlich. */
+function scrubText(text: string, tokenFor: TokenFor, known: readonly KnownAddress[]): string {
+  const patterned = text
+    .replace(IPV4_PATTERN, (match) => tokenFor(match, 'ipv4', 'other'))
     .replace(MDNS_PATTERN, (match) => tokenFor(match, 'mdns', 'mdns'))
-    .replace(IPV6_WORD_PATTERN, (match) => (isIpv6(match) ? tokenFor(match.split('%')[0] ?? match, 'ipv6', 'other') : match));
+    .replace(IPV6_WORD_PATTERN, (match) => (looksLikeIpv6(match) ? tokenFor(match.split('%')[0] ?? match, 'ipv6', 'other') : match));
+  return scrubKnownAddresses(patterned, known);
 }
 
 /** Kandidatenzeile: `foundation component transport priority ADRESSE port typ … [raddr ADRESSE] [ufrag WERT]`. */
-function redactRaw(candidate: ParsedCandidate, tokenFor: TokenFor): string {
+function redactRaw(candidate: ParsedCandidate, tokenFor: TokenFor, known: readonly KnownAddress[]): string {
   const parts = candidate.raw.split(' ');
   if (parts.length > 4) parts[4] = tokenFor(candidate.address, candidate.family, candidate.scope);
   for (let i = 5; i + 1 < parts.length; i += 1) {
-    if (parts[i] === 'raddr') parts[i + 1] = scrubText(parts[i + 1] ?? '', tokenFor);
+    if (parts[i] === 'raddr') parts[i + 1] = scrubText(parts[i + 1] ?? '', tokenFor, known);
     if (parts[i] === 'ufrag') parts[i + 1] = 'entfernt';
   }
-  return scrubText(parts.join(' '), tokenFor);
+  return scrubText(parts.join(' '), tokenFor, known);
 }
 
 /**
@@ -125,17 +163,21 @@ export function redactReport(report: LabReport): LabReport {
   // Ein Report ist per Definition JSON (so liegt er auch im localStorage) – das ist die tiefe Kopie.
   const copy = JSON.parse(JSON.stringify(report)) as LabReport;
   const tokenFor = createTokenizer();
+  const known: KnownAddress[] = [];
   if (copy.gather !== null) {
-    // Erst alle Kandidaten-Adressen nummerieren, dann raw: so bestimmt nie ein raddr die Zählung.
-    for (const candidate of copy.gather.gathered) tokenFor(candidate.address, candidate.family, candidate.scope);
+    // Erst alle Kandidaten-Adressen nummerieren (und als "bekannt" vormerken), dann raw: so
+    // bestimmt nie ein raddr die Zählung, und das Sicherheitsnetz kennt schon jede Adresse.
     for (const candidate of copy.gather.gathered) {
-      candidate.raw = redactRaw(candidate, tokenFor);
+      known.push({ address: candidate.address, token: tokenFor(candidate.address, candidate.family, candidate.scope) });
+    }
+    for (const candidate of copy.gather.gathered) {
+      candidate.raw = redactRaw(candidate, tokenFor, known);
       candidate.address = tokenFor(candidate.address, candidate.family, candidate.scope);
     }
   }
   // Laut Vertrag sind Zeitleisten-Details adressfrei – hier wird es vorsorglich erzwungen.
-  for (const event of copy.timeline) event.detail = scrubText(event.detail, tokenFor);
-  copy.notes = scrubText(copy.notes, tokenFor);
+  for (const event of copy.timeline) event.detail = scrubText(event.detail, tokenFor, known);
+  copy.notes = scrubText(copy.notes, tokenFor, known);
   return copy;
 }
 
@@ -252,22 +294,54 @@ export interface ReportStore {
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
+const isNullOrRecord = (value: unknown): boolean => value === null || isRecord(value);
 
-/** Grobe Formprüfung: genug, damit `reportToText` und die Verlaufsliste nicht an Fremddaten scheitern. */
+function looksLikeGatherEntry(value: unknown): boolean {
+  return isRecord(value) && typeof value.address === 'string' && typeof value.raw === 'string';
+}
+
+/** `gather` ist null ODER ein Objekt mit Array `gathered` (Einträge geprüft) und Zahl `transmitted`. */
+function looksLikeGather(value: unknown): boolean {
+  if (value === null) return true;
+  return (
+    isRecord(value) &&
+    Array.isArray(value.gathered) &&
+    value.gathered.every(looksLikeGatherEntry) &&
+    typeof value.transmitted === 'number'
+  );
+}
+
+function looksLikeTimelineEvent(value: unknown): boolean {
+  return isRecord(value) && typeof value.detail === 'string';
+}
+
+/**
+ * Formprüfung: genug, damit `reportToText`, `reportsToJson` und `redactReport` an Fremddaten aus
+ * dem Speicher (z. B. einer älteren oder manuell veränderten localStorage-Liste) nicht scheitern –
+ * auch nicht an einer verschachtelten Form, die nur auf der obersten Ebene passt (z. B. `gather: {}`).
+ */
 function looksLikeReport(value: unknown): value is LabReport {
   if (!isRecord(value)) return false;
-  return (
-    typeof value.id === 'string' &&
-    typeof value.createdAt === 'string' &&
-    typeof value.buildId === 'string' &&
-    isRecord(value.cell) &&
-    isRecord(value.environment) &&
-    isRecord(value.environment.features) &&
-    isRecord(value.permissions) &&
-    isRecord(value.ping) &&
-    Array.isArray(value.timeline) &&
-    Array.isArray(value.failures)
-  );
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.createdAt !== 'string' ||
+    typeof value.buildId !== 'string' ||
+    typeof value.notes !== 'string' ||
+    !isRecord(value.cell) ||
+    typeof value.cell.device !== 'string' ||
+    !isRecord(value.environment) ||
+    !isRecord(value.environment.features) ||
+    !Array.isArray(value.environment.features.barcodeFormats) ||
+    !isRecord(value.permissions)
+  ) {
+    return false;
+  }
+  if (!looksLikeGather(value.gather)) return false;
+  if (!isNullOrRecord(value.payloadSizes) || !isNullOrRecord(value.selectedPair) || !isNullOrRecord(value.hello)) return false;
+  if (!isRecord(value.ping) || !isNullOrRecord(value.ping.state) || !isNullOrRecord(value.ping.events)) return false;
+  if (!Array.isArray(value.timeline) || !value.timeline.every(looksLikeTimelineEvent)) return false;
+  if (!Array.isArray(value.failures)) return false;
+  return true;
 }
 
 /**
