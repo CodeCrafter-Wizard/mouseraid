@@ -1466,3 +1466,197 @@ describe('redactReport und createReportStore – Ausnahmen, Token-Integritaet, V
     expect(ids(store.list())).toEqual(['g1', 'g2', 'g3']);
   });
 });
+
+describe('redactReport – die Geheimnis-Regeln schneiden keine Adresse an (T18)', () => {
+  const KNOWN_IPV4 = '192.0.2.10';
+  const UNKNOWN_IPV4 = '203.0.113.77';
+  const KNOWN_IPV6 = '2001:db8::10';
+  const UNKNOWN_IPV6 = '2001:db8:9999::42';
+  const KNOWN_MDNS = sampleAddresses()[2] ?? '';
+  const UNKNOWN_MDNS = `${['44444444', '4444', '4444', '4444', '444444444444'].join('-')}.local`;
+  const ADDRESSES = [KNOWN_IPV4, UNKNOWN_IPV4, KNOWN_IPV6, UNKNOWN_IPV6, KNOWN_MDNS, UNKNOWN_MDNS];
+  /** Die vier Geheimnis-Regeln, jede mit der Wertgrenze, an der ihr Fenster vor dieser Runde endete. */
+  const RULES: Array<{ label: string; limit: number }> = [
+    { label: 'a=fingerprint:', limit: 512 },
+    { label: 'ufrag ', limit: 256 },
+    { label: 'usernameFragment":"', limit: 256 },
+    { label: 'candidate:', limit: 64 },
+  ];
+  /** Adresse angeklebt, hinter einem Leerzeichen, hinter einem Doppelpunkt. */
+  const SEPARATORS = ['', ' ', ':'];
+  const FILLER = 'x';
+
+  /** Jedes Endstück ab vier Zeichen, in dem noch ein Trennzeichen steckt – also ab zwei Oktetten bzw. zwei Gruppen. */
+  const fragmentsOf = (address: string): string[] => {
+    const fragments: string[] = [];
+    for (let start = 0; start + 4 <= address.length; start += 1) {
+      const tail = address.slice(start);
+      if (tail.includes('.') || tail.includes(':')) fragments.push(tail);
+    }
+    return fragments;
+  };
+
+  it('die Fixture schneidet wirklich in die Adresse hinein', () => {
+    expect(fragmentsOf(KNOWN_IPV4)).toContain('2.10');
+    expect(fragmentsOf(UNKNOWN_IPV4)).toContain('113.77');
+    expect(fragmentsOf(UNKNOWN_IPV6)).toContain('::42');
+    expect(ADDRESSES.every((address) => address.length >= 10)).toBe(true);
+    expect(sampleAddresses()).toContain(KNOWN_MDNS);
+  });
+
+  it('kein Adressrest und kein Geheimnis ueberlebt einen Schnitt an der alten Wertgrenze', () => {
+    const failures: string[] = [];
+    for (const { label, limit } of RULES) {
+      for (const separator of SEPARATORS) {
+        for (const address of ADDRESSES) {
+          // Schnittstelle innerhalb der Adresse: der Wert endet „cut“ Zeichen hinter ihrem Anfang.
+          for (let cut = 0; cut < Math.min(address.length, 13); cut += 1) {
+            const text = `${label}${FILLER.repeat(Math.max(1, limit - separator.length - cut))}${separator}${address} Rest`;
+            const report = {
+              ...sampleReport({ notes: text, timeline: [{ tMs: 1, kind: 'note', detail: text }] }),
+              remoteCandidates: [text],
+            } as unknown as LabReport;
+            const redacted = redactReport(report) as unknown as LabReport & { remoteCandidates: string[] };
+            const fields = [redacted.notes, redacted.timeline[0]?.detail ?? '', redacted.remoteCandidates[0] ?? ''];
+            const left = fragmentsOf(address).filter((fragment) => fields.some((field) => field.includes(fragment)));
+            const secretLeft = fields.some((field) => field.includes(FILLER.repeat(4)));
+            if (left.length > 0 || secretLeft) {
+              failures.push(`${label} ${JSON.stringify(separator)} ${address} cut=${cut} -> ${JSON.stringify(fields[0]?.slice(0, 48))}`);
+            }
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('kein Adressrest, wenn der Fuellauf selbst bis an die NEUE 4096-Grenze heranreicht', () => {
+    // Die alte Wertgrenze (limit) ist hier irrelevant - dieser Test prueft, dass die REIHENFOLGE
+    // (Adressen vor den Geheimnis-Regeln) auch dann schuetzt, wenn ein einzeiliges SDP-Paste
+    // selbst mehrere Kilobyte lang ist und der 4096-Zeichen-Deckel greift. Nur die Reihenfolge
+    // kann das leisten: ein Deckel auf einen einzelnen Wert kann bei genuegend langem Fuelltext
+    // immer irgendwo enden.
+    const WINDOW = 4096;
+    const failures: string[] = [];
+    for (const { label } of RULES) {
+      for (const separator of SEPARATORS) {
+        for (const address of ADDRESSES) {
+          for (const cut of [0, 1, 3, 6, 12]) {
+            if (cut >= Math.min(address.length, 13)) continue;
+            const text = `${label}${FILLER.repeat(Math.max(1, WINDOW - separator.length - cut))}${separator}${address} Rest`;
+            const redacted = redactReport(sampleReport({ gather: null, notes: text })).notes;
+            const left = fragmentsOf(address).filter((fragment) => redacted.includes(fragment));
+            if (left.length > 0) failures.push(`${label} ${JSON.stringify(separator)} ${address} cut=${cut} -> ${JSON.stringify(redacted.slice(-40))}`);
+          }
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('ein Wert jenseits der alten Grenze hinterlaesst bei keiner der vier Regeln einen Rest', () => {
+    for (const { label, limit } of RULES) {
+      const secret = 'Q'.repeat(limit + 10);
+      expect(redactReport(sampleReport({ gather: null, notes: `Vorher ${label}${secret} Nachher` })).notes, label).not.toMatch(/Q/);
+    }
+  });
+
+  it('ein ueberlanger ufrag-Wert laesst weder in notes noch in raw einen Rest', () => {
+    for (const length of [266, 5000]) {
+      const secret = 'Q'.repeat(length);
+      const notes = `generation 0 ufrag ${secret} network-id 1`;
+      expect(redactReport(sampleReport({ gather: null, notes })).notes, `notes ${length}`).not.toMatch(/Q/);
+      const raw = `1 1 udp 2122260223 192.0.2.47 50000 typ host ufrag ${secret} network-id 1`;
+      const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(1, 'udp', '192.0.2.47', 50000, 'ipv4', 'global'), raw }]) });
+      expect(JSON.stringify(redactReport(report)), `raw ${length}`).not.toMatch(/Q/);
+    }
+  });
+});
+
+describe('redactReport – eine zu grosse RegExp bringt redactReport nicht zum Werfen (T19)', () => {
+  it('eine 40.000 Zeichen lange bekannte Adresse wird woertlich ersetzt statt zu werfen', () => {
+    const address = 'x'.repeat(40_000);
+    const report = sampleReport({
+      gather: gatherOf([sampleCandidate(1, 'udp', address, 50001, 'ipv4', 'global')]),
+      notes: `Host war ${address} heute`,
+    });
+    const run = (): LabReport => redactReport(report);
+
+    expect(run).not.toThrow();
+
+    const json = JSON.stringify(run());
+    expect(json).not.toContain(address);
+    expect(json).not.toMatch(/x{32}/);
+    expect(run().notes).toBe('Host war ipv4/global#1 heute');
+  });
+});
+
+describe('redactReport – redactRaw normalisiert VOR dem Zerlegen (T20)', () => {
+  it('ein Nullbreiten-Zeichen im raddr-Schluesselwort rettet den fremden Hostnamen nicht', () => {
+    const raw = `1 1 udp 1686052607 203.0.113.9 61000 typ srflx r\u200Baddr fremder-host.example rport 9 generation 0`;
+    const report = sampleReport({
+      gather: gatherOf([{ ...sampleCandidate(1, 'udp', '203.0.113.9', 61000, 'ipv4', 'global'), raw, type: 'srflx' }]),
+    });
+    const redacted = redactReport(report);
+    expect(JSON.stringify(redacted)).not.toContain('fremder-host');
+    expect(raws(redacted)[0]).toBe('f1 1 udp 1686052607 ipv4/global#1 61000 typ srflx raddr other/other#2 rport 9 generation 0');
+  });
+
+  it('ein Nullbreiten-Zeichen im „a=“-Praefix kostet weder das Praefix noch das Ordinal', () => {
+    const raw = `a\u200B=candidate:7771234 1 udp 2122260222 192.0.2.10 50001 typ host`;
+    const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(7771234, 'udp', '192.0.2.10', 50001, 'ipv4', 'global'), raw }]) });
+    const redacted = redactReport(report);
+    expect(raws(redacted)[0]).toBe('a=candidate:f1 1 udp 2122260222 ipv4/global#1 50001 typ host');
+    expect(JSON.stringify(redacted)).not.toContain('7771234');
+  });
+});
+
+describe('redactReport – Leerraum hinter dem Praefix in jeder Schreibweise (T21)', () => {
+  const FOUNDATION = '8889991';
+  const PRIORITY = '2122260222';
+
+  it('ein Leerzeichen hinter „candidate:“ verschiebt die Felder in keiner Schreibweise', () => {
+    for (const prefix of ['candidate: ', 'A=CANDIDATE: ', 'a=candidate: ']) {
+      const raw = `${prefix}${FOUNDATION} 1 udp ${PRIORITY} 192.0.2.10 50001 typ host`;
+      const report = sampleReport({
+        gather: gatherOf([{ ...sampleCandidate(Number(FOUNDATION), 'udp', '192.0.2.10', 50001, 'ipv4', 'global'), raw }]),
+      });
+      const fields = (raws(redactReport(report))[0] ?? '').split(' ');
+      expect(fields, prefix).toHaveLength(raw.split(' ').length - 1);
+      expect(fields[0], prefix).toBe(`${prefix.trim()}f1`);
+      expect(fields[3], prefix).toBe(PRIORITY);
+      expect(fields[4], prefix).toBe('ipv4/global#1');
+      expect(JSON.stringify(redactReport(report)), prefix).not.toContain(FOUNDATION);
+    }
+  });
+});
+
+describe('redactReport – die Uhrzeit-Ausnahme endet bei zwei Ziffern je Gruppe (T22)', () => {
+  const notesOf = (notes: string): string => redactReport(sampleReport({ gather: null, notes })).notes;
+  /** Alle Vergleichswerte stammen aus EINER Dokumentationsadresse (RFC 3849), zur Laufzeit zerlegt. */
+  const GROUPS = '2001:db8:1234:5678:9012:3456:7890:0001'.split(':');
+
+  it('drei Gruppen mit mehr als zwei Ziffern sind keine Uhrzeit, sondern eine Adresshaelfte', () => {
+    for (const parts of [GROUPS.slice(0, 3), GROUPS.slice(2, 5), GROUPS.slice(4, 7)]) {
+      const word = parts.join(':');
+      expect(word.split(':'), word).toHaveLength(3);
+      expect(notesOf(`Rest ${word} Ende`), word).toBe('Rest ipv6/other#1 Ende');
+    }
+  });
+
+  it('echte Uhrzeiten mit ein- und zweistelligen Gruppen bleiben bytegleich', () => {
+    for (const time of ['16:24:25', '9:05:07', '1:02:03']) expect(notesOf(`um ${time} Uhr`), time).toBe(`um ${time} Uhr`);
+  });
+});
+
+describe('redactReport – Randfaelle der mDNS- und usernameFragment-Regel (T23)', () => {
+  const notesOf = (notes: string): string => redactReport(sampleReport({ gather: null, notes })).notes;
+
+  it('ein .local-Name mit einem Umlaut am Anfang verliert auch sein erstes Zeichen', () => {
+    expect(notesOf('Rechner Ärztehaus.local im WLAN')).toBe('Rechner mdns/mdns#1 im WLAN');
+  });
+
+  it('USERNAMEFRAGMENT in Grossbuchstaben verliert seinen Wert', () => {
+    expect(notesOf('USERNAMEFRAGMENT="Zq7Kgeheim"')).toBe('USERNAMEFRAGMENT="entfernt"');
+  });
+});

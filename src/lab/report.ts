@@ -171,14 +171,22 @@ const PAYLOAD_PATTERN = /MB1\.[a-z]\.[A-Za-z0-9_-]{0,4096}/gi;
 /** Ein base64url-Lauf ab 32 Zeichen hat in einem Laborbericht nichts zu suchen: Build-IDs haben 8 Zeichen, Gerätenamen höchstens 24. */
 const BASE64URL_RUN_PATTERN = /[A-Za-z0-9_-]{32,4096}/g;
 const PAYLOAD_REMOVED = 'payload/entfernt';
+// Die vier Geheimnis-Regeln. Ihre Wert-Grenzen sind großzügig (4096) statt knapp bemessen: eine
+// Grenze, die MITTEN in einem Wert endet, ließe genau den Rest stehen, den sie löschen soll – bei
+// eingefügten einzeiligen SDP (Umbrüche als Text „\r\n“ statt als echte Zeilenenden) sind das
+// schnell mehrere hundert Zeichen. Begrenzt bleiben sie trotzdem: jede Wiederholung hat eine feste Obergrenze, der Durchlauf
+// bleibt linear. Ein Wert über 4096 Zeichen wird weiterhin angeschnitten – weil diese Regeln seit
+// Fix-Runde 4 HINTER dem Adress-Durchlauf laufen, kann ein Schnitt aber nur noch ein fertiges Token
+// treffen, nie eine Adresse. Prozentkodiertes SDP („ice-ufrag%3A…“, „ufrag%20…“) trifft keine der
+// Regeln – ausdrücklich außerhalb des Auftrags, ein Laborbericht enthält keine URL-kodierten SDPs.
 /** Eingefügte SDP-Zeilen: der Wert hinter dem Attributnamen bis zum Zeilenende (ufrag/pwd ≤ 256 Zeichen, Fingerprint ≤ 200). */
-const SDP_SECRET_PATTERN = /((?:ice-ufrag|ice-pwd|fingerprint):)[^\r\n]{1,512}/gi;
+const SDP_SECRET_PATTERN = /((?:ice-ufrag|ice-pwd|fingerprint):)[^\r\n]{1,4096}/gi;
 /** "ufrag <wert>" aus einer eingefügten Kandidatenzeile – dieselbe Zusage wie in gathered[].raw, aber für JEDEN String. */
-const UFRAG_PATTERN = /(\bufrag\s{1,8})\S{1,256}/gi;
+const UFRAG_PATTERN = /(\bufrag\s{1,8})\S{1,4096}/gi;
 /** Dieselbe Angabe in JSON-Form, wie RTCIceCandidate sie liefert: usernameFragment":"…", =… oder : … */
-const USERNAME_FRAGMENT_PATTERN = /(usernameFragment"?\s{0,4}[:=]\s{0,4}"?)[^\s",}]{1,256}/gi;
+const USERNAME_FRAGMENT_PATTERN = /(usernameFragment"?\s{0,4}[:=]\s{0,4}"?)[^\s",}]{1,4096}/gi;
 /** Foundation am Anfang einer Kandidatenzeile (ältere libwebrtc leiten sie ungesalzen aus Typ, Basisadresse und Protokoll ab). */
-const CANDIDATE_FOUNDATION_PATTERN = /((?:a=)?candidate:[ \t]{0,8})(\S{1,64})/gi;
+const CANDIDATE_FOUNDATION_PATTERN = /((?:a=)?candidate:[ \t]{0,8})(\S{1,4096})/gi;
 /** Ein von uns vergebenes Ordinal ist schon sauber und bleibt stehen – sonst überschriebe die allgemeine Regel es mit "entfernt". */
 const ORDINAL_PATTERN = /^f\d{1,9}$/;
 const REMOVED = 'entfernt';
@@ -225,7 +233,12 @@ function prepareKnown(entries: ReadonlyArray<{ address: string; token: string }>
     .sort((a, b) => b.address.length - a.address.length)
     .map(({ address, token }) => {
       try {
-        return { pattern: new RegExp(escapeForRegExp(address), 'gi'), address, token };
+        const pattern = new RegExp(escapeForRegExp(address), 'gi');
+        // V8 übersetzt eine RegExp erst bei der ERSTEN Benutzung: ohne diesen Probelauf verlässt
+        // `new RegExp` den try-Block ohne Fehler und „Regular expression too large“ flöge erst
+        // in `scrubKnownAddresses` – der Rückfall unten wäre toter Code.
+        pattern.test('');
+        return { pattern, address, token };
       } catch {
         // Doppelter Schutz: die Formprüfung lässt schon keine Adresse über 255 Zeichen durch, aber
         // eine zu große RegExp darf `redactReport` unter keinen Umständen zum Werfen bringen.
@@ -254,13 +267,20 @@ function scrubKnownAddresses(text: string, known: readonly KnownAddress[]): stri
  * dekodierbar, und das ist hier ausdrücklich außerhalb des Auftrags. Läuft als LETZTER Schritt von
  * `scrubText`: base64url kennt weder "." noch ":", also kann kein Adressmuster einen Rumpf
  * zerschneiden, und eine Adresse hinter einem Payload ist längst ein Token (Tokens sind kürzer als
- * 32 Zeichen und enthalten "/" oder "#", werden also nie getroffen).
+ * 32 Zeichen und enthalten "/" oder "#", werden also nie getroffen). Ein Token, an dem ein ≥ 32
+ * Zeichen langer Lauf KLEBT, verliert dabei sein Ordinal bzw. seine Familie („mdns/mdns#payload/
+ * entfernt“, „payload/entfernt/global#1“): bewusst hingenommen – das ist zu viel Schwärzung, kein
+ * Leck, und die Alternative wäre eine Ausnahme, durch die ein Payload-Rumpf schlüpfen könnte.
  */
 function scrubPayloads(text: string): string {
   return text.replace(PAYLOAD_PATTERN, () => PAYLOAD_REMOVED).replace(BASE64URL_RUN_PATTERN, () => PAYLOAD_REMOVED);
 }
 
-/** Kandidaten-Geheimnisse, die in JEDEM String stehen können – nicht nur in gathered[].raw. */
+/**
+ * Kandidaten-Geheimnisse, die in JEDEM String stehen können – nicht nur in gathered[].raw.
+ * Läuft NACH dem Adress-Durchlauf (siehe `scrubText`), damit keine Wert-Grenze eine Adresse
+ * anschneidet; ein schon vergebenes Ordinal `f<n>` bleibt dabei stehen.
+ */
 function scrubCandidateSecrets(text: string): string {
   return text
     .replace(SDP_SECRET_PATTERN, (_match, label: string) => `${label}${REMOVED}`)
@@ -282,19 +302,27 @@ function scrubOnce(text: string, tokenFor: TokenFor, known: readonly KnownAddres
 /**
  * Säubert einen beliebigen Text, in genau dieser Reihenfolge:
  * 1. normalisieren (NFKC, unsichtbare Zeichen weg),
- * 2. SDP-Geheimnisse, ufrag/usernameFragment und Kandidaten-Foundations,
- * 3. Schicht 1 (Muster) und Schicht 2 (bekannte Adressen), wiederholt bis zum Fixpunkt – so ändert
+ * 2. Schicht 1 (Muster) und Schicht 2 (bekannte Adressen), wiederholt bis zum Fixpunkt – so ändert
  *    ein zweiter `redactReport`-Durchlauf nichts mehr,
- * 4. ZULETZT der Payload-Durchlauf (siehe `scrubPayloads`: davor fräße er Adressen an).
+ * 3. DANACH die Geheimnis-Regeln (SDP, ufrag/usernameFragment, Kandidaten-Foundation),
+ * 4. ZULETZT der Payload-Durchlauf.
+ * Beide Regelsätze mit begrenzten Wert-Längen laufen bewusst HINTER den Adressen: liefe einer davor,
+ * endete sein Fenster irgendwann mitten in einer Adresse, und der Rest („…entfernt0.113.77“) träfe
+ * danach kein Adressmuster mehr und wäre auch für Schicht 2 keine bekannte Adresse. Hinter dem
+ * Adress-Durchlauf kann ein Schnitt nur noch ein fertiges Token anschneiden. Preis dafür: ein
+ * Geheimnis- oder Payload-Treffer, der einen feindlich angeklebten Lauf mitnimmt, kann das Ordinal
+ * oder die Familie eines Tokens beschädigen, und ein paar feindliche Eingaben stehen erst nach dem
+ * ZWEITEN `redactReport`-Durchlauf still (Schritt 3 und 4 werden nicht erneut abgetastet). Beides
+ * kostet nur Lesbarkeit: es entsteht dabei nie wieder lesbarer Adresstext.
  */
 function scrubText(text: string, tokenFor: TokenFor, known: readonly KnownAddress[]): string {
-  let current = scrubCandidateSecrets(visibleText(text));
+  let current = visibleText(text);
   for (let round = 0; round < MAX_SCRUB_ROUNDS; round += 1) {
     const next = scrubOnce(current, tokenFor, known);
     if (next === current) break;
     current = next;
   }
-  return scrubPayloads(current);
+  return scrubPayloads(scrubCandidateSecrets(current));
 }
 
 /**
