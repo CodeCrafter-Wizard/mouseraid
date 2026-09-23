@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// Fähigkeits-Tests für die Agenten-Werkzeuge (Tooling-Spike M0). Laufen nur lokal, nicht im CI.
+// Fähigkeits-Tests für die Agenten-Werkzeuge (Tooling-Spike M0). Laufen nur lokal, nicht im CI:
+// jeder Test trägt dafür das Tag @local (E2E-Tor, siehe docs/decisions.md) – auch jeder künftige.
 
 async function waitGatheringAndGetSdp(page: Page): Promise<string> {
   return page.evaluate(async () => {
@@ -34,7 +35,7 @@ async function setupPeer(page: Page, greeting: string): Promise<void> {
   }, greeting);
 }
 
-test('(a) zwei Seiten verbinden sich per echter RTCPeerConnection (ohne STUN, Kamera erlaubt)', async ({ context }) => {
+test('(a) zwei Seiten verbinden sich per echter RTCPeerConnection (ohne STUN, Kamera erlaubt)', { tag: '@local' }, async ({ context }) => {
   const a = await context.newPage();
   const b = await context.newPage();
   await a.goto('lab.html');
@@ -74,7 +75,7 @@ test('(a) zwei Seiten verbinden sich per echter RTCPeerConnection (ohne STUN, Ka
   expect(addresses.filter((address) => address.endsWith('.local'))).toHaveLength(0);
 });
 
-test('(a2) ohne persistierte Kamera-Erlaubnis liefert Chrome mDNS-Namen statt IPs', async ({ browser, baseURL }) => {
+test('(a2) ohne persistierte Kamera-Erlaubnis liefert Chrome mDNS-Namen statt IPs', { tag: '@local' }, async ({ browser, baseURL }) => {
   const context = await browser.newContext({ baseURL, permissions: [] });
   try {
     const page = await context.newPage();
@@ -98,7 +99,7 @@ test('(a2) ohne persistierte Kamera-Erlaubnis liefert Chrome mDNS-Namen statt IP
   }
 });
 
-test('(b) Offline-Emulation schaltet das Netz der Seite ab und wieder an', async ({ context, page }) => {
+test('(b) Offline-Emulation schaltet das Netz der Seite ab und wieder an', { tag: '@local' }, async ({ context, page }) => {
   await page.goto('lab.html');
   const probe = (): Promise<boolean> =>
     page.evaluate(() => fetch(`version.json?t=${Math.random()}`, { cache: 'no-store' }).then((r) => r.ok, () => false));
@@ -109,7 +110,7 @@ test('(b) Offline-Emulation schaltet das Netz der Seite ab und wieder an', async
   expect(await probe()).toBe(true);
 });
 
-test('(c) WebGL2 rendert und der Screenshot ist nicht schwarz', async ({ page }) => {
+test('(c) WebGL2 rendert und der Screenshot ist nicht schwarz', { tag: '@local' }, async ({ page }) => {
   await page.goto('lab.html');
   const info = await page.evaluate(() => {
     const canvas = document.createElement('canvas');
