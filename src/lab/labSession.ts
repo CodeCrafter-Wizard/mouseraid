@@ -27,14 +27,13 @@ type Hello = Extract<NetMessage, { type: 'hello' }>;
 
 /**
  * Ein Router je Transport: `createMessageRouter` belegt `transport.onMessage`, ein zweiter würde den ersten abklemmen.
- * `helloSent` und `answered` sind absichtlich getrennt: `helloSent` merkt nur, dass überhaupt ein Hello hinausging,
- * `answered` riegelt allein die AUTOMATISCHE Antwort ab.
+ * `answered` riegelt allein die AUTOMATISCHE Antwort ab (siehe `linkFor`).
  */
-interface LabLink { router: MessageRouter; remoteHello: Hello | null; helloSent: boolean; answered: boolean; waiters: ((hello: Hello | null) => void)[]; }
+interface LabLink { router: MessageRouter; remoteHello: Hello | null; answered: boolean; waiters: ((hello: Hello | null) => void)[]; }
 const links = new WeakMap<Transport, LabLink>();
 
 function sendHello(link: LabLink): void {
-  if (link.router.send('events', { type: 'hello', protoV: PROTOCOL_VERSION, buildId: BUILD_ID })) link.helloSent = true;
+  link.router.send('events', { type: 'hello', protoV: PROTOCOL_VERSION, buildId: BUILD_ID });
 }
 
 function linkFor(transport: Transport): LabLink {
@@ -42,13 +41,14 @@ function linkFor(transport: Transport): LabLink {
   if (existing !== undefined) return existing;
   const router = createMessageRouter(transport);
   attachPongResponder(router);
-  const link: LabLink = { router, remoteHello: null, helloSent: false, answered: false, waiters: [] };
+  const link: LabLink = { router, remoteHello: null, answered: false, waiters: [] };
   router.on('hello', (message) => {
     link.remoteHello = message;
     // Genau eine automatische Antwort: Startet die Gegenstelle ihren Lauf früher als wir, bekommt sie
-    // trotzdem unser Hello. Der Riegel hängt an `answered`, NICHT an `helloSent`: Wer selbst schon
-    // gemessen hat (Hello ins Leere, weil die Gegenstelle noch nicht zuhörte), muss deren späteres
-    // Hello trotzdem beantworten – sonst wartet sie volle 3 s vergebens. Höchstens zwei Hellos je Seite.
+    // trotzdem unser Hello. Der Riegel hängt allein an `answered`, nicht daran, ob schon ein eigenes
+    // Hello hinausging: Wer selbst schon gemessen hat (Hello ins Leere, weil die Gegenstelle noch
+    // nicht zuhörte), muss deren späteres Hello trotzdem beantworten – sonst wartet sie volle 3 s
+    // vergebens. Höchstens zwei Hellos je Seite.
     if (!link.answered) {
       link.answered = true;
       sendHello(link);

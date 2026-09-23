@@ -1,3 +1,4 @@
+import type { FailureCode } from '../net/failureCodes';
 import type { PingStats } from '../net/pingTest';
 import { canShareText, copyText, shareText } from '../net/signaling/textShare';
 import type { Channel } from '../net/transport';
@@ -44,9 +45,19 @@ function cellLine(report: LabReport): string {
   return `${when} · ${ROLE_LABEL[cell.role]} · ${PATH_LABEL[cell.path]} · ${S.lab.cell.camera} ${cell.camera} · ${cell.device}`;
 }
 
-function failureLine(report: LabReport): string {
-  if (report.failures.length === 0) return S.lab.reports.noFailures;
-  return report.failures.map((code) => `${code} · ${S.failures[code].title}`).join(' / ');
+/**
+ * Befundzeile eines GESPEICHERTEN Reports. Ein Code aus einem neueren Build (veralteter PWA-Cache)
+ * steht wörtlich da: ein blinder Zugriff `S.failures[code].title` würde hier werfen und lab.html
+ * unbedienbar machen – gerade auf dem Gerät, dessen Report den unbekannten Code trägt.
+ */
+export function failureLine(failures: readonly string[]): string {
+  if (failures.length === 0) return S.lab.reports.noFailures;
+  return failures
+    .map((code) => {
+      const title = S.failures[code as FailureCode]?.title;
+      return title === undefined ? code : `${code} · ${title}`;
+    })
+    .join(' / ');
 }
 
 function reportItem(report: LabReport, copyOne: (report: LabReport, button: HTMLButtonElement) => void): HTMLLIElement {
@@ -58,7 +69,7 @@ function reportItem(report: LabReport, copyOne: (report: LabReport, button: HTML
   badge.dataset.state = report.valid ? 'ready' : 'bad';
   const head = h('div', 'lab-report-head');
   head.append(badge, h('strong', '', cellLine(report)));
-  const failures = h('p', 'lab-line', failureLine(report));
+  const failures = h('p', 'lab-line', failureLine(report.failures));
   failures.dataset.testid = 'report-failures';
   const copy = actionButton(S.lab.reports.copyOne, 'report-copy', 'secondary');
   copy.onclick = () => { copyOne(report, copy); };
@@ -177,6 +188,9 @@ export function createReportsPanel(): ReportsPanel {
     refresh,
     showRun(result) {
       lastRun = result;
+      // Ein neuer Lauf beginnt ohne den Entwicklerpfad: der Haken „mit echten Adressen" gilt immer
+      // nur für den Report, für den ihn jemand bewusst gesetzt hat.
+      withAddresses.checked = false;
       refresh();
     },
   };

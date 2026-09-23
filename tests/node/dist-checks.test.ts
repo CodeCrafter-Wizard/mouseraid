@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   collectJsGraph,
   findForbiddenSignatures,
+  findLabSignatures,
   findMissingPrecache,
   findMissingRequiredFiles,
   isPrecacheCandidate,
@@ -30,6 +31,20 @@ describe('findForbiddenSignatures', () => {
 
   it('löst bei harmlosem Code keinen Fehlalarm aus', () => {
     expect(findForbiddenSignatures('a.js', 'const it={next:f,return:g};function turn(){return 1}')).toEqual([]);
+  });
+});
+
+describe('findLabSignatures', () => {
+  it('meldet Labor- und Netz-Signaturen im Spiel-Graphen', () => {
+    expect(findLabSignatures('assets/main-1.js', 'new BroadcastChannel(`maeusebau-lab-${room}`)')).toHaveLength(1);
+    expect(findLabSignatures('assets/main-1.js', 'new RTCPeerConnection({iceServers:[]})')).toHaveLength(1);
+    expect(findLabSignatures('assets/main-1.js', 'new CompressionStream("deflate-raw")')).toHaveLength(1);
+    // Mehrere Treffer in derselben Datei werden einzeln gemeldet.
+    expect(findLabSignatures('assets/main-1.js', '"RTCPeerConnection" in window?new CompressionStream("deflate-raw"):null')).toHaveLength(2);
+  });
+
+  it('löst bei gewöhnlichem Spiel-Code keinen Fehlalarm aus', () => {
+    expect(findLabSignatures('assets/main-1.js', 'class Lab{}const net={};new Engine(canvas,true)')).toEqual([]);
   });
 });
 

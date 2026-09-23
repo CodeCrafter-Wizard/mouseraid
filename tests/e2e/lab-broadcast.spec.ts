@@ -53,8 +53,9 @@ async function clipboardFacts(page: Page) {
     // Der User-Agent bleibt laut Task 7 absichtlich bytegleich; seine Versionsnummern (…/153.0.0.0)
     // sehen wie eine IPv4-Adresse aus, sind aber keine – für die Adress-Suche wird er ersetzt.
     const body = text.replace(/"userAgent":\s*"[^"]*"/g, '"userAgent": "…"');
-    // Uhrzeiten („T20:13:49") sind keine IPv6-Adressen – dieselbe Ausnahme kennt `redactReport`.
-    const ipv6 = (body.match(/[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
+    // Erste Gruppe `{0,4}`: eine Adresse darf auch mit „::" beginnen. Uhrzeiten („T20:13:49") sind
+    // keine IPv6-Adressen – dieselbe Ausnahme kennt `redactReport`.
+    const ipv6 = (body.match(/[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
     const parsed = ((): { cell?: { role?: string; device?: string }; gather?: unknown }[] | null => {
       try {
         const value: unknown = JSON.parse(text);
@@ -173,6 +174,40 @@ test('Zwei Tabs: Zelle beschriften, verbinden, Ping-Test, Report auf beiden Seit
   await host.getByTestId('reports-clear').click();
   await expect(host.getByTestId('report-item')).toHaveCount(0);
   await expect(host.getByText(S.lab.reports.empty)).toBeVisible();
+});
+
+test('Host ohne Gegenstelle: Ping-Test schon beim Verbinden erreichbar, „Platz freigeben" rettet die Diagnose genau einmal', async ({ context }, testInfo) => {
+  // Ohne diese Freigabe stünde in jeder Diagnose F6 (siehe Anmerkung im Test oben).
+  await context.grantPermissions(['local-network-access']);
+  const page = await context.newPage();
+  // Ein Raum, in dem nie ein Mitspieler auftaucht: der Transport bleibt für immer „verbinde …".
+  const room = `e2e-allein-${testInfo.workerIndex}-${Date.now().toString(36)}`;
+  await page.goto(`lab.html?transport=bc&room=${room}&role=host&slot=1&quick=1`);
+  await labelCell(page, 'E2E-Allein');
+
+  // 1. Der Ping-Test ist erreichbar, BEVOR die Verbindung steht – sonst bliebe die Diagnose eines nie
+  //    geöffneten Platzes (F7/F3) in der Zwei-Geräte-Oberfläche unerreichbar.
+  const slot1 = page.getByTestId('slot-1');
+  await expect(slot1.getByTestId('conn-state')).toHaveText(S.lab.state.connecting);
+  await expect(slot1.getByTestId('start-ping')).toBeEnabled();
+  await slot1.getByTestId('start-ping').click();
+  await expect(slot1.getByTestId('run-status')).toHaveText(S.lab.run.saved, { timeout: 20_000 });
+  await expect(page.getByTestId('report-item')).toHaveCount(1);
+
+  // 2. Ein zweiter Platz, der nie verbunden war: „Platz freigeben" speichert erst die Diagnose und
+  //    schließt dann – der Platz verschwindet also erst NACH dem Report.
+  await page.getByTestId('add-player').click();
+  const slot2 = page.getByTestId('slot-2');
+  await expect(slot2.getByTestId('conn-state')).toHaveText(S.lab.state.connecting);
+  await slot2.getByTestId('release').click();
+  await expect(slot2).toHaveCount(0);
+  await expect(page.getByTestId('report-item')).toHaveCount(2);
+
+  // 3. Platz 1 hat seinen Report schon hergegeben – sein Freigeben erzeugt keinen zweiten. Auch das ist
+  //    nach dem Verschwinden des Platzes entschieden (Diagnose vor dem Schließen).
+  await slot1.getByTestId('release').click();
+  await expect(slot1).toHaveCount(0);
+  await expect(page.getByTestId('report-item')).toHaveCount(2);
 });
 
 test('Text-Pfad ohne Parameter: Formular passt bei 667×375 ohne horizontalen Überlauf, Spitzname bleibt erhalten', async ({ page }) => {

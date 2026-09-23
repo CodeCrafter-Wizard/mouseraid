@@ -29,6 +29,28 @@ export function findForbiddenSignatures(fileName, text) {
   return errors;
 }
 
+/**
+ * Zeichenketten, die es nur in der Labor- und Netz-Schicht gibt. Im JS-Graphen der SPIELSEITE wäre
+ * jede davon ein Schichtbruch (und toter Ballast im Spiel-Bundle). Bewusst nur diese drei: sie
+ * können im Spiel-Code nicht zufällig entstehen – `MB1.` dagegen schon (ein minifizierter Name).
+ */
+const LAB_ONLY_SIGNATURES = [
+  { pattern: /maeusebau-lab-/, reason: 'BroadcastChannel-Name des Testlabors (src/net/broadcastTransport.ts)' },
+  { pattern: /RTCPeerConnection/, reason: 'WebRTC-Schicht (src/net)' },
+  { pattern: /CompressionStream/, reason: 'SDP-Codec (src/net/compress.ts)' },
+];
+
+/**
+ * @param {string} fileName
+ * @param {string} text
+ * @returns {string[]} Fehlertexte
+ */
+export function findLabSignatures(fileName, text) {
+  return LAB_ONLY_SIGNATURES.filter(({ pattern }) => pattern.test(text)).map(
+    ({ reason }) => `${fileName}: Spiel-Graph enthält ${reason} – Labor-/Netz-Code gehört nicht ins Spiel-Bundle`,
+  );
+}
+
 function dirOf(relPath) {
   const index = relPath.lastIndexOf('/');
   return index === -1 ? '' : relPath.slice(0, index + 1);

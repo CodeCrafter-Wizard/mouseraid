@@ -55,6 +55,10 @@ interface RunBox {
   /** Beobachtet den Transport: Zustands-Chip, Zeitleiste, Diagnose-Lauf bei 'failed', optional Lauf bei 'open'. */
   watch(link: Link, options: { runOnOpen: boolean; onState?: (state: TransportState) => void }): void;
   run(link: Link): Promise<void>;
+  /** Wie `run`, aber nur, wenn dieser Link noch keinen Report hergegeben hat (Diagnose beim Freigeben). */
+  runOnce(link: Link): Promise<void>;
+  /** Platz freigegeben: meldet den `pagehide`-Zuhörer dieser Box wieder ab. */
+  dispose(): void;
   setWaiting(text: string): void;
 }
 
@@ -70,9 +74,12 @@ function createRunBox(ctx: ConnectContext): RunBox {
   pings.dataset.testid = 'run-pings';
   element.append(chip, status, pings);
   let running = false;
+  /** Links, zu denen schon ein Report entstanden ist – „Platz freigeben" diagnostiziert nie doppelt. */
+  const reported = new WeakSet<Link>();
   /** Der zuletzt beobachtete Link – Ziel des einen `pagehide`-Zuhörers dieser Box. */
   let watched: Link | null = null;
   let pagehideBound = false;
+  const onPagehide = (): void => { watched?.transport.close(); };
 
   function showState(state: TransportState): void {
     chip.textContent = S.lab.state[state];
@@ -96,6 +103,7 @@ function createRunBox(ctx: ConnectContext): RunBox {
         },
       });
       ctx.onRun(result);
+      reported.add(link);
     } catch (error) {
       status.textContent = fmt(S.lab.run.unexpected, { message: describeError(error) });
     } finally {
@@ -106,6 +114,12 @@ function createRunBox(ctx: ConnectContext): RunBox {
   return {
     element,
     run,
+    runOnce: (link) => (reported.has(link) ? Promise.resolve() : run(link)),
+    dispose() {
+      removeEventListener('pagehide', onPagehide);
+      pagehideBound = false;
+      watched = null;
+    },
     setWaiting(text) {
       chip.textContent = text;
       chip.dataset.state = 'pending';
@@ -120,7 +134,7 @@ function createRunBox(ctx: ConnectContext): RunBox {
       watched = link;
       if (!pagehideBound) {
         pagehideBound = true;
-        addEventListener('pagehide', () => { watched?.transport.close(); }, { once: true });
+        addEventListener('pagehide', onPagehide, { once: true });
       }
       link.transport.onStateChange = (state) => {
         link.timeline.push(`transport:${state}`);
@@ -165,19 +179,38 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   element.append(h('h3', 'lab-slot-title', fmt(S.lab.host.slot, { slot: String(slot) })), box.element, codes, alert, actions);
 
   let link: Link | null = null;
+  // Der Ping-Test ist schon im Zustand „verbindet …" erreichbar: Eine Verbindung, die nie aufgeht, ist
+  // der wertvollste Report (F7/F3). `finishRun` kommt ohne offene Verbindung zurecht und sagt es in der
+  // Statuszeile; ohne diesen Weg bliebe die Diagnose in der Zwei-Geräte-Oberfläche unerreichbar.
+  const canRun = (state: TransportState | undefined): boolean => state === 'open' || state === 'connecting';
+  const syncPing = (state: TransportState): void => {
+    startPing.disabled = !canRun(state);
+    if (state === 'open') codes.hidden = true;
+  };
   const watch = (next: Link): void => {
     link = next;
-    box.watch(next, { runOnOpen: false, onState: (state) => { startPing.disabled = state !== 'open'; if (state === 'open') codes.hidden = true; } });
+    // Der Zustand VOR dem ersten Wechsel zählt mit – `onStateChange` feuert erst beim nächsten.
+    syncPing(next.transport.state);
+    box.watch(next, { runOnOpen: false, onState: syncPing });
   };
   startPing.onclick = () => {
     if (link === null) return;
     startPing.disabled = true;
-    void box.run(link).then(() => { startPing.disabled = link?.transport.state !== 'open'; });
+    void box.run(link).then(() => { startPing.disabled = !canRun(link?.transport.state); });
   };
   release.onclick = () => {
-    if (broadcast) link?.transport.close();
-    else lobby.closeSlot(slot);
-    onRelease();
+    const current = link;
+    const close = (): void => {
+      // Der Platz verschwindet – sein `pagehide`-Zuhörer darf ihn nicht überleben.
+      box.dispose();
+      if (broadcast) current?.transport.close();
+      else lobby.closeSlot(slot);
+      onRelease();
+    };
+    // Ein Platz, der nie offen war, gibt seine Diagnose noch vor dem Schließen her – aber nur einmal.
+    if (current === null || current.transport.state === 'open') { close(); return; }
+    release.disabled = true;
+    void box.runOnce(current).finally(close);
   };
 
   if (broadcast) {
@@ -209,7 +242,11 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       void lobby.acceptAnswer(slot, answer.area.value).then(() => {
         current.remoteSdp = lobby.entries().get(slot)?.remoteSdp ?? null;
         if (current.transport.state === 'connecting') box.setWaiting(S.lab.state.connecting);
-      }, (error: unknown) => { showError(alert, error); }).finally(() => {
+      }, (error: unknown) => {
+        showError(alert, error);
+        // NUR der Fehlschlag gibt den Knopf für den nächsten Versuch frei. Nach einer angenommenen
+        // Antwort gibt es nichts mehr zu verbinden: bei 'open' verschwindet das Code-Feld ohnehin, und
+        // ein zweiter Tipp fände den Platz beantwortet vor – rotes F5 neben dem grünen „verbunden".
         connect.disabled = false;
       });
     };

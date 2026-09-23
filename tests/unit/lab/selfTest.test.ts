@@ -299,6 +299,24 @@ describe('Selbsttest – Ablauf', () => {
     expect(world.log).toContain('camera:stop');
   });
 
+  it('ein werfender Statusrückruf vor Lauf B stoppt den Kamera-Stream trotzdem', async () => {
+    // Die Statuszeile von Lauf B steht MIT im try, das den Stream schließt (Ruling C aus Task 9):
+    // wirft die Oberfläche genau dort, darf die Kamera des Geräts nicht offen bleiben.
+    const world = makeWorld();
+    const progress: SelfTestProgress = {
+      onStatus: (text) => {
+        if (text === S.lab.selfTest.statusRunB) throw new Error('Oberfläche kaputt');
+        world.progress.onStatus(text);
+      },
+      onRun: world.progress.onRun,
+    };
+
+    await expect(runSelfTest('Pixel-Test', world.deps, progress)).rejects.toThrow('Oberfläche kaputt');
+    expect(world.log).toContain('camera:stop');
+    // Lauf B kam nie zustande – nur Lauf A hat gemessen.
+    expect(world.log.filter((line) => line.startsWith('finish:'))).toEqual(['finish:aus:open']);
+  });
+
   it('räumt die Zeitgeber beider Läufe auf – ein Abbruch lässt keinen 20-s-Wecker stehen', async () => {
     vi.useFakeTimers();
     try {
@@ -325,7 +343,7 @@ describe('Selbsttest – Gerätename', () => {
     expect(normaliseDevice('x'.repeat(40))).toBe('x'.repeat(24));
   });
 
-  it('schneidet nicht mitten im Wort und lässt kein Leerzeichen am Ende stehen', () => {
+  it('lässt nach dem Kürzen kein Leerzeichen am Ende stehen (zweites trim)', () => {
     expect(normaliseDevice(`${'x'.repeat(23)} yz`)).toBe('x'.repeat(23));
   });
 });

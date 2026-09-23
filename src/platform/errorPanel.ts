@@ -12,8 +12,11 @@ function displayMode(): string {
 /**
  * Fängt Laufzeitfehler global ab und zeigt ein kopierbares Diagnose-Panel.
  * Auf dem Handy gibt es keine Konsole – dieses Panel ist der Rückkanal zum Entwickler.
+ * `scrub` (optional) säubert Fehlertext und Stack, bevor sie angezeigt oder kopiert werden: lab.html
+ * reicht dafür `redactText` durch. Als Rückruf, nicht als Import – `src/platform` darf `src/lab`
+ * nicht kennen.
  */
-export function installErrorPanel(getSwState: () => string): { report(kind: ErrorKind, value: unknown): void } {
+export function installErrorPanel(getSwState: () => string, scrub?: (text: string) => string): { report(kind: ErrorKind, value: unknown): void } {
   const log = createErrorLog(20);
 
   const panel = document.createElement('section');
@@ -41,6 +44,7 @@ export function installErrorPanel(getSwState: () => string): { report(kind: Erro
     formatDiagnosis(
       { buildId: BUILD_ID, url: location.href, userAgent: navigator.userAgent, displayMode: displayMode(), online: navigator.onLine, swState: getSwState() },
       log.entries(),
+      scrub,
     );
 
   copy.onclick = () => {

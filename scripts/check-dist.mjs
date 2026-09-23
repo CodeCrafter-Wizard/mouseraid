@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { collectJsGraph, findForbiddenSignatures, findMissingPrecache, findMissingRequiredFiles, isPrecacheCandidate } from './lib/distChecks.mjs';
+import { collectJsGraph, findForbiddenSignatures, findLabSignatures, findMissingPrecache, findMissingRequiredFiles, isPrecacheCandidate } from './lib/distChecks.mjs';
 
 const DIST = 'dist';
 const BUDGET = { gameJsGzip: 900 * 1024, labJsGzip: 150 * 1024, precacheTotal: 80 * 1024 * 1024 };
@@ -57,6 +57,10 @@ const gameGraph = pageGraph('index.html');
 const labGraph = pageGraph('lab.html');
 for (const rel of labGraph) {
   if (/babylon/i.test(read(rel) ?? '')) errors.push(`${rel}: Testlabor-Bundle enthält Babylon (Lab muss schlank bleiben)`);
+}
+// Die Gegenrichtung: das Spiel kennt weder das Labor noch die Netz-Schicht.
+for (const rel of gameGraph) {
+  errors.push(...findLabSignatures(rel, read(rel) ?? ''));
 }
 const gameGzip = gzipSize(gameGraph);
 const labGzip = gzipSize(labGraph);

@@ -50,8 +50,13 @@ export function describeError(value: unknown): { message: string; stack?: string
   }
 }
 
-/** Kopierbarer Diagnose-Text: der Nutzer hat am Handy keine Konsole. */
-export function formatDiagnosis(info: DiagnosisInfo, entries: readonly ErrorEntry[]): string {
+/**
+ * Kopierbarer Diagnose-Text: der Nutzer hat am Handy keine Konsole.
+ * `scrub` säubert Nachricht und Stack – auf lab.html kann ein Laufzeitfehler eine echte Adresse
+ * zitieren (SDP-Parserfehler), und „Diagnose kopieren" ist ein Kopierweg wie jeder andere. Der Kopf
+ * bleibt unangetastet (Build, URL, User-Agent – dieselbe Ausnahmeliste wie in `redactReport`).
+ */
+export function formatDiagnosis(info: DiagnosisInfo, entries: readonly ErrorEntry[], scrub: (text: string) => string = (text) => text): string {
   const head = [
     'Mäusebau-Diagnose',
     `Build: ${info.buildId}`,
@@ -62,6 +67,6 @@ export function formatDiagnosis(info: DiagnosisInfo, entries: readonly ErrorEntr
     `Browser: ${info.userAgent}`,
     `Fehler: ${entries.length}`,
   ];
-  const body = entries.map((e) => `\n${e.at} [${e.kind}] ${e.message}${e.stack === undefined ? '' : `\n${e.stack}`}`);
+  const body = entries.map((e) => `\n${e.at} [${e.kind}] ${scrub(e.message)}${e.stack === undefined ? '' : `\n${scrub(e.stack)}`}`);
   return `${head.join('\n')}\n${body.join('\n')}`;
 }

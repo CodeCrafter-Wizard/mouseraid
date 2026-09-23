@@ -6,6 +6,7 @@ import { mountShell, type ShellHandles } from '../ui/shell';
 import { S } from '../ui/strings';
 import { installLabHook } from './labHook';
 import { mountLab } from './labUi';
+import { redactText } from './report';
 import { mountSelfTest } from './selfTestUi';
 
 const root = document.getElementById('app');
@@ -15,8 +16,10 @@ const yesNo = (value: boolean): string => (value ? S.labInfo.yes : S.labInfo.no)
 
 // Fehler-Panel VOR der Hülle: Wirft `mountShell`, sieht der Nutzer am Handy trotzdem eine
 // Diagnose statt einer leeren Seite. Der Getter greift die Hülle erst beim Lesen ab.
+// `redactText` als Schwärzer: auf DIESER Seite kann ein Fehlertext eine echte Adresse zitieren
+// (ein SDP-Parserfehler nennt die fehlerhafte Zeile), und die Diagnose ist zum Kopieren gedacht.
 let shell: ShellHandles | undefined = undefined;
-installErrorPanel(() => shell?.getSwState() ?? '');
+installErrorPanel(() => shell?.getSwState() ?? '', redactText);
 
 shell = mountShell(root, {
   subtitle: S.shell.subtitleLab,

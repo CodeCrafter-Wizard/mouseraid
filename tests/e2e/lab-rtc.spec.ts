@@ -521,7 +521,8 @@ async function uiClipboardFacts(page: Page) {
   return page.evaluate(async () => {
     const text = await navigator.clipboard.readText();
     const body = text.replace(/"userAgent":\s*"[^"]*"/g, '"userAgent": "…"').replace(/^\s*Browser:.*$/gm, '  Browser: …');
-    const ipv6 = (body.match(/[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
+    // Erste Gruppe `{0,4}`: eine Adresse darf auch mit „::" beginnen (wie in der Selbsttest-Probe unten).
+    const ipv6 = (body.match(/[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
     return {
       isText: text.startsWith('Mäusebau-Laborbericht'),
       isJson: text.trimStart().startsWith('['),
@@ -558,18 +559,25 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
   await client.getByTestId('make-answer').click();
   const answerOut = client.getByTestId('answer-out');
   await expect.poll(async () => (await answerOut.inputValue()).startsWith('MB1.'), { timeout: 10_000 }).toBe(true);
+  const connect = host.getByTestId('slot-1').getByTestId('connect');
+  // Erst der Fehlschlag: ein kaputter Code gibt den Knopf für den nächsten Versuch wieder frei.
+  await host.getByTestId('slot-1').getByTestId('answer-in').fill('das ist kein Code');
+  await connect.click();
+  await expect(host.getByTestId('slot-1').getByRole('alert').filter({ hasText: S.failures.F5.title })).toBeVisible();
+  await expect(connect, 'nach einem Fehlschlag wieder frei').toBeEnabled();
+
   await host.getByTestId('slot-1').getByTestId('answer-in').fill(await answerOut.inputValue());
   // Der Knopf sperrt sich SYNCHRON im Tipp – ein zweiter Tipp käme sonst als rotes F5 neben das grüne
   // „verbunden". Im selben Zug geklickt und gelesen, damit die Zusage ohne Zeitfenster geprüft wird.
-  const connect = host.getByTestId('slot-1').getByTestId('connect');
   const lockedOnTap = await connect.evaluate((node) => {
     const button = node as HTMLButtonElement;
     button.click();
     return button.disabled;
   });
   expect(lockedOnTap, 'Verbinden sperrt sich beim Tipp selbst').toBe(true);
-  await expect(connect).toBeEnabled();
   await expect(host.getByTestId('slot-1').getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+  // … und bleibt nach der angenommenen Antwort gesperrt (das Code-Feld ist dann ohnehin ausgeblendet).
+  await expect(connect, 'nach der angenommenen Antwort gesperrt').toBeDisabled();
   await expect(client.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
   // Der Client misst von selbst; erst danach startet der Host (beide Tabs teilen sich den localStorage).
   await expect.poll(async () => (await uiReportFacts(client)).length, { timeout: 20_000 }).toBe(1);
@@ -601,7 +609,8 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
   const withAddresses = await uiClipboardFacts(host);
   expect(withAddresses.isJson, 'Einzel-Report mit Adressen ist JSON').toBe(true);
   expect(withAddresses.tokens, 'ungeschwärzt: keine Platzhalter').toBe(false);
-  expect(withAddresses.ipv4 || withAddresses.ipv6, 'ungeschwärzt: echte Adressen vorhanden').toBe(true);
+  // `mdns` gehört dazu: auf einem Rechner ohne Kamera-Erlaubnis gibt es nur verschleierte Namen.
+  expect(withAddresses.ipv4 || withAddresses.ipv6 || withAddresses.mdns, 'ungeschwärzt: echte Adressen vorhanden').toBe(true);
 
   await expect(host.getByTestId('reports-copy-raw')).toBeVisible();
   await expect(host.getByText(S.lab.reports.rawWarning)).toBeVisible();
@@ -622,7 +631,6 @@ const SELFTEST_REASON_RUN_A = 'Kamera aus, aber Berechtigung ist erteilt';
  */
 interface SelfTestReport {
   cell: { role: string; hotspotOwner: string; camera: string; path: string; device: string };
-  environment: { userAgent: string };
   permissions: { camera: string };
   gumCalledThisSession: boolean;
   gather: { gathered: { type: string; family: string }[] } | null;
