@@ -6,6 +6,7 @@ import { mountShell, type ShellHandles } from '../ui/shell';
 import { S } from '../ui/strings';
 import { installLabHook } from './labHook';
 import { mountLab } from './labUi';
+import { mountSelfTest } from './selfTestUi';
 
 const root = document.getElementById('app');
 if (root === null) throw new Error('#app fehlt');
@@ -33,4 +34,10 @@ initPwa(shell);
 if (new URLSearchParams(location.search).get('hook') === '1') installLabHook();
 
 // Das Labor hängt unter der Hülle im selben scrollbaren #app-Container.
-mountLab(root, location.search);
+const lab = mountLab(root, location.search);
+
+// Selbsttest (ein Gerät): hängt im Zellen-Formular; der Spitzname kommt aus dem Feld direkt darüber.
+mountSelfTest(lab.selfTestMount, {
+  getDevice: () => root.querySelector<HTMLInputElement>('[data-testid="cell-device"]')?.value ?? '',
+  onResult: (result) => { lab.showRun(result); },
+});

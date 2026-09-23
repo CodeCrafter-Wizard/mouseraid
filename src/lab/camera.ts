@@ -31,3 +31,14 @@ export async function startCamera(): Promise<CameraStatus> {
   }
   return cameraStatus();
 }
+
+/**
+ * Selbsttest (Lauf B): eigener, kurzlebiger Stream – unabhängig vom Dauer-Stream aus `startCamera`, damit
+ * `stop()` nur die eigenen Tracks beendet. Zählt als getUserMedia-Aufruf der Sitzung. Wirft bei Ablehnung.
+ */
+export async function openTemporaryCamera(): Promise<{ stop(): void }> {
+  gumCalled = true;
+  // In unsicheren Kontexten fehlt `mediaDevices` ganz – der TypeError ist dann der gemeldete Kamera-Fehler.
+  const media = await navigator.mediaDevices.getUserMedia({ video: true });
+  return { stop: () => { for (const track of media.getTracks()) track.stop(); } };
+}

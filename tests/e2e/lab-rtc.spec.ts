@@ -604,3 +604,93 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
   await expect(host.getByTestId('reports-copy-raw')).toBeVisible();
   await expect(host.getByText(S.lab.reports.rawWarning)).toBeVisible();
 });
+
+// ───────── Selbsttest (Task 9) ─────────
+// Ein Gerät, eine Seite: Lauf A ohne getUserMedia, danach Lauf B mit offenem Kamera-Stream. NUR LOKAL (@local).
+// Das chromium-Projekt hat eine PERSISTIERTE Kamera-Erlaubnis (playwright.config.ts) – deshalb MUSS Lauf A
+// hier als ungültig markiert sein: „Kamera aus" bei Status `granted` misst nicht, was das Label behauptet
+// (gemessenes Chrome-Verhalten aus M0, docs/decisions.md). Reports enthalten echte Adressen dieses Rechners →
+// nie ausgeben, annotieren oder speichern; geprüft wird nur der anonymisierte Kopiertext.
+
+const SELFTEST_IPV4_SHAPE = /\b\d{1,3}(?:\.\d{1,3}){3}\b/;
+/** Mindestens vier Gruppen – „16:24:25" in `createdAt` ist eine Uhrzeit, keine Adresse. */
+const SELFTEST_IPV6_SHAPE = /\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}\b/i;
+const SELFTEST_MDNS_SHAPE = /\.local\b/i;
+const SELFTEST_REASON_RUN_A = 'Kamera aus, aber Berechtigung ist erteilt';
+
+/**
+ * Nur die Felder, die dieser Test liest. Bewusst KEIN Import aus src/lab/report: dessen Importkette reicht bis
+ * src/platform/buildInfo.ts, und `__BUILD_ID__` ist im Node-Typecheck (tsconfig.node.json) nicht deklariert.
+ */
+interface SelfTestReport {
+  cell: { role: string; hotspotOwner: string; camera: string; path: string; device: string };
+  environment: { userAgent: string };
+  permissions: { camera: string };
+  gumCalledThisSession: boolean;
+  gather: { gathered: { type: string; family: string }[] } | null;
+  hello: { versionMatch: boolean } | null;
+  ping: { events: { sent: number; received: number; lossPct: number } | null };
+  failures: string[];
+  valid: boolean;
+  invalidReason: string | null;
+}
+
+test('Selbsttest: Lauf A ungültig (Berechtigung erteilt), Lauf B gültig mit echten Host-IPs, Kopiertext ohne Adressen', { tag: '@local' }, async ({ context, page }) => {
+  // CDP lehnt beim Erteilen EINER Berechtigung alle nicht genannten ab: mit `permissions: ['camera']` allein meldet
+  // Chromium `local-network` als „denied" – und der Lauf bekäme F6, obwohl die Verbindung steht (gemessen).
+  await context.grantPermissions(['local-network-access']);
+  // Zwischenablage abfangen: geprüft wird genau der Text, den „Beide Reports kopieren" schreibt.
+  await page.addInitScript(() => {
+    const copied: string[] = [];
+    (window as unknown as { __copied: string[] }).__copied = copied;
+    const writeText = (text: string): Promise<void> => {
+      copied.push(text);
+      return Promise.resolve();
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  });
+  await page.goto('lab.html');
+  await page.getByTestId('cell-device').fill('Playwright-PC');
+  await page.getByTestId('selftest-start').click();
+
+  // Zwei Läufe mit je 50 Pings pro Kanal im 33-ms-Takt plus Gathering: zusammen deutlich unter 40 s.
+  await expect(page.getByTestId('selftest-A-valid')).toHaveAttribute('data-state', 'invalid', { timeout: 20_000 });
+  await expect(page.getByTestId('selftest-B-valid')).toHaveAttribute('data-state', 'valid', { timeout: 30_000 });
+  await expect(page.getByTestId('selftest-A-valid')).toContainText(SELFTEST_REASON_RUN_A);
+  await expect(page.getByTestId('selftest-alert')).toBeVisible();
+  await expect(page.getByTestId('selftest-alert')).toContainText(SELFTEST_REASON_RUN_A);
+  await expect(page.getByTestId('selftest-B-camera')).not.toContainText('NotAllowedError');
+  await expect(page.getByTestId('selftest-B-ping')).toContainText('/ 0 %');
+  await expect(page.getByTestId('error-panel')).toBeHidden();
+
+  await page.getByTestId('selftest-copy').click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copied: string[] }).__copied.length)).toBe(1);
+  const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied[0] ?? '');
+  const reports = JSON.parse(copied) as SelfTestReport[];
+  expect(reports).toHaveLength(2);
+  const [runA, runB] = reports;
+
+  expect(runA?.cell).toEqual({ role: 'selbsttest', hotspotOwner: 'unbekannt', camera: 'aus', path: 'loopback', device: 'Playwright-PC' });
+  expect(runA?.valid).toBe(false);
+  expect(runA?.invalidReason).toContain(SELFTEST_REASON_RUN_A);
+  expect(runA?.permissions.camera).toBe('granted');
+  expect(runA?.gumCalledThisSession).toBe(false);
+
+  expect(runB?.cell.camera).toBe('an');
+  expect(runB?.valid).toBe(true);
+  expect(runB?.gumCalledThisSession).toBe(true);
+  expect(runB?.failures).toEqual([]);
+  expect(runB?.hello?.versionMatch).toBe(true);
+  const hostRealIp = (runB?.gather?.gathered ?? []).filter((c) => c.type === 'host' && (c.family === 'ipv4' || c.family === 'ipv6')).length;
+  expect(hostRealIp).toBeGreaterThan(0);
+  expect(runB?.ping.events).toMatchObject({ sent: 50, received: 50, lossPct: 0 });
+
+  // Der User-Agent bleibt laut Vertrag ungekürzt und enthält „Chrome/<a.b.c.d>" – das ist keine Adresse.
+  const scrubbed = JSON.stringify(reports.map((report) => ({ ...report, environment: { ...report.environment, userAgent: '' } })));
+  expect(scrubbed).not.toMatch(SELFTEST_IPV4_SHAPE);
+  expect(scrubbed).not.toMatch(SELFTEST_IPV6_SHAPE);
+  expect(scrubbed).not.toMatch(SELFTEST_MDNS_SHAPE);
+
+  // Beide Läufe stehen auch im Verlauf des Labors (finishRun speichert, `onResult` aktualisiert die Liste).
+  await expect(page.locator('[data-testid="report-item"][data-role="selbsttest"]')).toHaveCount(2);
+});

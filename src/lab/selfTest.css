@@ -1,0 +1,44 @@
+/* Selbsttest – sitzt im Zellen-Formular des Labors; Farben und Knöpfe kommen aus src/ui/shell.css. */
+
+/* Der Platzhalter von labUi ist `display: contents` in einer Flex-Zeile: eigene, volle Zeile beanspruchen. */
+.selftest {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(246, 236, 217, 0.14);
+}
+.selftest [hidden] { display: none !important; }
+
+.selftest-title { margin: 0; font-size: 16px; color: var(--c-amber); }
+.selftest-intro, .selftest-status { margin: 0; font-size: 15px; opacity: 0.9; overflow-wrap: anywhere; }
+.selftest-status:empty { display: none; }
+
+/* Ein großer Knopf – der Freund mit dem iPhone soll nichts suchen müssen. */
+.selftest-start { min-height: 64px; font-size: 19px; justify-self: stretch; }
+
+.selftest-alert {
+  margin: 0; padding: 12px 14px; border-radius: 12px; border: 2px solid var(--c-warn);
+  background: rgba(255, 143, 107, 0.18); color: #ffe3dc; font-size: 15px; font-weight: 600; overflow-wrap: anywhere;
+}
+
+.selftest-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px; }
+.selftest-table th, .selftest-table td {
+  padding: 8px 8px; text-align: left; vertical-align: top; overflow-wrap: anywhere;
+  border-top: 1px solid rgba(246, 236, 217, 0.12);
+}
+.selftest-table thead th { border-top: 0; font-size: 13px; letter-spacing: 0.03em; opacity: 0.75; }
+.selftest-table tbody th { width: 34%; font-weight: 500; opacity: 0.8; }
+.selftest-table td[data-testid$='-valid'][data-state='valid'] { color: var(--c-ok); font-weight: 600; }
+.selftest-table td[data-testid$='-valid'][data-state='invalid'],
+.selftest-table td[data-testid$='-valid'][data-state='aborted'] { color: var(--c-warn); font-weight: 600; }
+
+.selftest-details summary { padding: 14px 0; cursor: pointer; font-size: 15px; }
+.selftest-text {
+  margin: 0; max-height: 40dvh; overflow: auto; padding: 10px 12px; border-radius: 12px;
+  background: rgba(10, 14, 36, 0.55); font: 12px/1.35 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word; touch-action: pan-y;
+  -webkit-user-select: text; user-select: text;
+}

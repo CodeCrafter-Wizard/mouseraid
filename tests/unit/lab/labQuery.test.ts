@@ -36,8 +36,13 @@ describe('parseLabQuery', () => {
 describe('pingCountFor', () => {
   it('misst im Normalfall 200 Pings', () => {
     expect(pingCountFor('text', '')).toBe(200);
-    expect(pingCountFor('loopback', '?expect=abc')).toBe(200);
     expect(pingCountFor('qr', '')).toBe(200);
+  });
+
+  it('misst im Selbsttest (Pfad loopback) 50 Pings – zwei Läufe sollen in unter zwei Minuten durch sein', () => {
+    expect(pingCountFor('loopback', '')).toBe(50);
+    expect(pingCountFor('loopback', '?expect=abc')).toBe(50);
+    expect(pingCountFor('loopback', '?quick=1')).toBe(20);
   });
 
   it('misst im BroadcastChannel-Modus und mit ?quick=1 nur 20 Pings', () => {

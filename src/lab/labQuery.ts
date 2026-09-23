@@ -13,6 +13,8 @@ const MAX_ROOM_LENGTH = 40;
 /** Standard im Labor: 200 Pings je Kanal; der Schnellmodus hält E2E-Läufe kurz. */
 const PING_COUNT = 200;
 const PING_COUNT_QUICK = 20;
+/** Selbsttest: zwei Läufe auf EINEM Gerät – 50 Pings je Kanal genügen für Median/p95 und halten ihn unter zwei Minuten. */
+const PING_COUNT_SELFTEST = 50;
 
 function parseSlot(text: string | null): number {
   const value = Number(text);
@@ -35,5 +37,6 @@ export function parseLabQuery(search: string): LabQuery {
 
 /** Anzahl der Pings je Kanal für einen Lauf. */
 export function pingCountFor(path: CellLabel['path'], search: string): number {
-  return path === 'broadcast' || parseLabQuery(search).quick ? PING_COUNT_QUICK : PING_COUNT;
+  if (path === 'broadcast' || parseLabQuery(search).quick) return PING_COUNT_QUICK;
+  return path === 'loopback' ? PING_COUNT_SELFTEST : PING_COUNT;
 }
