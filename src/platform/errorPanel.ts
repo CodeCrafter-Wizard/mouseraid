@@ -18,6 +18,15 @@ function displayMode(): string {
  */
 export function installErrorPanel(getSwState: () => string, scrub?: (text: string) => string): { report(kind: ErrorKind, value: unknown): void } {
   const log = createErrorLog(20);
+  // Der Schwärzer läuft im globalen Fehlerpfad: wirft er selbst, bleibt der Text ungeschwärzt
+  // stehen, statt dass das Panel – am Handy der einzige Rückkanal – nie erscheint.
+  const safeScrub = scrub === undefined ? undefined : (value: string): string => {
+    try {
+      return scrub(value);
+    } catch {
+      return value;
+    }
+  };
 
   const panel = document.createElement('section');
   panel.className = 'error-panel';
@@ -44,7 +53,7 @@ export function installErrorPanel(getSwState: () => string, scrub?: (text: strin
     formatDiagnosis(
       { buildId: BUILD_ID, url: location.href, userAgent: navigator.userAgent, displayMode: displayMode(), online: navigator.onLine, swState: getSwState() },
       log.entries(),
-      scrub,
+      safeScrub,
     );
 
   copy.onclick = () => {

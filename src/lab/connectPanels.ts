@@ -102,8 +102,9 @@ function createRunBox(ctx: ConnectContext): RunBox {
           onPingProgress: (channel, stats) => { pings.append(h('p', 'lab-line', pingLine(channel, stats))); },
         },
       });
-      ctx.onRun(result);
+      // Erst merken, dann anzeigen: wirft die Anzeige, darf „Platz freigeben“ keinen zweiten Report speichern.
       reported.add(link);
+      ctx.onRun(result);
     } catch (error) {
       status.textContent = fmt(S.lab.run.unexpected, { message: describeError(error) });
     } finally {
@@ -207,7 +208,8 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       else lobby.closeSlot(slot);
       onRelease();
     };
-    // Ein Platz, der nie offen war, gibt seine Diagnose noch vor dem Schließen her – aber nur einmal.
+    // Ein Platz, der gerade nicht offen ist (nie geöffnet oder schon geschlossen), gibt seine Diagnose
+    // noch vor dem Schließen her – aber nur einmal je Verbindung.
     if (current === null || current.transport.state === 'open') { close(); return; }
     release.disabled = true;
     void box.runOnce(current).finally(close);

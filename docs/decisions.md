@@ -187,6 +187,7 @@ Entscheidung zu Punkt 16 der „Abweichungen vom M0-Plan": Mit `tests/e2e/lab-br
 - `npm run e2e:local` = `playwright test --grep @local` – nur auf dem Entwicklungsrechner: Tooling-Spike (`tooling.spec.ts`), echter WebRTC-Ablauf und Selbsttest (`lab-rtc.spec.ts`). Diese Tests brauchen echte Netzwerkschnittstellen, eine persistierte Kamera-Erlaubnis bzw. Software-WebGL.
 - **Folge: Jeder neue Spec gehört zum Deploy-Tor, außer jeder seiner Tests trägt `{ tag: '@local' }`.** Vergessen ist damit laut statt still: ein nicht CI-tauglicher Spec ohne Tag färbt die CI rot, statt – wie bei der Positivliste – unbemerkt nie zu laufen.
 - In PowerShell das Tag in Anführungszeichen setzen (`npx playwright test --grep '@local'`), sonst deutet die Shell `@local` als Splatting und der Filter fehlt.
+- `check-dist` prüft seit dem M1-Feinschliff auch, dass der JS-Graph der **Spielseite** frei von Labor-/Netz-Signaturen bleibt (`maeusebau-lab-`, `RTCPeerConnection`, `CompressionStream`; `scripts/lib/distChecks.mjs` → `findLabSignatures`). Das gilt für Phase 0+1, in der die Spielseite kein Netz hat. **Phase 2 (Koop-Netzcode auf `index.html`) muss diese Liste auf reine Labor-Marker (`maeusebau-lab-`) verengen**, sonst schlägt das Tor beim ersten `src/net`-Import der Spielseite an.
 
 ## Offene Punkte
 
