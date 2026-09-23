@@ -22,21 +22,58 @@ async function labelCell(page: Page, device: string): Promise<void> {
   await page.getByTestId('cell-confirm').click();
 }
 
+// Nach `setViewportSize` braucht das Layout einen Umbruch – deshalb pollen statt einmal messen.
 async function expectNoHorizontalOverflow(page: Page): Promise<void> {
-  const overflow = await page.evaluate(() => {
-    const app = document.getElementById('app');
-    const root = document.documentElement;
-    return { app: app === null ? -1 : app.scrollWidth - app.clientWidth, root: root.scrollWidth - root.clientWidth };
-  });
-  expect(overflow, 'kein horizontaler Überlauf').toEqual({ app: 0, root: 0 });
+  await expect
+    .poll(() => page.evaluate(() => {
+      const app = document.getElementById('app');
+      const root = document.documentElement;
+      return { app: app === null ? -1 : app.scrollWidth - app.clientWidth, root: root.scrollWidth - root.clientWidth };
+    }), { message: 'kein horizontaler Überlauf' })
+    .toEqual({ app: 0, root: 0 });
 }
 
 async function expectTouchTargets(page: Page): Promise<void> {
-  const tooSmall = await page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('.lab .btn, .lab .lab-choice, .lab .lab-input')]
-      .filter((node) => node.offsetParent !== null && node.getBoundingClientRect().height < 48)
-      .map((node) => node.dataset['testid'] ?? node.textContent ?? node.tagName));
-  expect(tooSmall, 'Touch-Ziele unter 48 px').toEqual([]);
+  await expect
+    .poll(() => page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>('.lab .btn, .lab .lab-choice, .lab .lab-input')]
+        .filter((node) => node.offsetParent !== null && node.getBoundingClientRect().height < 48)
+        .map((node) => node.dataset['testid'] ?? node.textContent ?? node.tagName)), { message: 'Touch-Ziele unter 48 px' })
+    .toEqual([]);
+}
+
+/**
+ * Liest die Zwischenablage IN der Seite; nach außen gehen nur Zahlen, eigene Fixture-Namen und
+ * Wahrheitswerte – nie der Text selbst. (Hier gibt es ohnehin keine echten Adressen; im
+ * `@local`-Block von lab-rtc.spec.ts, wo es welche gibt, gilt dieselbe Regel.)
+ */
+async function clipboardFacts(page: Page) {
+  return page.evaluate(async () => {
+    const text = await navigator.clipboard.readText();
+    // Der User-Agent bleibt laut Task 7 absichtlich bytegleich; seine Versionsnummern (…/153.0.0.0)
+    // sehen wie eine IPv4-Adresse aus, sind aber keine – für die Adress-Suche wird er ersetzt.
+    const body = text.replace(/"userAgent":\s*"[^"]*"/g, '"userAgent": "…"');
+    // Uhrzeiten („T20:13:49") sind keine IPv6-Adressen – dieselbe Ausnahme kennt `redactReport`.
+    const ipv6 = (body.match(/[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
+    const parsed = ((): { cell?: { role?: string; device?: string }; gather?: unknown }[] | null => {
+      try {
+        const value: unknown = JSON.parse(text);
+        return Array.isArray(value) ? value : null;
+      } catch {
+        return null;
+      }
+    })();
+    return {
+      isJson: parsed !== null,
+      count: parsed?.length ?? -1,
+      roles: (parsed ?? []).map((entry) => entry.cell?.role ?? '?').sort(),
+      devices: (parsed ?? []).map((entry) => entry.cell?.device ?? '?').sort(),
+      allGatherNull: (parsed ?? []).every((entry) => entry.gather === null),
+      ipv4: /\d{1,3}(?:\.\d{1,3}){3}/.test(body),
+      ipv6: ipv6.length > 0,
+      mdns: /\.local\b/i.test(body),
+    };
+  });
 }
 
 test('Zwei Tabs: Zelle beschriften, verbinden, Ping-Test, Report auf beiden Seiten, JSON ohne Roh-SDP', async ({ context }, testInfo) => {
@@ -106,21 +143,24 @@ test('Zwei Tabs: Zelle beschriften, verbinden, Ping-Test, Report auf beiden Seit
   }
   await expect(host.locator('[data-testid="report-item"][data-role="host"]')).toContainText('E2E-Host');
   await expect(client.locator('[data-testid="report-item"][data-role="client"]')).toContainText('E2E-Client');
-  // Ohne WebRTC gibt es kein SDP – der Knopf bleibt verborgen.
+  // Ohne WebRTC gibt es kein SDP – den Knopf gibt es, er bleibt aber verborgen.
+  await expect(host.getByTestId('reports-copy-raw')).toBeAttached();
   await expect(host.getByTestId('reports-copy-raw')).toBeHidden();
 
   await host.bringToFront();
   await host.getByTestId('reports-copy-all').click();
+  // Rauchprobe der Schwärzungs-Naht: Im BroadcastChannel-Modus gibt es weder SDP noch Kandidaten,
+  // also kann hier nichts Echtes durchrutschen – der scharfe Test mit ECHTEN Adressen steht im
+  // `@local`-Block von lab-rtc.spec.ts. Erst lesen, dann die kurz stehende „Kopiert"-Beschriftung prüfen.
+  expect(await clipboardFacts(host)).toEqual({
+    isJson: true, count: 2, roles: ['client', 'host'], devices: ['E2E-Client', 'E2E-Host'],
+    allGatherNull: true, ipv4: false, ipv6: false, mdns: false,
+  });
   await expect(host.getByTestId('reports-copy-all')).toHaveText(S.lab.share.copied);
-  const clipboard = await host.evaluate(() => navigator.clipboard.readText());
-  const parsed = JSON.parse(clipboard) as StoredReport[];
-  expect(parsed).toHaveLength(2);
-  expect(parsed.map((entry) => entry.cell.device).sort()).toEqual(['E2E-Client', 'E2E-Host']);
-  expect(clipboard).not.toMatch(/a=candidate|a=fingerprint|a=ice-ufrag|a=ice-pwd|v=0/);
 
-  // Layout im Querformat: nichts ragt seitlich heraus, alle Touch-Ziele sind groß genug.
+  // Layout quer UND hochkant: nichts ragt seitlich heraus, alle Touch-Ziele sind groß genug.
   for (const page of [host, client]) {
-    for (const size of [{ width: 844, height: 390 }, { width: 667, height: 375 }]) {
+    for (const size of [{ width: 844, height: 390 }, { width: 667, height: 375 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(size);
       await expectNoHorizontalOverflow(page);
       await expectTouchTargets(page);

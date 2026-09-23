@@ -25,8 +25,12 @@ const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 
 type Hello = Extract<NetMessage, { type: 'hello' }>;
 
-/** Ein Router je Transport: `createMessageRouter` belegt `transport.onMessage`, ein zweiter würde den ersten abklemmen. */
-interface LabLink { router: MessageRouter; remoteHello: Hello | null; helloSent: boolean; waiters: ((hello: Hello | null) => void)[]; }
+/**
+ * Ein Router je Transport: `createMessageRouter` belegt `transport.onMessage`, ein zweiter würde den ersten abklemmen.
+ * `helloSent` und `answered` sind absichtlich getrennt: `helloSent` merkt nur, dass überhaupt ein Hello hinausging,
+ * `answered` riegelt allein die AUTOMATISCHE Antwort ab.
+ */
+interface LabLink { router: MessageRouter; remoteHello: Hello | null; helloSent: boolean; answered: boolean; waiters: ((hello: Hello | null) => void)[]; }
 const links = new WeakMap<Transport, LabLink>();
 
 function sendHello(link: LabLink): void {
@@ -38,12 +42,17 @@ function linkFor(transport: Transport): LabLink {
   if (existing !== undefined) return existing;
   const router = createMessageRouter(transport);
   attachPongResponder(router);
-  const link: LabLink = { router, remoteHello: null, helloSent: false, waiters: [] };
+  const link: LabLink = { router, remoteHello: null, helloSent: false, answered: false, waiters: [] };
   router.on('hello', (message) => {
     link.remoteHello = message;
     // Genau eine automatische Antwort: Startet die Gegenstelle ihren Lauf früher als wir, bekommt sie
-    // trotzdem unser Hello. Nach dem ersten eigenen Hello nie wieder – sonst Ping-Pong ohne Ende.
-    if (!link.helloSent) sendHello(link);
+    // trotzdem unser Hello. Der Riegel hängt an `answered`, NICHT an `helloSent`: Wer selbst schon
+    // gemessen hat (Hello ins Leere, weil die Gegenstelle noch nicht zuhörte), muss deren späteres
+    // Hello trotzdem beantworten – sonst wartet sie volle 3 s vergebens. Höchstens zwei Hellos je Seite.
+    if (!link.answered) {
+      link.answered = true;
+      sendHello(link);
+    }
     for (const waiter of link.waiters.splice(0)) waiter(message);
   });
   links.set(transport, link);
@@ -139,6 +148,8 @@ export async function finishRun(input: {
     if (remote !== null) {
       hello = { remoteProtoV: remote.protoV, remoteBuildId: remote.buildId, versionMatch: remote.protoV === PROTOCOL_VERSION && remote.buildId === BUILD_ID };
     }
+    // Zeitleisten-Details sind Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts),
+    // keine Spiel-UI – deshalb stehen sie nicht in src/ui/strings.ts.
     timeline.push('run:hello', hello === null ? 'keine Antwort' : hello.versionMatch ? 'passt' : 'Versionskonflikt');
     const count = pingCountFor(cell.path, typeof location === 'undefined' ? '' : location.search);
     for (const channel of PING_CHANNELS) {

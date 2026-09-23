@@ -6,6 +6,9 @@ import { actionButton, card, flash, h } from './labDom';
 import type { LabRunResult } from './labSession';
 import { createReportStore, redactReport, reportToText, reportsToJson, type LabReport } from './report';
 
+/** So lange bleibt „Verlauf löschen" nach dem ersten Tipp scharf. */
+const DISARM_MS = 5000;
+
 export interface ReportsPanel {
   element: HTMLElement;
   /** Liste neu aus dem Speicher aufbauen. */
@@ -86,10 +89,10 @@ export function createReportsPanel(): ReportsPanel {
     void copyText(text).then((ok) => {
       flash(button, ok ? S.lab.share.copied : S.lab.share.copyFailed);
       fallbackWrap.hidden = ok;
-      if (!ok) {
-        fallback.value = text;
-        fallback.select();
-      }
+      // Beim Erfolg nichts stehen lassen: der Text kann echte Adressen tragen und soll nicht
+      // unsichtbar im DOM weiterleben, bis der nächste Fehlschlag ihn wieder aufdeckt.
+      fallback.value = ok ? '' : text;
+      if (!ok) fallback.select();
     });
   }
 
@@ -111,20 +114,29 @@ export function createReportsPanel(): ReportsPanel {
   const copyRaw = actionButton(S.lab.reports.copyRaw, 'reports-copy-raw', 'secondary');
   copyRaw.onclick = () => {
     const raw = lastRun?.rawSdp ?? null;
-    if (raw !== null) copyWithFallback(`--- lokal ---\n${raw.local}\n--- Gegenstelle ---\n${raw.remote}`, copyRaw);
+    if (raw !== null) copyWithFallback(`${S.lab.reports.rawLocal}\n${raw.local}\n${S.lab.reports.rawRemote}\n${raw.remote}`, copyRaw);
   };
 
   const clear = actionButton(S.lab.reports.clear, 'reports-clear', 'secondary');
   let armed = false;
+  let disarmTimer: ReturnType<typeof setTimeout> | null = null;
+  function disarm(): void {
+    if (disarmTimer !== null) clearTimeout(disarmTimer);
+    disarmTimer = null;
+    if (!armed) return;
+    armed = false;
+    clear.textContent = S.lab.reports.clear;
+  }
   clear.onclick = () => {
     // Zwei Tipper statt confirm(): kein System-Dialog, der in der installierten App hängen kann.
     if (!armed) {
       armed = true;
       clear.textContent = S.lab.reports.clearConfirm;
+      // Ein vergessener „scharfer" Knopf löscht sonst beim nächsten, ganz anders gemeinten Tipp.
+      disarmTimer = setTimeout(disarm, DISARM_MS);
       return;
     }
-    armed = false;
-    clear.textContent = S.lab.reports.clear;
+    disarm();
     try {
       createReportStore(localStorage).clear();
     } catch {
@@ -138,9 +150,13 @@ export function createReportsPanel(): ReportsPanel {
   element.append(empty, list, addressToggle, buttons, rawWarning, fallbackWrap);
 
   function refresh(): void {
+    // Die Liste wird neu gebaut – ein noch scharfer Löschknopf gehört nicht in die neue Ansicht.
+    disarm();
     const reports = storedReports();
     const copyOne = (report: LabReport, button: HTMLButtonElement): void => {
-      copyWithFallback(reportToText(withAddresses.checked ? report : redactReport(report)), button);
+      // Angehakt: JSON MIT echten Adressen (Entwicklerpfad für die Matrix). Sonst der anonymisierte
+      // Textbericht. Nur diese eine Stelle darf Adressen herausgeben – „alle kopieren"/„teilen" nie.
+      copyWithFallback(withAddresses.checked ? reportsToJson([report]) : reportToText(redactReport(report)), button);
     };
     list.replaceChildren(...reports.map((report) => reportItem(report, copyOne)));
     empty.hidden = reports.length > 0;

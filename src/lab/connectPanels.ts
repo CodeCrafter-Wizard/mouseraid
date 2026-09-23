@@ -70,6 +70,9 @@ function createRunBox(ctx: ConnectContext): RunBox {
   pings.dataset.testid = 'run-pings';
   element.append(chip, status, pings);
   let running = false;
+  /** Der zuletzt beobachtete Link – Ziel des einen `pagehide`-Zuhörers dieser Box. */
+  let watched: Link | null = null;
+  let pagehideBound = false;
 
   function showState(state: TransportState): void {
     chip.textContent = S.lab.state[state];
@@ -112,7 +115,13 @@ function createRunBox(ctx: ConnectContext): RunBox {
       attachLabLink(link.transport);
       // Ein Tab-Neuladen sendet sonst kein 'bye' – die Gegenstelle stünde im BroadcastChannel-Modus
       // für immer auf „verbunden". Für WebRTC schließt das nur die PeerConnection früher, was gewollt ist.
-      addEventListener('pagehide', () => { link.transport.close(); }, { once: true });
+      // GENAU EIN Zuhörer je Box: `watched` zeigt immer auf den aktuellen Link, damit ein zweiter
+      // Versuch (neues Angebot) keinen weiteren Listener anhäuft, der auf einen toten Link zeigt.
+      watched = link;
+      if (!pagehideBound) {
+        pagehideBound = true;
+        addEventListener('pagehide', () => { watched?.transport.close(); }, { once: true });
+      }
       link.transport.onStateChange = (state) => {
         link.timeline.push(`transport:${state}`);
         showState(state);
@@ -182,6 +191,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
     void lobby.createOffer(slot).then((artifacts) => {
       const entry = lobby.entries().get(slot);
       if (entry === undefined) return;
+      // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
       void permissionsAtOffer.then((p) => { entry.timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
       offer.area.value = artifacts.payload;
       codes.hidden = false;
@@ -192,11 +202,16 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       if (link === null) return;
       if (answer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
       alert.hidden = true;
+      // Ein zweiter Tipp während des Annehmens fände den Platz schon beantwortet vor und stellte ein
+      // rotes F5 neben das grüne „verbunden" – wie bei „Antwort erzeugen" sperrt der Knopf sich selbst.
+      connect.disabled = true;
       const current = link;
       void lobby.acceptAnswer(slot, answer.area.value).then(() => {
         current.remoteSdp = lobby.entries().get(slot)?.remoteSdp ?? null;
         if (current.transport.state === 'connecting') box.setWaiting(S.lab.state.connecting);
-      }, (error: unknown) => { showError(alert, error); });
+      }, (error: unknown) => { showError(alert, error); }).finally(() => {
+        connect.disabled = false;
+      });
     };
   }
   return element;
@@ -276,6 +291,7 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     void current.acceptOffer(offer.area.value).then((artifacts) => {
       const { peer, timeline } = current;
       if (peer === null || timeline === null) return;
+      // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
       void permissionsAtOffer.then((p) => { timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
       answer.area.value = artifacts.payload;
       answerBlock.hidden = false;

@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { S } from '../../src/ui/strings';
 import type { LabHook } from '../../src/lab/labHook';
 import type { ClientJoin, HostLobby } from '../../src/net/connector';
 import type { MessageRouter } from '../../src/net/messageRouter';
@@ -509,6 +510,28 @@ async function uiReportFacts(page: Page) {
     eventsSent: report.ping.events?.sent ?? 0, eventsLossPct: report.ping.events?.lossPct ?? -1, stateSent: report.ping.state?.sent ?? 0,
   })), UI_REPORTS_KEY);
 }
+/**
+ * Zwischenablage IN der Seite auswerten: Dieser Lauf hat ECHTE Kandidaten, deshalb verlässt der Text
+ * die Seite nie – nach außen gehen nur Wahrheitswerte. Ausgenommen von der Adress-Suche ist der
+ * User-Agent: Task 7 lässt ihn bewusst bytegleich, und seine Versionsnummern (…/153.0.0.0) sähen
+ * sonst wie eine IPv4-Adresse aus. Uhrzeiten („T20:13:49") sind keine IPv6-Adressen – dieselbe
+ * Ausnahme kennt `redactReport` selbst.
+ */
+async function uiClipboardFacts(page: Page) {
+  return page.evaluate(async () => {
+    const text = await navigator.clipboard.readText();
+    const body = text.replace(/"userAgent":\s*"[^"]*"/g, '"userAgent": "…"').replace(/^\s*Browser:.*$/gm, '  Browser: …');
+    const ipv6 = (body.match(/[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
+    return {
+      isText: text.startsWith('Mäusebau-Laborbericht'),
+      isJson: text.trimStart().startsWith('['),
+      tokens: /(?:ipv4|ipv6|mdns|other)\/[a-z-]+#\d+/.test(body),
+      ipv4: /\d{1,3}(?:\.\d{1,3}){3}/.test(body),
+      ipv6: ipv6.length > 0,
+      mdns: /\.local\b/i.test(body),
+    };
+  });
+}
 async function uiLabelCell(page: Page, role: 'host' | 'client', device: string): Promise<void> {
   await page.getByTestId('cell-device').fill(device);
   await page.getByTestId(`cell-role-${role}`).check();
@@ -518,7 +541,8 @@ async function uiLabelCell(page: Page, role: 'host' | 'client', device: string):
   await expect(page.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready');
 }
 test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je einen gültigen Report', { tag: '@local' }, async ({ context }) => {
-  await context.grantPermissions(['local-network-access']);
+  // Additiv: `grantPermissions` ersetzt die Liste, deshalb stehen hier alle drei zusammen.
+  await context.grantPermissions(['local-network-access', 'clipboard-read', 'clipboard-write']);
   const host = await context.newPage();
   const client = await context.newPage();
   await host.goto('lab.html?quick=1');
@@ -533,7 +557,16 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
   const answerOut = client.getByTestId('answer-out');
   await expect.poll(async () => (await answerOut.inputValue()).startsWith('MB1.'), { timeout: 10_000 }).toBe(true);
   await host.getByTestId('slot-1').getByTestId('answer-in').fill(await answerOut.inputValue());
-  await host.getByTestId('slot-1').getByTestId('connect').click();
+  // Der Knopf sperrt sich SYNCHRON im Tipp – ein zweiter Tipp käme sonst als rotes F5 neben das grüne
+  // „verbunden". Im selben Zug geklickt und gelesen, damit die Zusage ohne Zeitfenster geprüft wird.
+  const connect = host.getByTestId('slot-1').getByTestId('connect');
+  const lockedOnTap = await connect.evaluate((node) => {
+    const button = node as HTMLButtonElement;
+    button.click();
+    return button.disabled;
+  });
+  expect(lockedOnTap, 'Verbinden sperrt sich beim Tipp selbst').toBe(true);
+  await expect(connect).toBeEnabled();
   await expect(host.getByTestId('slot-1').getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
   await expect(client.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
   // Der Client misst von selbst; erst danach startet der Host (beide Tabs teilen sich den localStorage).
@@ -548,5 +581,26 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
     expect(entry.transmitted).toBe(entry.gathered);
     expect(entry.textChars).toBeGreaterThan(0);
   }
+
+  // ── Schwärzungs-Naht, geprüft an ECHTEN Kandidaten dieses Rechners ──
+  // „Alle kopieren" ist immer anonymisiert: Tokens statt Adressen.
+  await host.bringToFront();
+  await host.getByTestId('reports-copy-all').click();
+  expect(await uiClipboardFacts(host)).toEqual({ isText: false, isJson: true, tokens: true, ipv4: false, ipv6: false, mdns: false });
+
+  // Einzel-Report ohne Haken: anonymisierter TEXT – er nennt Kandidaten nur nach Art und Anzahl,
+  // führt also weder Adressen noch Tokens auf.
+  await host.getByTestId('report-copy').first().click();
+  expect(await uiClipboardFacts(host)).toEqual({ isText: true, isJson: false, tokens: false, ipv4: false, ipv6: false, mdns: false });
+
+  // Mit Haken: JSON MIT echten Adressen (der Entwicklerpfad). Geprüft wird nur, DASS Adressen drinstehen.
+  await host.getByTestId('with-addresses').check();
+  await host.getByTestId('report-copy').first().click();
+  const withAddresses = await uiClipboardFacts(host);
+  expect(withAddresses.isJson, 'Einzel-Report mit Adressen ist JSON').toBe(true);
+  expect(withAddresses.tokens, 'ungeschwärzt: keine Platzhalter').toBe(false);
+  expect(withAddresses.ipv4 || withAddresses.ipv6, 'ungeschwärzt: echte Adressen vorhanden').toBe(true);
+
   await expect(host.getByTestId('reports-copy-raw')).toBeVisible();
+  await expect(host.getByText(S.lab.reports.rawWarning)).toBeVisible();
 });

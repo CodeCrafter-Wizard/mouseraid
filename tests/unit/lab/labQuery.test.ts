@@ -18,6 +18,9 @@ describe('parseLabQuery', () => {
     expect(query.slot).toBe(1);
     expect(parseLabQuery('?slot=2.5').slot).toBe(1);
     expect(parseLabQuery('?slot=abc').slot).toBe(1);
+    // Die Ränder direkt daneben – 0 und 4 sind keine Plätze.
+    expect(parseLabQuery('?slot=0').slot).toBe(1);
+    expect(parseLabQuery('?slot=4').slot).toBe(1);
   });
 
   it('kürzt überlange Raumnamen und ersetzt einen leeren Raum', () => {
@@ -34,10 +37,13 @@ describe('pingCountFor', () => {
   it('misst im Normalfall 200 Pings', () => {
     expect(pingCountFor('text', '')).toBe(200);
     expect(pingCountFor('loopback', '?expect=abc')).toBe(200);
+    expect(pingCountFor('qr', '')).toBe(200);
   });
 
   it('misst im BroadcastChannel-Modus und mit ?quick=1 nur 20 Pings', () => {
     expect(pingCountFor('broadcast', '')).toBe(20);
     expect(pingCountFor('text', '?quick=1')).toBe(20);
+    // Beides zusammen bleibt beim Schnellmodus.
+    expect(pingCountFor('broadcast', '?quick=1')).toBe(20);
   });
 });

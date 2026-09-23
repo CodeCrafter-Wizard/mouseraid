@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBroadcastTransport } from '../../../src/net/broadcastTransport';
 import type { EnvironmentInfo, PermissionSnapshot } from '../../../src/net/environment';
+import { createMessageRouter } from '../../../src/net/messageRouter';
+import { attachPongResponder } from '../../../src/net/pingTest';
+import { PROTOCOL_VERSION, encodeMessage } from '../../../src/net/protocol';
 import { createTimeline, type Timeline } from '../../../src/net/timeline';
 import type { Transport } from '../../../src/net/transport';
 import { attachLabLink, finishRun, makeReportId } from '../../../src/lab/labSession';
@@ -35,6 +38,8 @@ function memoryStorage(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
 
 const now = (): number => performance.now();
 const cell = (role: 'host' | 'client', camera: 'an' | 'aus' = 'aus'): CellLabel => ({ role, hotspotOwner: 'router', camera, path: 'broadcast', device: `Test-${role}` });
+/** Erstes Byte eines kodierten Hello – so zählt der Test Hello-Rahmen, ohne eine interne Konstante zu kennen. */
+const HELLO_TYPE_BYTE = encodeMessage({ type: 'hello', protoV: PROTOCOL_VERSION, buildId: 'x' })[0];
 
 let roomCounter = 0;
 const opened: Transport[] = [];
@@ -110,6 +115,9 @@ describe('labSession', () => {
     expect(hostRun.report.notes).toBe('Notiz');
     expect(clientRun.report.notes).toBe('');
     expect(hostRun.report.timeline.map((event) => event.kind)).toEqual(expect.arrayContaining(['run:start', 'run:diagnose']));
+    // Die Einträge von finishRun selbst – vollständig und in dieser Reihenfolge.
+    expect(hostRun.report.timeline.map((event) => event.kind).filter((kind) => kind.startsWith('run:')))
+      .toEqual(['run:start', 'run:hello', 'run:ping:events', 'run:ping:state', 'run:diagnose']);
     expect(createReportStore(storage).list().map((report) => report.id).sort()).toEqual([hostRun.report.id, clientRun.report.id].sort());
   });
 
@@ -134,6 +142,72 @@ describe('labSession', () => {
     expect(hostRun.report.ping.events).toMatchObject({ sent: 20, lossPct: 0 });
     expect(helloPhaseMs).toBeLessThan(1000);
   });
+
+  /** Offen, aber stumm: die Gegenstelle antwortet nie – weder auf Hello noch auf Pings. */
+  function muteOpen(): Transport {
+    return { peerId: 'stumm', state: 'open', send: () => true, onMessage: null, onStateChange: null, close: () => undefined };
+  }
+
+  it('offene Verbindung ohne Antwort: Hello läuft in den Timeout, alle Pings zählen als Verlust', async () => {
+    const startedAt = now();
+    let helloPhaseMs = Number.POSITIVE_INFINITY;
+    const result = await finishRun({
+      cell: cell('host'), transport: muteOpen(), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null,
+      gumCalledThisSession: false, now,
+      hooks: { onStatus: (text) => { if (text === fmt(S.lab.run.ping, { channel: 'events' })) helloPhaseMs = now() - startedAt; } },
+    });
+    expect(result.report.hello).toBeNull();
+    expect(result.report.timeline.find((event) => event.kind === 'run:hello')?.detail).toBe('keine Antwort');
+    expect(result.report.ping.events).toMatchObject({ sent: 20, received: 0, lossPct: 100 });
+    expect(result.report.ping.state).toMatchObject({ sent: 20, received: 0, lossPct: 100 });
+    // Zugesagt sind höchstens 3 s Hello-Wartezeit; eine höhere Grenze macht genau diese Zeile rot.
+    expect(helloPhaseMs).toBeLessThan(4000);
+  }, 15_000);
+
+  it('genau eine automatische Hello-Antwort, egal wie oft die Gegenstelle misst', async () => {
+    const { host, client } = pair();
+    // Hello-Rahmen der passiven Seite zählen, ohne ihr Verhalten zu verändern.
+    const original = client.send.bind(client);
+    let helloFrames = 0;
+    client.send = (channel, data) => {
+      if (data[0] === HELLO_TYPE_BYTE) helloFrames += 1;
+      return original(channel, data);
+    };
+    attachLabLink(client);
+    await Promise.all([untilOpen(host), untilOpen(client)]);
+
+    await run(host, 'host');
+    await run(host, 'host');
+    expect(helloFrames).toBe(1);
+  }, 20_000);
+
+  it('die passive Seite antwortet auch dann, wenn sie selbst schon ein Hello gesendet hat', async () => {
+    const { host, client } = pair();
+    await Promise.all([untilOpen(host), untilOpen(client)]);
+    // Der Client misst zuerst – der Host hört zu diesem Zeitpunkt noch gar nicht zu.
+    const clientRun = await run(client, 'client');
+    expect(clientRun.report.hello).toBeNull();
+
+    // Erst jetzt hängt sich der Host ein: sein Hello muss der Client trotzdem beantworten.
+    attachLabLink(host);
+    const hostRun = await run(host, 'host');
+    expect(hostRun.report.hello?.versionMatch).toBe(true);
+    expect(hostRun.report.ping.events).toMatchObject({ sent: 20, lossPct: 0 });
+  }, 25_000);
+
+  it('Versionskonflikt im Hello wird als F5 klassifiziert', async () => {
+    const { host, client } = pair();
+    // Eigener Router auf der Gegenstelle (ihr einziger): antwortet mit einem fremden Build.
+    const peerRouter = createMessageRouter(client);
+    attachPongResponder(peerRouter);
+    peerRouter.on('hello', () => { peerRouter.send('events', { type: 'hello', protoV: PROTOCOL_VERSION, buildId: 'fremder-build' }); });
+    await Promise.all([untilOpen(host), untilOpen(client)]);
+
+    const result = await run(host, 'host');
+    expect(result.report.hello).toEqual({ remoteProtoV: PROTOCOL_VERSION, remoteBuildId: 'fremder-build', versionMatch: false });
+    expect(result.report.failures).toContain('F5');
+    expect(result.report.timeline.find((event) => event.kind === 'run:hello')?.detail).toBe('Versionskonflikt');
+  }, 15_000);
 
   /** Ein Transport ohne Gegenstelle bleibt 'connecting' – Läufe darauf brauchen keine Ping-Zeit. */
   function lonely(): Transport {
