@@ -1,7 +1,7 @@
 # Mäusebau
 
 Kooperatives 3D-Mäuse-Abenteuer im Browser – offline spielbar, für Handy, Tablet und PC.
-**Status:** Meilenstein M0 (Gerüst). Live: https://codecrafter-wizard.github.io/mouseraid/
+**Status:** Meilenstein M1 (Testlabor I: Verbindungstest per Text-Code, Selbsttest auf einem Gerät). Live: https://codecrafter-wizard.github.io/mouseraid/
 
 ## Entwickeln
 Voraussetzung: Node ≥ 22.18 (`scripts/wait-for-deploy.mjs` lädt ein TypeScript-Modul direkt).
@@ -9,7 +9,8 @@ Voraussetzung: Node ≥ 22.18 (`scripts/wait-for-deploy.mjs` lädt ein TypeScrip
     npm install
     npx playwright install chromium
     npm run dev          # Desktop, http://localhost:5173
-    npm run verify       # alle Prüfungen
+    npm run verify       # alle Prüfungen (inkl. E2E-Tor)
+    npm run e2e:local    # nur lokal: echter WebRTC-Ablauf, Selbsttest, Tooling-Spike
 
 ### Am Android-Handy testen (USB)
 1. Einmalig: `winget install Google.PlatformTools`, am Handy USB-Debugging aktivieren.
@@ -21,6 +22,7 @@ Offline-Installation, iPhone und Zwei-Handy-Tests laufen immer über die Live-UR
 ## Doku
 - Design & Meilensteine: `docs/superpowers/specs/2026-09-21-phase0-phase1-design.md`
 - Entscheidungen & Messwerte: `docs/decisions.md`
+- Verbindungstests (nur anonymisierte Reports): `docs/connectivity-tests.md`
 - Ursprüngliche Spezifikation: `Game_Design_Mouse.md`
 
 ## Lizenz

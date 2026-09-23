@@ -64,7 +64,7 @@ Netzwerkadressen aus Test-Annotationen/Reports werden nie ins Repo übernommen (
 **Tests**
 14. **Zusatztest (a2)** (Gegenprobe ohne persistierte Kamera-Erlaubnis) und **`permissions: ['camera']`** im Playwright-Projekt sind Ergebnisse des Spikes, nicht des Plans – ohne sie liefert Chrome nur mDNS-Namen und die harte Kandidaten-Assertion wäre nicht messbar.
 15. **Testordner-Konvention** weicht vom Baum im Design ab: Vitest findet `tests/**/*.test.ts` (Node-only in `tests/node`), Playwright `tests/e2e/*.spec.ts`. Die Endung trennt, nicht eine handgepflegte `exclude`-Liste – ein neuer Testordner wird dadurch nie still übersehen.
-16. **E2E-Gate bleibt in M0 eine Positivliste** (`npm run e2e:smoke` in der CI, Tooling-Spike nur lokal). Ob es dabei bleibt oder auf `@local`-Tags umgestellt wird, wird entschieden, **sobald in M1 der erste CI-taugliche Spec dazukommt** – vorher gäbe es nichts zu tagen.
+16. **E2E-Gate bleibt in M0 eine Positivliste** (`npm run e2e:smoke` in der CI, Tooling-Spike nur lokal). Ob es dabei bleibt oder auf `@local`-Tags umgestellt wird, wird entschieden, **sobald in M1 der erste CI-taugliche Spec dazukommt** – vorher gäbe es nichts zu tagen. **Entschieden in M1:** Ausschlussliste per Tag `@local`, siehe „M1 – Testlabor I" → „E2E-Tor".
 
 **Laufzeit**
 17. **Update-Fluss ehrlich gemacht:** `registration.update()` löst auch bei GEFUNDENEM Update auf, deshalb entscheidet `updateCheckOutcome()` (rein, unit-getestet) anhand von `installing`/`waiting` zwischen „wird geladen", „bereit" und „kein Update"; ein Fehlschlag meldet „offline?" statt eines Registrierungsfehlers. Chip und Knopf sagen dasselbe. „Jetzt aktualisieren" lädt auch ohne wartenden Worker neu (unkontrollierte Seite), und „Nach Update suchen" lädt neu, wenn es gar keinen Service Worker gibt (Modus `phone`, Browser ohne SW-Unterstützung).
@@ -88,9 +88,113 @@ Netzwerkadressen aus Test-Annotationen/Reports werden nie ins Repo übernommen (
 5. **ESLint ignoriert `.superpowers/`:** Flat Config überspringt Punkt-Ordner nicht von selbst; liegengebliebene Arbeitsdateien der Agenten hätten `npm run lint` rot gemacht.
 6. **Bekannte Grenze:** `no-restricted-imports` prüft nur statische Importe und Re-Exporte, kein dynamisches `import()`.
 
+## M1 – Testlabor I (2026-09-23)
+
+### Fehlercodes F1–F9 (verbindliche Definition)
+
+| Code | Bedeutung |
+|---|---|
+| F1 | keine Host-Kandidaten |
+| F1S | dasselbe auf WebKit ohne Kamera-Erlaubnis („Kamera erlauben oder Text-Pfad") |
+| F2 | nur mDNS-Kandidaten |
+| F3 | ICE fehlgeschlagen |
+| F4 | iPhone-Hotspot-Isolation (Adresse 192.0.0.2) |
+| F5 | Code ungültig / Versionskonflikt / falsche Rolle |
+| F6 | Umgebung ungeeignet (kein sicherer Kontext, kein WebRTC, Local-Network verweigert) |
+| F7 | ICE verbunden, Kanäle nach 10 s nicht offen |
+| F8 | Verbindung verloren (war offen) |
+| F9 | Kamera-/QR-Problem (in M1 nur: Kamera-Anforderung im Selbsttest fehlgeschlagen) |
+
+Diese Tabelle ist ab M1 **die** Definition des Projekts. Im Code: `classifyFailures` in `src/net/failureCodes.ts` (stabile Reihenfolge F1…F9, leere Liste = kein Befund); die Texte für Nutzer stehen unter `S.failures` in `src/ui/strings.ts`. Die Spec nennt nur „F1–F9 (F1 mit Safari-Variante)" ohne Einzelbedeutungen, und die beiden Entwurfslisten aus der Recherche- und der Design-Runde wichen in Nummerierung und Zuschnitt voneinander ab – Reports, UI-Texte und `docs/connectivity-tests.md` beziehen sich deshalb ausschließlich auf diese Tabelle, nicht auf die Entwürfe.
+
+**Warum es F1S gibt:** WebKit liefert ohne Kamera-Erlaubnis grundsätzlich keine Host-Kandidaten (Spec-Abweichung 4). Das ist erwartetes Verhalten mit eigener Abhilfe („Kamera erlauben oder Text-Pfad") und kein Netzproblem wie ein echtes F1. Ein eigener Code hält beide Fälle in der Auswertung getrennt, ohne die Nummern F2–F9 zu verschieben.
+
+### Payload-Format und gemessene Größen
+Der Signalisierungs-Text hat die Form `MB1.<d|p>.<base64url>`: `MB1` = Formatkennung, `d` = mit `deflate-raw` komprimiert, `p` = unkomprimiert (Fallback ohne `CompressionStream`), danach base64url des kompakten JSON `{v,p,r,s,n,u,w,f,t,k,m,c}` (siehe `src/net/sdpCodec.ts`). Leerraum und Zeilenumbrüche in eingefügtem Text werden ignoriert. Der Codec filtert **keine** Kandidaten – IPv6, link-local, `.local` und TCP bleiben in ihrer Reihenfolge erhalten.
+
+Gemessen am 2026-09-23 mit echten Chromium-SDPs auf dem Entwicklungsrechner (zwei DataChannels, `iceServers: []`; festgehalten sind nur Anzahlen und Größen, keine Adressen). „Kamera an" = persistierte Kamera-Erlaubnis + `getUserMedia` vor der PeerConnection:
+
+| Lauf | Kandidaten (davon mDNS / TCP) | SDP-Bytes | minimiert (JSON-Bytes) | gepackt (Bytes) | Payload-Zeichen | Modus |
+|---|---|---|---|---|---|---|
+| Kamera aus – Angebot | 2 (2 / 0) | 716 | 400 | 276 | 374 | d |
+| Kamera aus – Antwort | 2 (2 / 0) | 715 | 400 | 277 | 376 | d |
+| Kamera an – Angebot | 12 (0 / 6) | 2061 | 1625 | 523 | 704 | d |
+| Kamera an – Antwort | 6 (0 / 0) | 1228 | 859 | 386 | 521 | d |
+
+Größter gemessener Payload: 704 Zeichen bei 12 Kandidaten (Kamera an – Angebot). Zielwert der Spec: typischer Payload (≤ 4 Kandidaten) ≤ 800 Zeichen – gegen die Fixtures sichern ihn die Unit-Tests des Codecs ab.
+
+Lab-Bundle nach M1: 29.3 kB gzip (Budget 150 kB, `npm run check-dist`).
+
+### Zeitleiste ohne Adressen
+**Kandidaten-Ereignisse in der Zeitleiste enthalten nie Adressen.** Das Ereignis `candidate` trägt als Detail nur Typ und Familie. Die wörtlichen Kandidaten stehen ausschließlich in `gather.gathered` des Reports – genau dem Feld, das `redactReport` durch `<familie>/<scope>#n` ersetzt. So bleibt die Zeitleiste in jedem Report ohne Nachbearbeitung teilbar.
+
+### Entwicklungs- und Test-Parameter von `lab.html`
+Nur für Entwicklung und Playwright; die Oberfläche verlinkt sie nirgends.
+
+| Parameter | Wirkung |
+|---|---|
+| `?transport=bc&room=<name>&role=host\|client&slot=<1–3>` | `BroadcastChannel` statt WebRTC (`src/net/broadcastTransport.ts`, Kanal `maeusebau-lab-<name>`): zwei Tabs desselben Browsers verbinden sich ohne Netz und ohne Codes. Grundlage von `tests/e2e/lab-broadcast.spec.ts`. |
+| `?quick=1` | 20 statt 200 Pings je Kanal (der Selbsttest misst ohne den Parameter 50 je Kanal, der BroadcastChannel-Modus immer 20) – für schnelle Testläufe. Reports aus solchen Läufen zählen nicht für `docs/connectivity-tests.md`. |
+| `?hook=1` | hängt `window.__mbLab` ein (`src/lab/labHook.ts`): die Netz-Schicht ohne UI (`createHostLobby`, `createClientJoin`, `createMessageRouter`, `createTimeline`, `runPingSeries`, `attachPongResponder`, `PROTOCOL_VERSION`) für `tests/e2e/lab-rtc.spec.ts`. Ohne den Parameter existiert der Haken nicht. |
+
+### Gemessene Befunde (nur Art und Anzahl)
+- **Chromium meldet einen nie verbundenen ICE-Lauf nicht als `ice:failed`:** nach ≈ 15 s steht `iceConnectionState` auf `disconnected`, nur `connectionState` wird `failed`. `rtcTransport` setzt `failed` deshalb bei beiden Signalen, `labSession` speist F3 aus beiden.
+- **Playwright/Headless: `local-network` und `loopback-network` melden `denied`**, sobald ein Kontext irgendeine Berechtigung gesetzt bekommt – obwohl die Verbindung steht. Specs, die `finishRun`/`classifyFailures` auslösen, erteilen deshalb zusätzlich `local-network-access` (`context.grantPermissions`, additiv). Sonst stünde in jedem Report F6.
+- **Persistierte Kamera-Erlaubnis liefert echte Host-Kandidaten schon ohne `getUserMedia`** (auf dem Entwicklungsrechner 12: je 6 UDP und TCP). Ohne Erlaubnis sind es 2 mDNS-Kandidaten. Im Selbsttest ist Lauf A auf so einem Profil deshalb korrekt **ungültig**.
+- **Auf einer geschlossenen PeerConnection bleiben `createOffer`/`setLocalDescription` für immer unentschieden.** `RtcPeer` bricht sie mit `AbortError` ab; die Oberfläche ignoriert `AbortError`.
+- **F3 und F8 können gemeinsam auftreten** (war offen, ICE `failed`); F6 steht immer allein.
+- **Fixtures:** Die Chromium-Zeilenstruktur ist erfasst; Firefox ist handgeschrieben (Playwright-Firefox ist nicht installiert), Safari synthetisch. Echte Mitschnitte folgen nach Sitzung A/B.
+- **Firefox kennt `permissions.query({name:'camera'})` nicht** → Status `unsupported` → „Kamera an"-Läufe gelten dort als ungültig. In der Matrix sind sie „nicht testbar" (Spec-Abweichung 9).
+- **WebKit/iOS ungemessen:** Meldet Safari nach dem Erlauben der Kamera weiter `prompt` oder `unsupported`, markiert die Gültigkeitsregel einen echten „Kamera an"-Lauf als ungültig. Der Report enthält dann trotzdem alles Nötige (Berechtigungsstatus, „getUserMedia in dieser Sitzung", Kandidaten nach Art). Die Regel wird nach dem ersten iPhone-Selbsttest-Report kalibriert (mögliche Verfeinerung: auf WebKit zählt ein laufender Kamera-Stream statt des Berechtigungsstatus).
+- **`alwaysNegotiateDataChannels`** wird weder benutzt noch erfasst. Die Kanäle sind `negotiated: true` und werden vor `createOffer` angelegt.
+- **TypeScript 6:** `Uint8Array<ArrayBufferLike>` ist nicht an `BlobPart`/`RTCDataChannel.send` zuweisbar → Kopie `new Uint8Array(bytes)`.
+
+### Abweichungen vom M1-Plan (aus den Task-Reviews)
+Die Reviews der Tasks 2–9 haben den Plantext an diesen Stellen überholt. Maßgeblich ist der Code.
+
+**Codec (Task 3)**
+- `decodeDesc` riegelt vor dem Entpacken ab: eingefügter Text über 4096 Zeichen (nach Entfernen von Leerraum) → `CodecError 'shape'`; entpackter Rumpf über 16384 Bytes → `'inflate'` (im unkomprimierten Modus `p`: `'shape'`). Das begrenzt die Aufblähung durch deflate-raw (bis ≈ 1000:1) auf wenige MB. `minimise` lehnt `a=sctp-port` über 65535 und `a=max-message-size` über `Number.MAX_SAFE_INTEGER` ab.
+- Payload-Größen der Fixtures mit dem echten Codec: chromium-offer 369, chromium-answer 300, firefox-offer 330, firefox-answer 257, safari-synthetisch 265 Zeichen; vier mDNS-Kandidaten 488 Zeichen (Modus `d`) bzw. 860 (Modus `p`).
+
+**Transport (Task 5)**
+- Der BroadcastChannel-Umschlag trägt eine Instanz-Kennung `inst` (`crypto.randomUUID()` je Transport). Nur `syn` (immer) und das **erste** `ack` führen die Instanz der Gegenstelle ein; `data` wird nur aus der aktuellen Instanz zugestellt, `bye` nur aus ihr befolgt – ein Nachzügler-`bye` eines neu geladenen Tabs schließt keine frische Verbindung mehr. Ein `syn` mit neuer `inst` heißt „Gegenstelle neu gestartet": die Verbindung bleibt offen und wird neu bestätigt.
+- `messageRouter` kapselt jeden Handler-Aufruf einzeln: Handler-Fehler gehen an `onProtocolError`, ohne Callback asynchron per `queueMicrotask` weiter; ein selbst werfendes `onProtocolError` ist genauso abgesichert. `runPingSeries` ordnet Pongs über `seq` **und** `sentAtMs` zu – Nachzügler einer früheren Serie zählen nie mit.
+
+**WebRTC-Schicht (Task 6)**
+- `RtcPeer.close()` räumt ein laufendes Gathering-Warten ab (Timer und Listener); nach außen bleibt es beim `AbortError`.
+- `ClientJoin` zählt Generationen: `close()` oder ein neueres `acceptOffer` während des asynchronen Dekodierens bricht den älteren Aufruf mit `AbortError` ab – die Aufrufreihenfolge entscheidet, nicht die Reihenfolge der Dekodier-Ergebnisse. Fehler aus `rebuildSdp` werden auf beiden Seiten zu `HandshakeError('F5')`.
+
+**Report-Modell (Task 7)**
+- `redactReport` schwärzt bewusst großzügig: nach der positionsgenauen Kandidaten-Ersetzung läuft es über **jede** Zeichenkette des Reports (Ausnahmeliste, byte-gleich übernommen: `id`, `createdAt`, `buildId`, `environment.userAgent`, `environment.buildId`). Reihenfolge je Zeichenkette: NFKC und Entfernen unsichtbarer Zeichen → Adressmuster (IPv4 = ganzer Punkt-Lauf ab vier Gruppen; IPv6 = jedes Hex-Wort mit mindestens zwei Doppelpunkten außer echten Uhrzeiten `hh:mm:ss`; mDNS ohne Wortgrenzen) samt wörtlicher Ersetzung jeder bekannten gesammelten Adresse (längste zuerst, Groß-/Kleinschreibung egal) → Kandidaten-Geheimnisse (`ufrag`, `usernameFragment`, `a=ice-ufrag`/`ice-pwd`/`fingerprint`, `candidate:<foundation>`) → Payload-Texte (`MB1.<modus>.<base64url>` sowie jeder base64url-Lauf ab 32 Zeichen). Foundations werden zu Ordinalen `f1`, `f2`, … je Report. Alle Quantoren sind begrenzt, es gibt kein Lookbehind (altes Safari), die Laufzeit ist linear, der Durchlauf idempotent, die Eingabe bleibt unverändert.
+- `looksLikeReport` prüft die Blatttypen jedes Feldes, das die Text- und JSON-Ausgabe anfasst; `add()` halbiert den Verlauf nur, wenn `setItem` wirft, und ersetzt ihn nie, wenn `getItem` wirft. In `src/` steht kein ES2022-Bibliotheksaufruf (Wächter `tests/node/es-library-guard.test.ts`) – altes Safari würde daran scheitern, also genau auf den iPhones, die das Labor vermessen soll.
+- Neuer Export `redactText(text)` schwärzt eine freie Zeichenkette mit denselben Schichten (Abbruchgrund des Selbsttests). `reportToText`/`reportsToJson` schwärzen **nicht** von sich aus – jeder Kopier- und Teilen-Weg setzt `redactReport` davor. Ausnahmen sind der ausdrücklich so beschriftete Einzel-Report „mit echten Adressen" und „Roh-SDP kopieren"; beide warnen im Text.
+
+**Labor-Oberfläche (Task 8)**
+- `labSession` beantwortet ein empfangenes Hello einmal je Verbindung von selbst (eigener Riegel `answered`, unabhängig davon, ob schon ein eigenes Hello hinausging). Sonst bekäme eine Seite, die ihren Lauf vor dem Anhängen der Gegenstelle abschließt, nie eine Antwort. Die Hello-Wartezeit beträgt höchstens 3 s, danach `hello: null` und Zeitleisten-Eintrag `run:hello` = „keine Antwort"; `versionMatch=false` ergibt F5.
+- Das Kästchen „Einzel-Report als JSON mit echten Adressen kopieren (nie öffentlich posten)" schaltet „Report kopieren" auf `reportsToJson([report])` **ungeschwärzt** für genau einen Report um (Voreinstellung aus, wird nie gespeichert); „Alle Reports kopieren (JSON, anonymisiert)" und „Alle teilen" sind immer geschwärzt. „Verbinden" wird synchron gesperrt, solange `acceptAnswer` läuft; „Verlauf löschen" entschärft sich nach 5 s von selbst.
+
+**Selbsttest (Task 9)**
+- `pingCountFor('loopback')` = 50 Pings je Kanal – damit bleiben beide Läufe zusammen unter zwei Minuten.
+- Lauf A („Kamera aus") ist auf jedem Profil mit persistierter Kamera-Erlaubnis **ungültig** – so gewollt (`isRunValid`); die Oberfläche nennt den Grund und den Ausweg (Kamera-Berechtigung zurücksetzen, Seite neu laden, wiederholen).
+- Der Abbruchgrund eines gescheiterten Laufs wird im Teilen-Text mit `redactText` geschwärzt; auf dem Bildschirm zeigt ein bekannter F-Code stattdessen `S.failures[code].title`.
+
+### E2E-Tor: Ausschlussliste per Tag `@local`
+Entscheidung zu Punkt 16 der „Abweichungen vom M0-Plan": Mit `tests/e2e/lab-broadcast.spec.ts` gibt es den ersten CI-tauglichen Spec neben dem Offline-Smoke – das Tor wird von der Positivliste auf eine **Ausschlussliste** umgestellt.
+- `npm run e2e:smoke` = `playwright test --grep-invert @local` – läuft in `npm run verify` und in der CI vor jedem Deploy. Der Name bleibt, damit Workflow und Doku weiter stimmen.
+- `npm run e2e:local` = `playwright test --grep @local` – nur auf dem Entwicklungsrechner: Tooling-Spike (`tooling.spec.ts`), echter WebRTC-Ablauf und Selbsttest (`lab-rtc.spec.ts`). Diese Tests brauchen echte Netzwerkschnittstellen, eine persistierte Kamera-Erlaubnis bzw. Software-WebGL.
+- **Folge: Jeder neue Spec gehört zum Deploy-Tor, außer jeder seiner Tests trägt `{ tag: '@local' }`.** Vergessen ist damit laut statt still: ein nicht CI-tauglicher Spec ohne Tag färbt die CI rot, statt – wie bei der Positivliste – unbemerkt nie zu laufen.
+- In PowerShell das Tag in Anführungszeichen setzen (`npx playwright test --grep '@local'`), sonst deutet die Shell `@local` als Splatting und der Filter fehlt.
+
 ## Offene Punkte
 
 - **Update-Suche offline:** Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).
+- **Selbsttest-Report vom Handy (M1-Abnahme durch den Nutzer):** nach dem ersten Deploy mit Testlabor am Android-Handy `lab.html` öffnen, „Selbsttest starten", „Beide Reports kopieren (anonymisiert)" – das Ergebnis kommt als erste Zeilen nach `docs/connectivity-tests.md` („Selbsttest-Ergebnisse").
+- **Stumme, aber offene Gegenstelle kostet ≈ 20 s:** hört die andere Seite nicht zu, obwohl der Transport offen bleibt, wartet ein Lauf 3 s auf das Hello und danach je Kanal die volle Serie (bei 200 Pings ≈ 6,6 s Senden + 2 s Zeitüberschreitung), bevor der Report erscheint. Die Serie endet nur dann früher, wenn der Transport wirklich schließt.
+- **Firefox und WebKit als Empfänger des zusammengebauten SDP ungeprüft:** `rebuildSdp` wurde bisher nur von Chromium angenommen. Erster Versuch bei Problemen: `a=end-of-candidates` ergänzen.
+- **`isRunValid` kalibrieren:** nach dem ersten iPhone-Selbsttest (siehe „Gemessene Befunde", WebKit/iOS).
+- **Wortlaut des F4-Hinweises** wird nach der Zwei-Handy-Matrix F nachgeschärft.
+- **Zwischenablage auf dem Linux-CI-Runner ungeprüft:** die Lese-Pfade der Kopier-Knöpfe sind nur lokal auf Windows-Chromium gemessen.
+- **Aufgeschobener Feinschliff** (Kandidaten für einen Commit nach dem Abschlussreview): toter Zustand `helloSent`; „Verbinden" wird erst beim Öffnen statt beim Auflösen von `acceptAnswer` wieder freigegeben; der Schalter „mit Adressen" wird bei einem neuen Lauf nicht zurückgesetzt; die Leck-Prüfregex in `lab-broadcast`/`lab-rtc` benutzt `{1,4}` für die erste IPv6-Gruppe; der Zweig mit eingeschaltetem Schalter prüft im E2E `ipv4||ipv6` (auf einem Rechner mit ausschließlich mDNS würde er scheitern); `redactReport` ist in Schicht 2 quadratisch in der Kandidatenzahl (bei ≤ 20 belanglos).
 
 ## Beobachten (vor jedem Release prüfen)
 - Chrome „Local Network Access" für WebRTC: chromestatus.com/feature/5065884686876672 und /5068298146414592
