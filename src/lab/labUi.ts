@@ -1,0 +1,158 @@
+import { S, fmt } from '../ui/strings';
+import { startCamera } from './camera';
+import { buildClientPanel, buildHostPanel } from './connectPanels';
+import { actionButton, card, h } from './labDom';
+import { parseLabQuery, type LabQuery } from './labQuery';
+import type { LabRunResult } from './labSession';
+import { createReportsPanel } from './reportsPanel';
+import type { CellLabel } from './report';
+
+const DEVICE_KEY = 'maeusebau.lab.device';
+const MAX_DEVICE_LENGTH = 24;
+
+/** Nahtstelle für den Selbsttest (Task 9): Einhängepunkt, Zellen-Formular lesen, Lauf in die Report-Liste geben. */
+export interface LabUi {
+  selfTestMount: HTMLElement;
+  /** Liest das Formular; null (mit sichtbarem Hinweis), solange der Spitzname fehlt. */
+  readCell(role: CellLabel['role'], path: CellLabel['path']): CellLabel | null;
+  showRun(result: LabRunResult): void;
+}
+
+function loadDevice(): string {
+  try {
+    return (localStorage.getItem(DEVICE_KEY) ?? '').slice(0, MAX_DEVICE_LENGTH);
+  } catch {
+    return '';
+  }
+}
+
+function saveDevice(device: string): void {
+  try {
+    localStorage.setItem(DEVICE_KEY, device);
+  } catch {
+    // gesperrter Speicher: der Spitzname gilt dann nur für diesen Seitenaufruf
+  }
+}
+
+function field(label: string, control: HTMLElement): HTMLElement {
+  const wrap = h('div', 'lab-field');
+  wrap.append(h('span', 'lab-label', label), control);
+  return wrap;
+}
+
+/** Radio-Gruppe als große Tipp-Flächen. */
+function choiceGroup<T extends string>(name: string, options: readonly { value: T; label: string }[], initial: T): { element: HTMLElement; value(): T; inputs: HTMLInputElement[] } {
+  const element = h('div', 'lab-choices');
+  element.setAttribute('role', 'radiogroup');
+  const inputs = options.map((option) => {
+    const input = h('input');
+    input.type = 'radio';
+    input.name = name;
+    input.value = option.value;
+    input.checked = option.value === initial;
+    input.dataset.testid = `${name}-${option.value}`;
+    const label = h('label', 'lab-choice');
+    label.append(input, h('span', '', option.label));
+    element.append(label);
+    return input;
+  });
+  return { element, inputs, value: () => (inputs.find((input) => input.checked)?.value ?? initial) as T };
+}
+
+function hotspotSelect(): HTMLSelectElement {
+  const select = h('select', 'lab-input');
+  select.dataset.testid = 'cell-hotspot';
+  const options: readonly { value: CellLabel['hotspotOwner']; label: string }[] = [
+    { value: 'unbekannt', label: S.lab.cell.hotspotUnknown },
+    { value: 'dieses-geraet', label: S.lab.cell.hotspotThis },
+    { value: 'gegenstelle', label: S.lab.cell.hotspotPeer },
+    { value: 'router', label: S.lab.cell.hotspotRouter },
+  ];
+  for (const option of options) {
+    const node = h('option', '', option.label);
+    node.value = option.value;
+    select.append(node);
+  }
+  return select;
+}
+
+function buildCameraCard(): HTMLElement {
+  const element = card(S.lab.camera.title, 'camera-card');
+  const state = h('p', 'lab-line');
+  state.dataset.testid = 'camera-state';
+  const start = actionButton(S.lab.camera.start, 'camera-start');
+  start.onclick = () => {
+    start.disabled = true;
+    state.textContent = S.lab.camera.starting;
+    void startCamera().then((status) => {
+      state.textContent = status.running ? S.lab.camera.running : fmt(S.lab.camera.failed, { reason: status.error ?? '?' });
+      state.dataset.state = status.running ? 'ready' : 'bad';
+      // Nach einem Fehlschlag darf erneut versucht werden (z. B. nach geänderter Website-Einstellung).
+      start.disabled = status.running;
+    });
+  };
+  element.append(h('p', 'lab-line', S.lab.camera.hint), start, state);
+  return element;
+}
+
+/** Baut das Labor unterhalb der Hülle auf: Zelle beschriften → Kamera → verbinden → Reports. */
+export function mountLab(root: HTMLElement, search: string): LabUi {
+  const query: LabQuery = parseLabQuery(search);
+  const path: CellLabel['path'] = query.transport === 'broadcast' ? 'broadcast' : 'text';
+  const lab = h('section', 'lab');
+  lab.dataset.testid = 'lab';
+  const reports = createReportsPanel();
+
+  const cellCard = card(S.lab.cell.title, 'cell-card');
+  const role = choiceGroup<'host' | 'client'>('cell-role', [{ value: 'host', label: S.lab.cell.roleHost }, { value: 'client', label: S.lab.cell.roleClient }], query.role ?? 'host');
+  const camera = choiceGroup<CellLabel['camera']>('cell-camera', [{ value: 'aus', label: S.lab.cell.cameraOff }, { value: 'an', label: S.lab.cell.cameraOn }], 'aus');
+  const hotspot = hotspotSelect();
+  const device = h('input', 'lab-input selectable');
+  device.type = 'text';
+  device.maxLength = MAX_DEVICE_LENGTH;
+  device.placeholder = S.lab.cell.devicePlaceholder;
+  device.value = loadDevice();
+  device.dataset.testid = 'cell-device';
+  device.setAttribute('autocomplete', 'off');
+  const pathChip = h('span', 'chip', path === 'broadcast' ? S.lab.cell.pathBroadcast : S.lab.cell.pathText);
+  pathChip.dataset.testid = 'cell-path';
+  const deviceError = h('p', 'lab-alert', S.lab.cell.deviceMissing);
+  deviceError.setAttribute('role', 'alert');
+  deviceError.hidden = true;
+  const selfTestMount = h('div', 'lab-selftest');
+  selfTestMount.dataset.testid = 'selftest-mount'; // ← Task 9 hängt hier den Selbsttest-Knopf ein
+  const confirm = actionButton(S.lab.cell.confirm, 'cell-confirm', 'accent');
+  const restart = actionButton(S.lab.cell.restart, 'cell-restart', 'secondary');
+  restart.hidden = true;
+  restart.onclick = () => { location.reload(); };
+  const grid = h('div', 'lab-grid');
+  grid.append(field(S.lab.cell.role, role.element), field(S.lab.cell.camera, camera.element), field(S.lab.cell.hotspot, hotspot), field(S.lab.cell.device, device), field(S.lab.cell.path, pathChip));
+  const cellActions = h('div', 'shell-row');
+  cellActions.append(confirm, restart, selfTestMount);
+  cellCard.append(h('p', 'lab-line', S.lab.cell.hint), grid, deviceError, cellActions);
+
+  function readCell(cellRole: CellLabel['role'], cellPath: CellLabel['path']): CellLabel | null {
+    const name = device.value.trim();
+    deviceError.hidden = name.length >= 1 && name.length <= MAX_DEVICE_LENGTH;
+    if (!deviceError.hidden) return null;
+    saveDevice(name);
+    return { role: cellRole, hotspotOwner: hotspot.value as CellLabel['hotspotOwner'], camera: camera.value(), path: cellPath, device: name };
+  }
+
+  const steps = h('div', 'lab-steps');
+  confirm.onclick = () => {
+    const cell = readCell(role.value(), path);
+    if (cell === null) return;
+    // Eine Zelle je Seitenaufruf: das Label darf sich während eines Laufs nicht mehr ändern.
+    for (const control of [...role.inputs, ...camera.inputs, hotspot, device]) control.disabled = true;
+    confirm.hidden = true;
+    restart.hidden = false;
+    const ctx = { cell, query, onRun: (result: LabRunResult) => { reports.showRun(result); } };
+    if (cell.camera === 'an') steps.append(buildCameraCard());
+    steps.append(cell.role === 'host' ? buildHostPanel(ctx) : buildClientPanel(ctx));
+  };
+
+  lab.append(cellCard, steps, reports.element);
+  root.append(lab);
+  return { selfTestMount, readCell, showRun: (result) => { reports.showRun(result); } };
+}

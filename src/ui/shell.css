@@ -74,3 +74,10 @@ html, body {
   margin: 0 0 10px; white-space: pre-wrap; word-break: break-word; font-size: 12px;
   -webkit-user-select: text; user-select: text;
 }
+
+/* Ausnahme von der Touch-Härtung oben: Eingabefelder und kopierbare Texte (Labor-Codes, Reports). */
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}

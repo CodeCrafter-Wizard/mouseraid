@@ -491,3 +491,62 @@ test('ohne ?hook=1 gibt es keinen Test-Haken', { tag: '@local' }, async ({ page 
   await expect(page.getByTestId('shell-title')).toBeVisible();
   expect(await page.evaluate(() => '__mbLab' in window)).toBe(false);
 });
+
+// ───────── Labor-UI über den Text-Pfad (Task 8) ─────────
+// Der Ablauf zweier Menschen mit zwei Geräten – durch die echte Oberfläche, mit echtem WebRTC. NUR LOKAL (@local).
+// Codes und Reports enthalten echte Adressen → aus der Seite kommen nur Anzahlen und Wahrheitswerte zurück.
+const UI_REPORTS_KEY = 'maeusebau.lab.reports.v1';
+interface UiStoredReport {
+  cell: { role: string; path: string }; valid: boolean; failures: string[];
+  gather: { gathered: unknown[]; transmitted: number } | null; payloadSizes: { textChars: number } | null; selectedPair: object | null;
+  hello: { versionMatch: boolean } | null; ping: { events: { sent: number; lossPct: number } | null; state: { sent: number } | null };
+}
+async function uiReportFacts(page: Page) {
+  return page.evaluate((key) => (JSON.parse(localStorage.getItem(key) ?? '[]') as UiStoredReport[]).map((report) => ({
+    role: report.cell.role, path: report.cell.path, valid: report.valid, failures: report.failures,
+    gathered: report.gather?.gathered.length ?? -1, transmitted: report.gather?.transmitted ?? -2, textChars: report.payloadSizes?.textChars ?? 0,
+    hasPair: report.selectedPair !== null, versionMatch: report.hello?.versionMatch ?? false,
+    eventsSent: report.ping.events?.sent ?? 0, eventsLossPct: report.ping.events?.lossPct ?? -1, stateSent: report.ping.state?.sent ?? 0,
+  })), UI_REPORTS_KEY);
+}
+async function uiLabelCell(page: Page, role: 'host' | 'client', device: string): Promise<void> {
+  await page.getByTestId('cell-device').fill(device);
+  await page.getByTestId(`cell-role-${role}`).check();
+  await page.getByTestId('cell-camera-an').check();
+  await page.getByTestId('cell-confirm').click();
+  await page.getByTestId('camera-start').click();
+  await expect(page.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready');
+}
+test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je einen gültigen Report', { tag: '@local' }, async ({ context }) => {
+  await context.grantPermissions(['local-network-access']);
+  const host = await context.newPage();
+  const client = await context.newPage();
+  await host.goto('lab.html?quick=1');
+  await client.goto('lab.html?quick=1');
+  await uiLabelCell(host, 'host', 'UI-Host');
+  await uiLabelCell(client, 'client', 'UI-Client');
+  await host.getByTestId('add-player').click();
+  const offerOut = host.getByTestId('slot-1').getByTestId('offer-out');
+  await expect.poll(async () => (await offerOut.inputValue()).startsWith('MB1.'), { timeout: 10_000 }).toBe(true);
+  await client.getByTestId('offer-in').fill(await offerOut.inputValue());
+  await client.getByTestId('make-answer').click();
+  const answerOut = client.getByTestId('answer-out');
+  await expect.poll(async () => (await answerOut.inputValue()).startsWith('MB1.'), { timeout: 10_000 }).toBe(true);
+  await host.getByTestId('slot-1').getByTestId('answer-in').fill(await answerOut.inputValue());
+  await host.getByTestId('slot-1').getByTestId('connect').click();
+  await expect(host.getByTestId('slot-1').getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+  await expect(client.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+  // Der Client misst von selbst; erst danach startet der Host (beide Tabs teilen sich den localStorage).
+  await expect.poll(async () => (await uiReportFacts(client)).length, { timeout: 20_000 }).toBe(1);
+  await host.getByTestId('slot-1').getByTestId('start-ping').click();
+  await expect.poll(async () => (await uiReportFacts(host)).length, { timeout: 20_000 }).toBe(2);
+  const facts = await uiReportFacts(host);
+  expect(facts.map((entry) => entry.role).sort()).toEqual(['client', 'host']);
+  for (const entry of facts) {
+    expect(entry).toMatchObject({ path: 'text', valid: true, failures: [], hasPair: true, versionMatch: true, eventsSent: 20, eventsLossPct: 0, stateSent: 20 });
+    expect(entry.gathered).toBeGreaterThan(0);
+    expect(entry.transmitted).toBe(entry.gathered);
+    expect(entry.textChars).toBeGreaterThan(0);
+  }
+  await expect(host.getByTestId('reports-copy-raw')).toBeVisible();
+});
