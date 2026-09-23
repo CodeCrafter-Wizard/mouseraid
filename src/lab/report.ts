@@ -418,6 +418,16 @@ export function redactReport(report: LabReport): LabReport {
   return copy;
 }
 
+/**
+ * Derselbe zweischichtige Durchlauf wie in `redactReport`, aber für einen einzelnen Text ohne Report:
+ * eigener Tokenizer (die Zählung beginnt je Aufruf bei #1) und keine bekannten Adressen, weil es zu
+ * einem freien Text keine `gathered`-Liste gibt. Gedacht für Browser-Fehlertexte, die in einen
+ * anonymisierten Bericht wandern – ein SDP-Parserfehler zitiert die fehlerhafte Zeile samt Adresse.
+ */
+export function redactText(text: string): string {
+  return scrubText(text, createTokenizer(), []);
+}
+
 // ───────── Text und JSON ─────────
 
 const yesNo = (value: boolean): string => (value ? 'ja' : 'nein');

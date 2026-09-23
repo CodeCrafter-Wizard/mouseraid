@@ -3,6 +3,7 @@ import {
   createReportStore,
   isRunValid,
   redactReport,
+  redactText,
   REPORT_STORE_KEY,
   reportsToJson,
   reportToText,
@@ -1685,5 +1686,30 @@ describe('redactReport – Randfaelle der mDNS- und usernameFragment-Regel (T23)
 
   it('USERNAMEFRAGMENT in Grossbuchstaben verliert seinen Wert', () => {
     expect(notesOf('USERNAMEFRAGMENT="Zq7Kgeheim"')).toBe('USERNAMEFRAGMENT="entfernt"');
+  });
+});
+
+describe('redactText – einzelner Text ohne Report (T24)', () => {
+  /** Dokumentationsadressen (RFC 5737); der mDNS-Name entsteht zur Laufzeit (Datenschutz-Waechter). */
+  const DOC_IPV4 = '192.0.2.10';
+  const OTHER_IPV4 = '198.51.100.7';
+  const MDNS_NAME = `${['33333333', '3333', '3333', '3333', '333333333333'].join('-')}.local`;
+
+  it('ersetzt jede Adresse durch ihr Token – dieselben Regeln wie in redactReport', () => {
+    expect(redactText(`Host ${DOC_IPV4} und ${MDNS_NAME} antworten nicht`)).toBe('Host ipv4/other#1 und mdns/mdns#2 antworten nicht');
+  });
+
+  it('laesst eine Uhrzeit und gewoehnlichen Text bytegleich', () => {
+    expect(redactText('F5: apply answer um 16:24:25 fehlgeschlagen')).toBe('F5: apply answer um 16:24:25 fehlgeschlagen');
+  });
+
+  it('zaehlt je Aufruf neu – ein Text erbt nie das Ordinal eines anderen', () => {
+    expect(redactText(DOC_IPV4)).toBe('ipv4/other#1');
+    expect(redactText(OTHER_IPV4)).toBe('ipv4/other#1');
+  });
+
+  it('nimmt auch Kandidaten-Geheimnisse mit, nicht nur Adressen', () => {
+    expect(redactText(`a=candidate:2999745851 1 udp 2122260223 ${DOC_IPV4} 50001 typ host ufrag Zq7K`))
+      .toBe('a=candidate:entfernt 1 udp 2122260223 ipv4/other#1 50001 typ host ufrag entfernt');
   });
 });

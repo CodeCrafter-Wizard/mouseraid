@@ -541,7 +541,9 @@ async function uiLabelCell(page: Page, role: 'host' | 'client', device: string):
   await expect(page.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready');
 }
 test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je einen gültigen Report', { tag: '@local' }, async ({ context }) => {
-  // Additiv: `grantPermissions` ersetzt die Liste, deshalb stehen hier alle drei zusammen.
+  // `grantPermissions` ist ADDITIV: playwright-core führt die Liste mit den schon erteilten Rechten des
+  // Kontexts zusammen (hier `permissions: ['camera']` aus playwright.config.ts), statt sie zu ersetzen.
+  // Die Kamera-Erlaubnis bleibt also erhalten – nachgeprüft im Selbsttest weiter unten.
   await context.grantPermissions(['local-network-access', 'clipboard-read', 'clipboard-write']);
   const host = await context.newPage();
   const client = await context.newPage();
@@ -612,10 +614,6 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
 // (gemessenes Chrome-Verhalten aus M0, docs/decisions.md). Reports enthalten echte Adressen dieses Rechners →
 // nie ausgeben, annotieren oder speichern; geprüft wird nur der anonymisierte Kopiertext.
 
-const SELFTEST_IPV4_SHAPE = /\b\d{1,3}(?:\.\d{1,3}){3}\b/;
-/** Mindestens vier Gruppen – „16:24:25" in `createdAt` ist eine Uhrzeit, keine Adresse. */
-const SELFTEST_IPV6_SHAPE = /\b[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){3,7}\b/i;
-const SELFTEST_MDNS_SHAPE = /\.local\b/i;
 const SELFTEST_REASON_RUN_A = 'Kamera aus, aber Berechtigung ist erteilt';
 
 /**
@@ -638,6 +636,8 @@ interface SelfTestReport {
 test('Selbsttest: Lauf A ungültig (Berechtigung erteilt), Lauf B gültig mit echten Host-IPs, Kopiertext ohne Adressen', { tag: '@local' }, async ({ context, page }) => {
   // CDP lehnt beim Erteilen EINER Berechtigung alle nicht genannten ab: mit `permissions: ['camera']` allein meldet
   // Chromium `local-network` als „denied" – und der Lauf bekäme F6, obwohl die Verbindung steht (gemessen).
+  // `grantPermissions` selbst ist additiv (playwright-core führt die Listen je Origin zusammen), die
+  // Kamera-Erlaubnis aus playwright.config.ts bleibt also erhalten – unten per `cameraPermission` nachgeprüft.
   await context.grantPermissions(['local-network-access']);
   // Zwischenablage abfangen: geprüft wird genau der Text, den „Beide Reports kopieren" schreibt.
   await page.addInitScript(() => {
@@ -665,31 +665,51 @@ test('Selbsttest: Lauf A ungültig (Berechtigung erteilt), Lauf B gültig mit ec
 
   await page.getByTestId('selftest-copy').click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __copied: string[] }).__copied.length)).toBe(1);
-  const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied[0] ?? '');
-  const reports = JSON.parse(copied) as SelfTestReport[];
-  expect(reports).toHaveLength(2);
-  const [runA, runB] = reports;
+
+  // Adressformen NUR in der Seite prüfen – nach außen gehen drei Wahrheitswerte. Der User-Agent bleibt laut
+  // Vertrag ungekürzt und enthält „Chrome/<a.b.c.d>"; er wird vorher geleert, sonst sähe er wie eine IPv4 aus.
+  const shapes = await page.evaluate(() => {
+    const body = ((window as unknown as { __copied: string[] }).__copied[0] ?? '').replace(/"userAgent":\s*"[^"]*"/g, '"userAgent": ""');
+    const ipv6 = (body.match(/[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}/gi) ?? []).filter((hit) => !/^\d{1,2}:\d{1,2}:\d{1,2}$/.test(hit));
+    return { ipv4: /\d{1,3}(?:\.\d{1,3}){3}/.test(body), ipv6: ipv6.length > 0, mdns: /\.local\b/i.test(body) };
+  });
+  expect(shapes).toEqual({ ipv4: false, ipv6: false, mdns: false });
+
+  // Strukturprüfung außerhalb der Seite, aber nur auf adressfreien Werten: `gather`, `timeline` und `notes`
+  // bleiben drin – aus `gather` kommt allein die ANZAHL echter Host-IPs heraus.
+  const facts = await page.evaluate(() => {
+    const reports = JSON.parse((window as unknown as { __copied: string[] }).__copied[0] ?? '[]') as SelfTestReport[];
+    return {
+      count: reports.length,
+      runs: reports.map((report) => ({
+        cell: report.cell,
+        cameraPermission: report.permissions.camera,
+        gumCalled: report.gumCalledThisSession,
+        valid: report.valid,
+        invalidReason: report.invalidReason,
+        failures: report.failures,
+        versionMatch: report.hello?.versionMatch ?? null,
+        events: report.ping.events,
+        hostRealIp: (report.gather?.gathered ?? []).filter((c) => c.type === 'host' && (c.family === 'ipv4' || c.family === 'ipv6')).length,
+      })),
+    };
+  });
+  expect(facts.count).toBe(2);
+  const [runA, runB] = facts.runs;
 
   expect(runA?.cell).toEqual({ role: 'selbsttest', hotspotOwner: 'unbekannt', camera: 'aus', path: 'loopback', device: 'Playwright-PC' });
   expect(runA?.valid).toBe(false);
   expect(runA?.invalidReason).toContain(SELFTEST_REASON_RUN_A);
-  expect(runA?.permissions.camera).toBe('granted');
-  expect(runA?.gumCalledThisSession).toBe(false);
+  expect(runA?.cameraPermission).toBe('granted');
+  expect(runA?.gumCalled).toBe(false);
 
   expect(runB?.cell.camera).toBe('an');
   expect(runB?.valid).toBe(true);
-  expect(runB?.gumCalledThisSession).toBe(true);
+  expect(runB?.gumCalled).toBe(true);
   expect(runB?.failures).toEqual([]);
-  expect(runB?.hello?.versionMatch).toBe(true);
-  const hostRealIp = (runB?.gather?.gathered ?? []).filter((c) => c.type === 'host' && (c.family === 'ipv4' || c.family === 'ipv6')).length;
-  expect(hostRealIp).toBeGreaterThan(0);
-  expect(runB?.ping.events).toMatchObject({ sent: 50, received: 50, lossPct: 0 });
-
-  // Der User-Agent bleibt laut Vertrag ungekürzt und enthält „Chrome/<a.b.c.d>" – das ist keine Adresse.
-  const scrubbed = JSON.stringify(reports.map((report) => ({ ...report, environment: { ...report.environment, userAgent: '' } })));
-  expect(scrubbed).not.toMatch(SELFTEST_IPV4_SHAPE);
-  expect(scrubbed).not.toMatch(SELFTEST_IPV6_SHAPE);
-  expect(scrubbed).not.toMatch(SELFTEST_MDNS_SHAPE);
+  expect(runB?.versionMatch).toBe(true);
+  expect(runB?.hostRealIp).toBeGreaterThan(0);
+  expect(runB?.events).toMatchObject({ sent: 50, received: 50, lossPct: 0 });
 
   // Beide Läufe stehen auch im Verlauf des Labors (finishRun speichert, `onResult` aktualisiert die Liste).
   await expect(page.locator('[data-testid="report-item"][data-role="selbsttest"]')).toHaveCount(2);

@@ -1,11 +1,12 @@
 import { summariseCandidates } from '../net/candidates';
 import type { ClientJoin, ConnectorDeps, HostLobby } from '../net/connector';
+import { FAILURE_CODES, type FailureCode } from '../net/failureCodes';
 import { PROTOCOL_VERSION } from '../net/protocol';
 import { createTimeline, type Timeline } from '../net/timeline';
 import type { Transport } from '../net/transport';
 import { S, fmt } from '../ui/strings';
 import type { attachLabLink, finishRun, LabRunResult } from './labSession';
-import { redactReport, reportsToJson, type CellLabel, type LabReport } from './report';
+import { redactReport, redactText, reportsToJson, type CellLabel, type LabReport } from './report';
 
 // Selbsttest: EIN Gerät, EINE Seite. Host-Lobby und Client-Join entstehen in derselben Seite und tauschen
 // Angebots- und Antwort-Code über den ganz normalen Codec-Pfad aus (Pfad-Label „loopback").
@@ -73,14 +74,23 @@ function describeAbort(error: unknown): string {
   return failure === '' ? message : `${failure}: ${message}`;
 }
 
+/** Ein laufender Transport-Wächter: `promise` löst auf, `cancel` entschärft den Wecker vorzeitig. */
+interface TransportWatch {
+  promise: Promise<void>;
+  cancel(): void;
+}
+
 /**
  * Schreibt jeden Zustandswechsel als `transport:<state>` in die Zeitleiste (Konvention von `finishRun`) und
  * löst auf, sobald der Transport nicht mehr „connecting" ist – spätestens nach `timeoutMs`.
+ * `cancel()` muss der Aufrufer in jedem Fall rufen: bricht ein Lauf vor `Promise.all` ab, stünde sonst je
+ * Wächter ein 20-s-Wecker offen und hielte den Prozess (und in Tests die Ereignisschleife) unnötig wach.
  */
-function watchTransport(transport: Transport, timeline: Timeline, timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
+function watchTransport(transport: Transport, timeline: Timeline, timeoutMs: number): TransportWatch {
+  let settle = (): void => undefined;
+  const promise = new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
-    const settle = (): void => {
+    settle = () => {
       clearTimeout(timer);
       resolve();
     };
@@ -93,6 +103,8 @@ function watchTransport(transport: Transport, timeline: Timeline, timeoutMs: num
       settle();
     }
   });
+  // `settle` ist hier schon belegt: der Executor von `new Promise` läuft sofort.
+  return { promise, cancel: () => { settle(); } };
 }
 
 function runNotes(key: SelfTestRunKey, cameraError: string | null, gumCalledBefore: boolean): string {
@@ -111,6 +123,7 @@ async function runPair(
   const lobby = deps.createHostLobby(connector);
   const join = deps.createClientJoin(connector);
   const cell: CellLabel = { role: 'selbsttest', hotspotOwner: 'unbekannt', camera, path: 'loopback', device };
+  const watches: TransportWatch[] = [];
   try {
     const offer = await lobby.createOffer(SLOT);
     const host = lobby.entries().get(SLOT);
@@ -118,6 +131,7 @@ async function runPair(
     host.timeline.push('selftest', `Lauf ${key}, Kamera ${camera}`);
     if (cameraError !== null) host.timeline.push('camera-error', cameraError);
     const hostOpen = watchTransport(host.peer.transport, host.timeline, deps.openTimeoutMs);
+    watches.push(hostOpen);
 
     const answer = await join.acceptOffer(offer.payload);
     const client = join.peer;
@@ -125,9 +139,10 @@ async function runPair(
     if (client === null || clientTimeline === null) throw new Error('Selbsttest: Der Client hat keinen Peer angelegt.');
     deps.attachLabLink(client.transport);
     const clientOpen = watchTransport(client.transport, clientTimeline, deps.openTimeoutMs);
+    watches.push(clientOpen);
 
     await lobby.acceptAnswer(SLOT, answer.payload);
-    await Promise.all([hostOpen, clientOpen]);
+    await Promise.all([hostOpen.promise, clientOpen.promise]);
 
     const result = await deps.finishRun({
       cell, transport: host.peer.transport, peer: host.peer, timeline: host.timeline, artifacts: offer, remoteSdp: host.remoteSdp,
@@ -140,6 +155,8 @@ async function runPair(
   } catch (error) {
     return { run: { key, camera, report: null, abortReason: describeAbort(error), cameraError }, result: null };
   } finally {
+    // Zuerst die Wecker: ein Abbruch vor `Promise.all` ließe sonst je Lauf zwei 20-s-Zeitgeber stehen.
+    for (const watch of watches) watch.cancel();
     lobby.closeAll();
     join.close();
   }
@@ -165,9 +182,10 @@ export async function runSelfTest(device: string, deps: SelfTestDeps, progress: 
     cameraError = errorName(error);
   }
 
-  progress.onStatus(S.lab.selfTest.statusRunB);
   let b: Awaited<ReturnType<typeof runPair>>;
   try {
+    // Die Statuszeile steht MIT im try: ein werfender Rückruf der Oberfläche darf den Stream nicht offen lassen.
+    progress.onStatus(S.lab.selfTest.statusRunB);
     b = await runPair('B', 'an', cameraError, true, device, deps, progress);
   } finally {
     // Der Stream bleibt während des ganzen Laufs B offen und wird erst danach beendet – auch bei einem Programmfehler.
@@ -195,6 +213,25 @@ export interface SelfTestRow {
 
 const decimal = (value: number): string => value.toFixed(1).replace('.', ',');
 
+/** `describeAbort` stellt einem bekannten Fehlschlag seinen Code voran – „F1S" vor „F1", damit der längere gewinnt. */
+const ABORT_CODE = /^(F\d[A-Z]?)/;
+
+function failureCodeOf(reason: string): FailureCode | null {
+  const match = ABORT_CODE.exec(reason)?.[1] ?? '';
+  return (FAILURE_CODES as readonly string[]).includes(match) ? (match as FailureCode) : null;
+}
+
+/**
+ * Abbruchgründe sind TECHNISCHER Text aus dem Browser: `toF5` reicht die Ausnahme durch, und ein
+ * SDP-Parserfehler zitiert die fehlerhafte Zeile samt Adresse. Auf dem Schirm steht deshalb der
+ * Klartext des Fehlercodes; ist keiner erkennbar, wenigstens der geschwärzte Text. Den vollen
+ * (ebenfalls geschwärzten) Wortlaut gibt es im Teilen-Text unter „Report-Text anzeigen".
+ */
+function abortReasonText(reason: string): string {
+  const code = failureCodeOf(reason);
+  return code === null ? redactText(reason) : S.failures[code].title;
+}
+
 function cameraCell(run: SelfTestRun): string {
   if (run.cameraError !== null) return fmt(S.lab.selfTest.cameraDenied, { error: run.cameraError });
   return run.camera === 'an' ? S.lab.selfTest.cameraOn : S.lab.selfTest.cameraOff;
@@ -205,7 +242,7 @@ export function summariseRun(run: SelfTestRun): SelfTestRow {
   const none = S.lab.selfTest.none;
   const { report } = run;
   if (report === null) {
-    const reason = run.abortReason ?? '';
+    const reason = abortReasonText(run.abortReason ?? '');
     return {
       key: run.key, state: 'aborted', reason, camera: cameraCell(run), valid: fmt(S.lab.selfTest.aborted, { reason }),
       candidates: none, pair: none, ping: none, failures: none,
@@ -237,7 +274,8 @@ export function selfTestShareText(runs: readonly SelfTestRun[]): string {
   const aborted: string[] = [];
   for (const run of runs) {
     if (run.report !== null) reports.push(redactReport(run.report));
-    else aborted.push(`Selbsttest Lauf ${run.key} (Kamera ${run.camera}) abgebrochen: ${run.abortReason ?? 'unbekannt'}`);
+    // `redactText`, nicht der rohe Grund: der Text ist ausdrücklich „anonymisiert" und geht in Chat und Repo.
+    else aborted.push(`Selbsttest Lauf ${run.key} (Kamera ${run.camera}) abgebrochen: ${redactText(run.abortReason ?? 'unbekannt')}`);
   }
   return [reportsToJson(reports), ...aborted].join('\n\n');
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseCandidate, type ParsedCandidate } from '../../../src/net/candidates';
 import type { ClientJoin, ConnectorDeps, HandshakeArtifacts, HostLobby, HostSlotEntry } from '../../../src/net/connector';
 import type { RtcPeer } from '../../../src/net/rtcTransport';
@@ -6,7 +6,7 @@ import type { Timeline } from '../../../src/net/timeline';
 import type { Transport, TransportState } from '../../../src/net/transport';
 import type { LabRunResult } from '../../../src/lab/labSession';
 import type { LabReport } from '../../../src/lab/report';
-import { normaliseDevice, runSelfTest, selfTestShareText, summariseRun, type SelfTestDeps, type SelfTestProgress, type SelfTestRun } from '../../../src/lab/selfTest';
+import { SELFTEST_OPEN_TIMEOUT_MS, normaliseDevice, runSelfTest, selfTestShareText, summariseRun, type SelfTestDeps, type SelfTestProgress, type SelfTestRun } from '../../../src/lab/selfTest';
 import { S, fmt } from '../../../src/ui/strings';
 
 // Der Selbsttest wird hier komplett gegen Attrappen gefahren: Reihenfolge (A vor getUserMedia, B danach),
@@ -282,6 +282,39 @@ describe('Selbsttest – Ablauf', () => {
     expect(world.finishInputs[2]?.gumCalledThisSession).toBe(true);
     expect(world.finishInputs[2]?.notes).toBe('Selbsttest Lauf A (ohne getUserMedia; getUserMedia lief in dieser Sitzung aber schon – für einen sauberen Lauf A die Seite neu laden)');
   });
+
+  it('ein Programmfehler in Lauf B stoppt den Kamera-Stream trotzdem', async () => {
+    // Kein erwartbarer Fehlschlag, sondern ein echter Programmfehler VOR dem try von runPair:
+    // er darf durchschlagen, aber die Kamera des Geräts nicht offen lassen.
+    const world = makeWorld();
+    const lobbyFor = world.deps.createHostLobby;
+    let calls = 0;
+    world.deps.createHostLobby = (connector) => {
+      calls += 1;
+      if (calls === 2) throw new Error('Programmfehler in Lauf B');
+      return lobbyFor(connector);
+    };
+
+    await expect(runSelfTest('Pixel-Test', world.deps, world.progress)).rejects.toThrow('Programmfehler in Lauf B');
+    expect(world.log).toContain('camera:stop');
+  });
+
+  it('räumt die Zeitgeber beider Läufe auf – ein Abbruch lässt keinen 20-s-Wecker stehen', async () => {
+    vi.useFakeTimers();
+    try {
+      // Lauf A läuft durch, Lauf B bricht ab: dessen beide Wächter müssen trotzdem entschärft werden.
+      const world = makeWorld({ failAnswerInRun: 2 });
+      world.deps.openTimeoutMs = 60_000;
+      const done = runSelfTest('Pixel-Test', world.deps, world.progress);
+      // Nur eine Millisekunde: genug für den 0-ms-Wecker von Lauf A, viel zu wenig für die 60-s-Wächter.
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await done;
+      expect(result[1]?.abortReason).toBe('F5: Nonce passt nicht');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('Selbsttest – Gerätename', () => {
@@ -290,6 +323,16 @@ describe('Selbsttest – Gerätename', () => {
     expect(normaliseDevice('   ')).toBe('unbenannt');
     expect(normaliseDevice('  iPhone von Kim ')).toBe('iPhone von Kim');
     expect(normaliseDevice('x'.repeat(40))).toBe('x'.repeat(24));
+  });
+
+  it('schneidet nicht mitten im Wort und lässt kein Leerzeichen am Ende stehen', () => {
+    expect(normaliseDevice(`${'x'.repeat(23)} yz`)).toBe('x'.repeat(23));
+  });
+});
+
+describe('Selbsttest – Zeitlimit', () => {
+  it('wartet 20 s je Lauf: Chromium meldet einen nie verbundenen ICE-Lauf erst nach ≈ 15 s als „failed"', () => {
+    expect(SELFTEST_OPEN_TIMEOUT_MS).toBe(20_000);
   });
 });
 
@@ -326,11 +369,26 @@ describe('Selbsttest – Ergebniszeile', () => {
     expect(row.ping).toBe(S.lab.selfTest.none);
   });
 
-  it('abgebrochener Lauf ohne Report', () => {
-    const row = summariseRun(run({ report: null, abortReason: 'F5: Nonce passt nicht' }));
+  it('abgebrochener Lauf ohne Report nennt den Fehlercode im Klartext statt des Browser-Textes', () => {
+    // Der technische Grund stammt vom Browser und kann eine Adresse mitbringen – auf dem Schirm steht der Klartext.
+    const row = summariseRun(run({ report: null, abortReason: `F5: Nonce passt nicht (${DOC_IPV4})` }));
     expect(row.state).toBe('aborted');
-    expect(row.valid).toBe(fmt(S.lab.selfTest.aborted, { reason: 'F5: Nonce passt nicht' }));
+    expect(row.reason).toBe(S.failures.F5.title);
+    expect(row.valid).toBe(fmt(S.lab.selfTest.aborted, { reason: S.failures.F5.title }));
+    expect(row.valid).not.toContain(DOC_IPV4);
     expect(row.candidates).toBe(S.lab.selfTest.none);
+  });
+
+  it('der zweistellige Code F1S wird nicht als F1 gelesen', () => {
+    const row = summariseRun(run({ report: null, abortReason: 'F1S: keine Adresse' }));
+    expect(row.reason).toBe(S.failures.F1S.title);
+  });
+
+  it('ein Abbruch ohne bekannten Fehlercode zeigt den geschwaerzten Text', () => {
+    const row = summariseRun(run({ report: null, abortReason: `Der Client hat keinen Peer angelegt (${DOC_IPV4})` }));
+    expect(row.reason).toBe('Der Client hat keinen Peer angelegt (ipv4/other#1)');
+    expect(row.reason).not.toContain(DOC_IPV4);
+    expect(row.valid).not.toContain(DOC_IPV4);
   });
 });
 
@@ -358,5 +416,19 @@ describe('Selbsttest – Text zum Kopieren/Teilen', () => {
     ]);
     expect(text).toContain('"id": "r-b"');
     expect(text.endsWith('Selbsttest Lauf A (Kamera aus) abgebrochen: F5: Nonce passt nicht')).toBe(true);
+  });
+
+  it('schwaerzt auch den Abbruchgrund – ein Browser-Fehlertext zitiert die fehlerhafte Zeile samt Adresse', () => {
+    const reason = `F5: apply answer: Failed to parse a=candidate:1 1 udp 2122260223 ${DOC_IPV4} 50001 typ host, ${MDNS_NAME} unbekannt`;
+    const text = selfTestShareText([
+      { key: 'A', camera: 'aus', report: null, abortReason: reason, cameraError: null },
+      { key: 'B', camera: 'an', report: makeReport({ id: 'r-b' }), abortReason: null, cameraError: null },
+    ]);
+    expect(text).not.toContain(DOC_IPV4);
+    expect(text).not.toContain(MDNS_NAME);
+    // Die Zeile bleibt lesbar: „abgebrochen" und der Fehlercode müssen beim Entwickler ankommen.
+    expect(text).toContain('Selbsttest Lauf A (Kamera aus) abgebrochen: F5:');
+    expect(text).toContain('ipv4/other#');
+    expect(text).toContain('mdns/mdns#');
   });
 });
