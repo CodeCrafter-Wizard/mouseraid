@@ -1571,6 +1571,26 @@ describe('redactReport – die Geheimnis-Regeln schneiden keine Adresse an (T18)
       expect(JSON.stringify(redactReport(report)), `raw ${length}`).not.toMatch(/Q/);
     }
   });
+
+  it('ein ufrag-Wert jenseits der 4096-Grenze verschwindet auch ohne langen base64url-Lauf', () => {
+    // Die allgemeine ufrag-Regel schneidet bei 4096 Zeichen ab; der Rest darf nur deshalb nicht
+    // stehen bleiben, weil redactRaw den Wert nach Position ersetzt – ein Punkt alle 20 Zeichen
+    // verhindert, dass die Payload-Regel (≥ 32 base64url-Zeichen) den Rest zufällig mitnimmt.
+    const value = 'Q'.repeat(4096) + `.${'Q'.repeat(20)}`.repeat(5);
+    const raw = `1 1 udp 2122260223 192.0.2.47 50000 typ host ufrag ${value} network-id 1`;
+    const report = sampleReport({ gather: gatherOf([{ ...sampleCandidate(1, 'udp', '192.0.2.47', 50000, 'ipv4', 'global'), raw }]) });
+    expect(raws(redactReport(report))[0]).toBe('f1 1 udp 2122260223 ipv4/global#1 50000 typ host ufrag entfernt network-id 1');
+  });
+
+  it('ein angeklebter base64url-Lauf vor einem Geheimnis-Schluesselwort rettet den Wert nicht', () => {
+    // Pinnt die Reihenfolge „Geheimnis-Regeln VOR dem Payload-Durchlauf“: liefe der Payload-Durchlauf
+    // zuerst, fräße der Lauf das Schlüsselwort mit, und die Geheimnis-Regel träfe nicht mehr.
+    const notesOf = (notes: string): string => redactReport(sampleReport({ gather: null, notes })).notes;
+    const glue = 'A'.repeat(40);
+    expect(notesOf(`${glue}usernameFragment":"Zq7Kgeheim"`), 'usernameFragment').not.toContain('Zq7Kgeheim');
+    expect(notesOf(`${glue}ice-ufrag:Zq7Kgeheim`), 'ice-ufrag').not.toContain('Zq7Kgeheim');
+    expect(notesOf(`${glue}candidate:7771234 1 udp 1 203.0.113.77 1 typ host`), 'candidate').not.toContain('7771234');
+  });
 });
 
 describe('redactReport – eine zu grosse RegExp bringt redactReport nicht zum Werfen (T19)', () => {
@@ -1642,6 +1662,13 @@ describe('redactReport – die Uhrzeit-Ausnahme endet bei zwei Ziffern je Gruppe
       expect(word.split(':'), word).toHaveLength(3);
       expect(notesOf(`Rest ${word} Ende`), word).toBe('Rest ipv6/other#1 Ende');
     }
+  });
+
+  it('drei Gruppen mit genau drei Ziffern sind keine Uhrzeit, sondern eine Adresshaelfte', () => {
+    // Die Grenze der Ausnahme liegt bei zwei Ziffern je Gruppe – die Nachbarstelle (drei) muss geschwärzt werden.
+    const word = '2001:db8:100:200:300:400:500:600'.split(':').slice(2, 5).join(':');
+    expect(word.split(':')).toHaveLength(3);
+    expect(notesOf(`Rest ${word} Ende`)).toBe('Rest ipv6/other#1 Ende');
   });
 
   it('echte Uhrzeiten mit ein- und zweistelligen Gruppen bleiben bytegleich', () => {
