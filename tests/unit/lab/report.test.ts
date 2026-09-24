@@ -1969,3 +1969,26 @@ describe('createReportStore – Form von lockTest', () => {
     expect(reportToText(redactReport(report))).toContain('Sperrbildschirm');
   });
 });
+
+// ───────── QR-Zwischenfälle im Bericht (Nachtrag aus der T3/T4-Nachprüfung) ─────────
+// Ein FREMDER Code wird seit f9b7fb6 als `qr:skipped` aufgezeichnet, nie als `qr:error` (D7: er ist
+// kein Befund und darf kein F9 auslösen). Einen eigenen Zählblock „QR-Zwischenfälle" kennt
+// `reportToText` nicht – der Vertrag nennt für M2 genau die Blöcke Paarung, QR und Sperrbildschirm.
+// Verloren geht dadurch nichts: der Zeitleisten-Block führt JEDEN Eintrag samt Grund auf. Genau das
+// hält dieser Test fest, damit die Spalte „QR-Zwischenfälle" in docs/connectivity-tests.md (Task 7)
+// aus BEIDEN Arten gefüllt werden kann und ein späteres Aufräumen der Zeitleiste hier auffällt.
+describe('reportToText – QR-Zwischenfälle in der Zeitleiste', () => {
+  it('führt ein qr:error und JEDES qr:skipped mit seinem Grund auf', () => {
+    const timeline = [
+      { tMs: 1000, kind: 'qr:error', detail: 'scan-timeout' },
+      { tMs: 2000, kind: 'qr:skipped', detail: 'not-a-payload' },
+      { tMs: 3000, kind: 'qr:skipped', detail: 'not-a-payload' },
+    ];
+    const lines = reportToText(sampleReport({ timeline })).split('\n');
+    expect(lines.filter((line) => line.includes('qr:error'))).toEqual(['  +1000 ms qr:error – scan-timeout']);
+    expect(lines.filter((line) => line.includes('qr:skipped'))).toEqual([
+      '  +2000 ms qr:skipped – not-a-payload',
+      '  +3000 ms qr:skipped – not-a-payload',
+    ]);
+  });
+});
