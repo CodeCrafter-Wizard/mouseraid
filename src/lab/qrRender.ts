@@ -41,8 +41,9 @@ const DEFAULT_CSS_WIDTH = 320;
 /**
  * Untergrenze in GERÄTEpixeln. 2 statt 3 (R13): bei 1100 Zeichen sind es 133 Module, auf einem
  * 390-CSS-px-Telefon also 2,93 CSS px je Modul. Mit 3 wäre das Canvas breiter als die Spalte und
- * müsste heruntergerechnet werden – dabei verwischen genau die halben Module, die die ganzzahlige
- * Rechnung vermeiden soll. Zum Scannen ist die Vollbild-Lupe gedacht (≥ 90 % von min(vw, vh)).
+ * müsste von `max-width: 100%` heruntergerechnet werden – dabei verwischen genau die halben Module,
+ * die die ganzzahlige Rechnung vermeiden soll. Zum Scannen ist die Vollbild-Lupe gedacht
+ * (≥ 90 % von min(vw, vh)).
  */
 const DEFAULT_MIN_MODULE_PX = 2;
 /** Immer Schwarz auf Weiß, unabhängig vom dunklen Seiten-Thema – ein invertierter Code wird schlechter erkannt. */
@@ -72,8 +73,8 @@ export function renderQr(canvas: HTMLCanvasElement, text: string, options: QrRen
   const minModulePx = options.minModulePx ?? DEFAULT_MIN_MODULE_PX;
   // Ganzzahlige Modulgröße in GERÄTEpixeln. Solange die Untergrenze nicht greift, ist canvasPx nie
   // breiter als cssWidth*ratio – kein Herunterskalieren, keine halben Module (R13). Greift sie doch
-  // (Spalte < ~266 CSS px), fängt `max-width: 100%` in qr.css den Überstand ab; zum Scannen dient dann
-  // die Vollbild-Lupe.
+  // (Spalte < ~266 CSS px), ragt das Canvas über die Spalte hinaus; dann fängt `max-width: 100%` in
+  // qr.css den Überstand ab, und zum Scannen dient die Vollbild-Lupe.
   const modulePx = Math.max(minModulePx, Math.floor((cssWidth * ratio) / totalModules));
   const canvasPx = totalModules * modulePx;
 
@@ -81,6 +82,13 @@ export function renderQr(canvas: HTMLCanvasElement, text: string, options: QrRen
   if (context === null) throw new Error('Canvas 2D context not available');
   canvas.width = canvasPx;
   canvas.height = canvasPx;
+  // Speicher in GERÄTEpixeln, Anzeige in CSS-Pixeln. Ohne die beiden Zeilen wäre die natürliche
+  // Breite des Canvas canvasPx CSS-Pixel – auf einem Telefon mit dpr 3 also das Dreifache der
+  // Spalte, und nur die Klassenregel `max-width: 100%` hielte das Layout zusammen (um den Preis
+  // genau des Herunterskalierens, das die ganzzahlige Rechnung vermeiden soll). So bleibt das
+  // Verhältnis Speicher:Anzeige exakt dpr:1 – ein Modul trifft ganze Gerätepixel.
+  canvas.style.width = `${canvasPx / ratio}px`;
+  canvas.style.height = `${canvasPx / ratio}px`;
   // Ruhezone mitweißen: der Aufrufer darf das Canvas auf jeden Untergrund setzen.
   context.fillStyle = LIGHT;
   context.fillRect(0, 0, canvasPx, canvasPx);
@@ -124,7 +132,9 @@ export function createQrOverlay(brightnessHint: string): QrOverlay {
   hint.textContent = brightnessHint;
   const close = document.createElement('button');
   close.type = 'button';
-  close.className = 'btn secondary qr-overlay-close';
+  // KEIN `secondary`: dessen rgba(255,255,255,0.12) auf dem weißen Grund der Lupe ergäbe mit der
+  // weißen Schrift Kontrast 1:1. Der volle `btn` ist kobaltblau auf Weiß und bleibt lesbar.
+  close.className = 'btn qr-overlay-close';
   close.dataset.testid = 'qr-overlay-close';
   close.textContent = S.lab.qr.close;
   element.append(canvas, hint, close);
@@ -136,6 +146,9 @@ export function createQrOverlay(brightnessHint: string): QrOverlay {
   // Tipp auf die Fläche schließt – auch auf dem Code selbst: am Handy ist der Knopf unten
   // schwer zu treffen, wenn der Code fast den ganzen Bildschirm füllt.
   element.addEventListener('pointerup', hide);
+  // Eigener Zuhörer am Knopf: Enter und Leertaste lösen `click` aus, nie `pointerup` – ohne ihn
+  // wäre die Lupe mit der Tastatur nicht mehr zu schließen.
+  close.addEventListener('click', hide);
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape' && !element.hidden) hide();
   };
@@ -149,11 +162,17 @@ export function createQrOverlay(brightnessHint: string): QrOverlay {
       // qr.css auf 90 vmin – so ist die 90-%-Zusage unabhängig von der Rundung auf ganze Module.
       const side = Math.max(OVERLAY_MIN_CSS, Math.min(innerWidth, innerHeight));
       renderQr(canvas, text, { cssWidth: side });
+      // renderQr setzt die CSS-Maße inline (für die Kachel richtig), und inline schlägt jede
+      // Klassenregel. Hier muss `.qr-overlay-code { width: 90vmin }` gewinnen: nur so gilt die
+      // 90-%-Zusage des Vertrags unabhängig davon, auf wie viele ganze Module gerundet wurde.
+      canvas.style.width = '';
+      canvas.style.height = '';
       element.hidden = false;
     },
     close: hide,
     dispose(): void {
       element.removeEventListener('pointerup', hide);
+      close.removeEventListener('click', hide);
       document.removeEventListener('keydown', onKeyDown);
       element.remove();
     },

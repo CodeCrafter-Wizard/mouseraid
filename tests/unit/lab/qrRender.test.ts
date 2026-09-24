@@ -1,12 +1,20 @@
-import { describe, expect, it } from 'vitest';
-import { MAX_QR_PAYLOAD_CHARS, QrTooLargeError, qrModuleCount, renderQr } from '../../../src/lab/qrRender';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import QRCode from 'qrcode';
+import { MAX_QR_PAYLOAD_CHARS, QrTooLargeError, createQrOverlay, qrModuleCount, renderQr } from '../../../src/lab/qrRender';
+import type { QrOverlay } from '../../../src/lab/qrRender';
 
 // Vitest läuft im Node-Umfeld (kein DOM). `renderQr` braucht vom Canvas nur `clientWidth`,
-// `width`/`height` und `getContext('2d').fillStyle/fillRect` – das ist die ganze Attrappe.
+// `width`/`height`, `style` und `getContext('2d').fillStyle/fillRect` – das ist die ganze Attrappe.
 interface Rect { x: number; y: number; w: number; h: number; fill: string }
 
-function fakeCanvas(clientWidth = 0): { canvas: HTMLCanvasElement; rects: Rect[]; sizes: () => { width: number; height: number } } {
+function fakeCanvas(clientWidth = 0): {
+  canvas: HTMLCanvasElement;
+  rects: Rect[];
+  style: Record<string, string>;
+  sizes: () => { width: number; height: number };
+} {
   const rects: Rect[] = [];
+  const style: Record<string, string> = {};
   const context = {
     fillStyle: '',
     fillRect(x: number, y: number, w: number, h: number): void {
@@ -17,9 +25,10 @@ function fakeCanvas(clientWidth = 0): { canvas: HTMLCanvasElement; rects: Rect[]
     width: 0,
     height: 0,
     clientWidth,
+    style,
     getContext: (kind: string): unknown => (kind === '2d' ? context : null),
   };
-  return { canvas: canvas as unknown as HTMLCanvasElement, rects, sizes: () => ({ width: canvas.width, height: canvas.height }) };
+  return { canvas: canvas as unknown as HTMLCanvasElement, rects, style, sizes: () => ({ width: canvas.width, height: canvas.height }) };
 }
 
 // Kleinbuchstaben, Großbuchstaben, Ziffern und `-_` dicht gemischt – genau wie die base64url-Ausgabe
@@ -44,6 +53,12 @@ function darkModules(text: string): number {
   renderQr(rects.canvas, text);
   return rects.rects.filter((rect) => rect.fill === '#000000').length;
 }
+
+// `devicePixelRatio`, `innerWidth`, `innerHeight` und `document` gibt es im Node-Umfeld nicht;
+// die Tests, die sie brauchen, stellen sie selbst hin und geben sie hier wieder frei.
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('qrModuleCount', () => {
   // Gemessen mit qrcode@1.5.4 bei ECC M und einem Byte-Segment; Grundlage des Größen-Sweeps in T2.
@@ -94,6 +109,7 @@ describe('renderQr', () => {
     // Nichts gezeichnet: der Deckel greift VOR dem Canvas-Zugriff.
     expect(tooBig.rects).toHaveLength(0);
     expect(tooBig.sizes()).toEqual({ width: 0, height: 0 });
+    expect(tooBig.style).toEqual({});
   });
 
   it('rechnet Modulgröße und Canvas-Breite ganzzahlig aus Breite und Pixelverhältnis', () => {
@@ -104,6 +120,27 @@ describe('renderQr', () => {
     expect(result.modulePx).toBe(Math.floor((390 * 3) / 109)); // 10
     expect(result.canvasPx).toBe(109 * result.modulePx); // 1090
     expect(result.canvasPx % result.totalModules).toBe(0);
+  });
+
+  it('begrenzt die ANZEIGEbreite in CSS-Pixeln, nicht nur den Speicher in Gerätepixeln', () => {
+    // Ohne die CSS-Maße wäre das Canvas so breit wie sein Speicher – bei dpr 3 also dreimal so
+    // breit wie die Spalte. Der Speicher bleibt in Gerätepixeln (1:1, kein Umrechnen beim Malen).
+    const one = fakeCanvas();
+    const flat = renderQr(one.canvas, payload(200), { cssWidth: 320, devicePixelRatio: 1 });
+    expect(one.style.width).toBe(`${flat.canvasPx}px`);
+    expect(one.style.height).toBe(`${flat.canvasPx}px`);
+    expect(flat.canvasPx).toBeLessThanOrEqual(320);
+
+    // Ohne Angabe zählt globalThis.devicePixelRatio – im Browser der übliche Fall.
+    vi.stubGlobal('devicePixelRatio', 3);
+    const dense = fakeCanvas(390);
+    const result = renderQr(dense.canvas, payload(700));
+    expect(result.modulePx).toBe(Math.floor((390 * 3) / result.totalModules));
+    expect(dense.canvas.width).toBe(result.canvasPx); // Speicher: Gerätepixel
+    expect(dense.canvas.height).toBe(result.canvasPx);
+    expect(dense.style.width).toBe(`${result.canvasPx / 3}px`); // Anzeige: CSS-Pixel
+    expect(dense.style.height).toBe(`${result.canvasPx / 3}px`);
+    expect(result.canvasPx / 3).toBeLessThanOrEqual(390);
   });
 
   it('nimmt ohne Angabe die clientWidth des Canvas, sonst 320, und dpr 1 im Node-Umfeld', () => {
@@ -133,7 +170,8 @@ describe('renderQr', () => {
 
   it('legt jedes dunkle Modul auf das Raster und lässt die Ruhezone von 4 Modulen frei', () => {
     const { canvas, rects } = fakeCanvas(320);
-    const result = renderQr(canvas, payload(200), { devicePixelRatio: 1 });
+    const text = payload(200);
+    const result = renderQr(canvas, text, { devicePixelRatio: 1 });
     const dark = rects.slice(1);
     const quiet = 4 * result.modulePx;
     expect(dark.length).toBeGreaterThan(0);
@@ -150,6 +188,20 @@ describe('renderQr', () => {
     // Das Sucherquadrat oben links ist 7x7 Module – ohne es wäre der Code kein QR-Code.
     const corner = dark.filter((rect) => rect.x < quiet + 7 * result.modulePx && rect.y < quiet + 7 * result.modulePx);
     expect(corner).toHaveLength(7 * 7 - 5 * 5 + 3 * 3);
+
+    // Gegen ein gespiegeltes oder um 90° gedrehtes Raster: die gezeichneten Zellen sind GENAU die
+    // dunklen Module der Bitmatrix (zeilenweise gelesen), verschoben um die Ruhezone. Die Prüfungen
+    // oben allein ließen eine Spiegelung durch – ein so gedruckter Code wäre nicht dekodierbar.
+    const matrix = QRCode.create(text, { errorCorrectionLevel: 'M' }).modules;
+    const expectedCells: string[] = [];
+    for (let row = 0; row < matrix.size; row += 1) {
+      for (let col = 0; col < matrix.size; col += 1) {
+        if (matrix.data[row * matrix.size + col] === 1) expectedCells.push(`${col}/${row}`);
+      }
+    }
+    const drawnCells = dark.map((rect) => `${(rect.x - quiet) / result.modulePx}/${(rect.y - quiet) / result.modulePx}`);
+    expect(new Set(drawnCells).size).toBe(drawnCells.length); // keine Zelle doppelt gemalt
+    expect([...drawnCells].sort()).toEqual([...expectedCells].sort());
   });
 
   it('zeichnet so viele schwarze Rechtecke, wie die Bitmatrix dunkle Module hat', () => {
@@ -159,12 +211,168 @@ describe('renderQr', () => {
   });
 
   it('wirft, wenn das Canvas keinen 2D-Kontext liefert', () => {
-    const canvas = { width: 0, height: 0, clientWidth: 320, getContext: () => null } as unknown as HTMLCanvasElement;
+    const canvas = { width: 0, height: 0, clientWidth: 320, style: {}, getContext: () => null } as unknown as HTMLCanvasElement;
     expect(() => renderQr(canvas, payload(200))).toThrow(/Canvas 2D context not available/);
   });
 
   it('lehnt leeren Text ab', () => {
     const { canvas } = fakeCanvas(320);
     expect(() => renderQr(canvas, '')).toThrow(/No input text/);
+  });
+});
+
+// ───────── Minimal-DOM für createQrOverlay ─────────
+// Vitest bleibt im Node-Umfeld (Vertrag): statt jsdom bekommt das Modul dieselbe Art Attrappe wie
+// das Canvas oben – gerade so viel, wie createQrOverlay anfasst.
+interface FakeElement {
+  className: string;
+  hidden: boolean;
+  textContent: string;
+  type: string;
+  width: number;
+  height: number;
+  clientWidth: number;
+  removed: boolean;
+  readonly dataset: Record<string, string>;
+  readonly style: Record<string, string>;
+  readonly children: FakeElement[];
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
+  append(...nodes: FakeElement[]): void;
+  remove(): void;
+  getContext(kind: string): unknown;
+  fire(type: string, event?: unknown): void;
+  listenerCount(type: string): number;
+}
+
+function fakeElement(): FakeElement {
+  const listeners = new Map<string, ((event: unknown) => void)[]>();
+  const context = { fillStyle: '', fillRect(): void { /* das Bild interessiert hier nicht */ } };
+  const node: FakeElement = {
+    className: '', hidden: false, textContent: '', type: '',
+    width: 0, height: 0, clientWidth: 0, removed: false,
+    dataset: {}, style: {}, children: [],
+    addEventListener(type, listener) { listeners.set(type, [...(listeners.get(type) ?? []), listener]); },
+    removeEventListener(type, listener) { listeners.set(type, (listeners.get(type) ?? []).filter((entry) => entry !== listener)); },
+    append(...nodes) { node.children.push(...nodes); },
+    remove() { node.removed = true; },
+    getContext: (kind) => (kind === '2d' ? context : null),
+    fire(type, event = {}) { for (const listener of [...(listeners.get(type) ?? [])]) listener(event); },
+    listenerCount: (type) => (listeners.get(type) ?? []).length,
+  };
+  return node;
+}
+
+interface FakeDocument {
+  readonly body: FakeElement;
+  createElement(tag: string): FakeElement;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
+  fire(type: string, event?: unknown): void;
+  listenerCount(type: string): number;
+}
+
+function fakeDocument(): FakeDocument {
+  const host = fakeElement();   // Zuhörer-Ablage für document selbst
+  return {
+    body: fakeElement(),
+    createElement: () => fakeElement(),
+    addEventListener: (type, listener) => { host.addEventListener(type, listener); },
+    removeEventListener: (type, listener) => { host.removeEventListener(type, listener); },
+    fire: (type, event) => { host.fire(type, event); },
+    listenerCount: (type) => host.listenerCount(type),
+  };
+}
+
+function childAt(parent: FakeElement, index: number): FakeElement {
+  const child = parent.children[index];
+  if (child === undefined) throw new Error(`Kind ${index} fehlt`);
+  return child;
+}
+
+describe('createQrOverlay', () => {
+  function mountOverlay(): {
+    doc: FakeDocument;
+    overlay: QrOverlay;
+    element: FakeElement;
+    code: FakeElement;
+    close: FakeElement;
+  } {
+    const doc = fakeDocument();
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('innerWidth', 800);
+    vi.stubGlobal('innerHeight', 600);
+    const overlay = createQrOverlay('Bildschirm hell stellen');
+    const element = overlay.element as unknown as FakeElement;
+    return { doc, overlay, element, code: childAt(element, 0), close: childAt(element, 2) };
+  }
+
+  it('hängt sich verborgen an den body und beschriftet Code, Hinweis und Knopf', () => {
+    const { doc, element, code, close } = mountOverlay();
+    expect(element.hidden).toBe(true);
+    expect(doc.body.children).toEqual([element]);
+    expect(element.dataset.testid).toBe('qr-overlay');
+    expect(code.dataset.testid).toBe('qr-overlay-code');
+    expect(childAt(element, 1).textContent).toBe('Bildschirm hell stellen');
+    expect(close.dataset.testid).toBe('qr-overlay-close');
+    expect(close.textContent).toBe('Schließen');
+  });
+
+  it('gibt dem Schließen-Knopf KEIN `secondary` – auf dem weißen Grund der Lupe wäre er unsichtbar', () => {
+    // `.btn.secondary` ist rgba(255,255,255,0.12) mit weißer Schrift: auf Weiß Kontrast 1:1.
+    const { close } = mountOverlay();
+    expect(close.className.split(' ')).not.toContain('secondary');
+    expect(close.className.split(' ')).toContain('btn');
+    expect(close.className.split(' ')).toContain('qr-overlay-close');
+  });
+
+  it('schließt beim Klick auf den Knopf – Enter und Leertaste lösen click aus, nie pointerup', () => {
+    const { overlay, element, close } = mountOverlay();
+    overlay.open(payload(200));
+    expect(element.hidden).toBe(false);
+    close.fire('click');
+    expect(element.hidden).toBe(true);
+  });
+
+  it('schließt weiterhin bei Tipp auf die Fläche und mit Escape', () => {
+    const { doc, overlay, element } = mountOverlay();
+    overlay.open(payload(200));
+    element.fire('pointerup');
+    expect(element.hidden).toBe(true);
+
+    overlay.open(payload(200));
+    doc.fire('keydown', { key: 'a' });
+    expect(element.hidden).toBe(false);
+    doc.fire('keydown', { key: 'Escape' });
+    expect(element.hidden).toBe(true);
+  });
+
+  it('überlässt die Anzeigegröße der Lupe dem Stylesheet (90 vmin), zeichnet aber in Gerätepixeln', () => {
+    // renderQr setzt die CSS-Maße inline für die KACHEL; inline schlägt die Klassenregel. In der
+    // Lupe muss `.qr-overlay-code { width: 90vmin }` gewinnen, sonst schrumpft der Code auf die
+    // gerundete Modulbreite und die 90-%-Zusage des Vertrags fiele.
+    const { overlay, code } = mountOverlay();
+    overlay.open(payload(200));
+    expect(code.width).toBeGreaterThan(0);
+    expect(code.width).toBe(code.height);
+    expect(code.style.width).toBe('');
+    expect(code.style.height).toBe('');
+  });
+
+  it('meldet beim dispose jeden Zuhörer ab und entfernt das Element', () => {
+    const { doc, overlay, element, close } = mountOverlay();
+    overlay.open(payload(200));
+    overlay.dispose();
+    expect(element.removed).toBe(true);
+    expect(element.listenerCount('pointerup')).toBe(0);
+    expect(close.listenerCount('click')).toBe(0);
+    expect(doc.listenerCount('keydown')).toBe(0);
+  });
+
+  it('schließt über close() auch ohne Ereignis', () => {
+    const { overlay, element } = mountOverlay();
+    overlay.open(payload(200));
+    overlay.close();
+    expect(element.hidden).toBe(true);
   });
 });

@@ -29,6 +29,10 @@
   overflow-wrap: anywhere;
 }
 
+/* Im QUERformat (das Manifest steht auf landscape) braucht die Lupe 0,9 · Höhe für den Code plus
+   Hinweis und 48-px-Knopf – mehr, als der Bildschirm hoch ist. `html, body` in shell.css stehen auf
+   `overflow: hidden`, ein abgeschnittener Kopf wäre also unerreichbar. Deshalb scrollt die Lupe
+   selbst; `safe center` zentriert nur, solange Platz ist, und schneidet sonst unten statt oben ab. */
 .qr-overlay {
   position: fixed;
   inset: 0;
@@ -36,19 +40,25 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
   gap: 12px;
-  padding: 12px;
+  padding: calc(var(--safe-t) + 12px) calc(var(--safe-r) + 12px) calc(var(--safe-b) + 12px) calc(var(--safe-l) + 12px);
+  overflow: auto;
   background: #ffffff;
   touch-action: manipulation;
 }
 .qr-overlay[hidden] { display: none; }
 
 /* 90 vmin = 90 % der kürzeren Bildschirmkante, wie vom Vertrag verlangt – unabhängig davon, auf
-   wie viele ganze Module die Canvas-Breite in qrRender gerundet wurde. */
+   wie viele ganze Module die Canvas-Breite in qrRender gerundet wurde.
+   `margin-block: auto` zentriert bei genug Platz und wird bei Überlänge zu 0 – anders als
+   `justify-content: center` verliert es dabei nichts nach oben. `flex-shrink: 0`, damit die
+   Flexbox den Code im Querformat nicht staucht, statt scrollen zu lassen. */
 .qr-overlay-code {
   width: 90vmin;
   height: 90vmin;
+  flex-shrink: 0;
+  margin-block: auto;
   image-rendering: pixelated;
 }
 
