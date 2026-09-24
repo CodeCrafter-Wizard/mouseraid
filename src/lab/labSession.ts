@@ -140,19 +140,29 @@ async function selectedPairOf(peer: RtcPeer | null): Promise<SelectedPair | null
 const cameraEntries = (events: readonly TimelineEvent[]): TimelineEvent[] =>
   events.filter((event) => event.kind === 'camera-error' || event.kind.startsWith('camera:'));
 
-/**
- * Ein `camera-error`, den DIESER Lauf selbst gemessen hat, wiegt schwerer als jede Seiten-Meldung:
- * `flushLabEvents` hängt die immer ans ENDE, und im Selbsttest läuft die Lobby-Kamera munter weiter –
- * ihr `camera:track:live` verschluckte sonst genau den Fehler, den der Lauf gerade gemessen hat.
- * Sonst entscheidet der LETZTE Kamera-Eintrag über alles: ein Befund, den „Kamera neu starten"
- * behoben hat (`camera:track:live` danach), gehört nicht in jeden weiteren Report.
- * Der Lauf-Vermerk `camera:running` ist dabei nur eine Notiz, kein Freispruch – er zählt bloß als
- * Kamera-Eintrag, nicht als Fehler.
- */
-function cameraStillBroken(runEvents: readonly TimelineEvent[], allEvents: readonly TimelineEvent[]): boolean {
-  if (runEvents.some((event) => event.kind === 'camera-error')) return true;
-  const camera = cameraEntries(allEvents);
+/** Sagt der LETZTE Kamera-Eintrag dieser Reihe, dass die Kamera kaputt ist? Ohne Eintrag: nein. */
+function lastCameraIsError(events: readonly TimelineEvent[]): boolean {
+  const camera = cameraEntries(events);
   return camera[camera.length - 1]?.kind === 'camera-error';
+}
+
+/**
+ * F9 aus der Kamera. Es gibt ZWEI Reihen von Kamera-Aussagen, und jede wird für sich gelesen:
+ * was DIESER Lauf selbst gemessen hat, und was die Seite über den ganzen Aufruf gemeldet hat
+ * (`flushLabEvents` hängt Letztere immer ans ENDE, ihre Reihenfolge sagt also nichts über die
+ * zeitliche Lage zu den Lauf-Einträgen). Zusammengeworfen verschluckt eine Reihe die andere: im
+ * Selbsttest läuft der Dauer-Stream der Lobby weiter und sein `camera:track:live` löschte den Fehler,
+ * den der Lauf gerade gemessen hat – umgekehrt löschte die Notiz `camera:running` am Anfang eines
+ * Laufs eine verlorene Spur, die die Seite längst gemeldet hat.
+ *
+ * Innerhalb einer Reihe zählt der LETZTE Eintrag, nicht irgendeiner: ein Platz benutzt für JEDEN
+ * seiner Läufe dieselbe Zeitleiste, also stünde der `camera-error` des ersten Laufs für immer darin
+ * und hinge jedem weiteren Lauf ein F9 an, das „Kamera neu starten" längst behoben hat. Genauso
+ * heilt sich die Seiten-Reihe selbst: nach einem geglückten Neustart meldet die Kamera-Karte
+ * `camera:track:live`.
+ */
+function cameraStillBroken(runEvents: readonly TimelineEvent[], pageEvents: readonly TimelineEvent[]): boolean {
+  return lastCameraIsError(runEvents) || lastCameraIsError(pageEvents);
 }
 
 function storeReport(report: LabReport): boolean {
@@ -232,6 +242,8 @@ export async function finishRun(input: {
   // entstehen, bevor der erste Platz existiert, und betreffen danach jede Verbindung.
   flushLabEvents(timeline);
   const events = [...timeline.events()];
+  // Die eben nachgetragenen Seiten-Ereignisse – die zweite Reihe für `cameraStillBroken`.
+  const pageEvents = events.slice(runEvents.length);
 
   const failures = classifyFailures({
     secureContext: environment.secureContext,
@@ -247,7 +259,7 @@ export async function finishRun(input: {
     msSinceIceConnected: msSinceIceConnected(events),
     wasOpenBefore: events.some((event) => event.kind.startsWith('channel-open:') || event.kind === 'transport:open'),
     codecError: hello !== null && !hello.versionMatch,
-    cameraError: cameraStillBroken(runEvents, events),
+    cameraError: cameraStillBroken(runEvents, pageEvents),
     // Eigenes Feld statt einer Umdeutung von cameraError: die Quelle ist eine andere (der QR-Block
     // schreibt `qr:error`), und ein vergessener Aufrufer fällt so im Typecheck auf.
     qrError: events.some((event) => event.kind === 'qr:error'),

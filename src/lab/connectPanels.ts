@@ -224,7 +224,6 @@ function createRunBox(ctx: ConnectContext): RunBox {
     trackState = armedTrackState(cameraStatus().running, trackState);
     stopTracks = observeTracks((state) => { trackState = state; });
     bindLock(true);
-    watched.timeline.push('lock:start', `${seconds}s`);
     lockStatus.textContent = fmt(S.lab.lock.instruction, { seconds: String(seconds) });
     lockPhase.textContent = S.lab.lock.waiting;
     lockPhase.hidden = false;
@@ -251,6 +250,9 @@ function createRunBox(ctx: ConnectContext): RunBox {
       plan = beginLockRun({ plannedSeconds: armed, transport: link.transport.state, track: trackState, now });
       // Ab hier läuft die Messung – jetzt erst sind die Dauer-Knöpfe gesperrt.
       setLockButtons(false);
+      // `lock:start` gehört zur MESSUNG, nicht zum Knopfdruck: wer sich vertippt und die Dauer noch
+      // einmal wechselt, hinterlässt sonst mehrere Starts für einen einzigen gemessenen Lauf.
+      link.timeline.push('lock:start', `${armed}s`);
       link.timeline.push('lock:hidden');
       return;
     }
@@ -448,7 +450,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   let userLeftScan = false;
   /** Der Platz ist freigegeben: ein noch laufendes `createOffer` darf ihn nicht wiederbeleben. */
   let released = false;
-  /** Genau EIN `qr:fallback-text` je Platz, über welchen der beiden Wege auch ausgewichen wurde. */
+  /** Genau EIN `qr:fallback-text` je AUSTAUSCH, über welchen der beiden Wege auch ausgewichen wurde (ein frisches Angebot beginnt einen neuen). */
   let fellBackToText = false;
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
   const marks = createPairingTracker(now);
@@ -548,7 +550,8 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       qr.cancel();
       // „Erneut scannen" BLEIBT stehen: `userLeftScan` sperrt nur den AUTOMATISCHEN Start. Wer von Hand
       // tippt, will zurück zum Scan – ohne den Knopf gäbe es für diesen Schritt keinen Weg dorthin.
-      noCamera.hidden = true;
+      // `qr-no-camera` bleibt dagegen unangetastet: am Kamera-Zustand hat sich nichts geändert, und
+      // eine Zeile, die den Grund nennt, verschwindet nicht, weil man auf Text ausgewichen ist.
       rescan.hidden = false;
       if (!fellBackToText) {
         fellBackToText = true;
@@ -575,6 +578,13 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       qr = null;
       qrMount.replaceChildren();
       rescan.hidden = true;
+      noCamera.hidden = true;
+      // Ein frisches Angebot ist ein NEUER Austausch – der Rückfall auf Text galt dem alten. Ohne das
+      // Zurücksetzen bliebe der QR-Pfad dieses Platzes nach „Neu verbinden" für immer stumm (das Tor
+      // unten sähe `userLeftScan`), und der neue Austausch könnte seinen eigenen Ausweg nicht mehr
+      // vermerken. Wer danach erneut auf Text wechselt, setzt beides ohnehin wieder.
+      userLeftScan = false;
+      fellBackToText = false;
       box.setWaiting(S.lab.host.creating);
       // Das Design verlangt Berechtigungsstatus und „getUserMedia in dieser Sitzung" ZUM ZEITPUNKT von createOffer –
       // nicht erst nach dem Handshake. Beides trägt keine Adresse und landet als Zeitleisten-Eintrag im Report.
@@ -674,7 +684,7 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   let qrFacts: LabReport['qr'] = null;
   /** Der Nutzer hat den Scan SELBST beendet (Text-Pfad) – nur dann bleibt „Erneut scannen" verborgen. */
   let userLeftScan = false;
-  /** Genau EIN `qr:fallback-text`, über welchen der beiden Wege auch ausgewichen wurde. */
+  /** Genau EIN `qr:fallback-text` je AUSTAUSCH, über welchen der beiden Wege auch ausgewichen wurde („Neu verbinden" beginnt einen neuen). */
   let fellBackToText = false;
   const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => qrRunOf(qrPath, marks, qrFacts);
   if (ctx.query.transport === 'broadcast') {
@@ -771,8 +781,8 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     userLeftScan = true;
     qr.cancel();
     // Wie am Host: der Knopf bleibt: `userLeftScan` sperrt allein den AUTOMATISCHEN Start, nicht den
-    // ausdrücklichen Wunsch, wieder zu scannen.
-    noCamera.hidden = true;
+    // ausdrücklichen Wunsch, wieder zu scannen. `qr-no-camera` bleibt stehen – der Kamera-Zustand
+    // hat sich durch den Wechsel nicht geändert.
     rescan.hidden = false;
     if (!fellBackToText) {
       fellBackToText = true;
@@ -839,6 +849,10 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     // Ein „Neu verbinden" ist ein NEUER Austausch – der Rückfall auf Text galt dem alten Schritt.
     // Ohne dieses Zurücksetzen bliebe der QR-Pfad für den Rest der Sitzung stumm.
     userLeftScan = false;
+    fellBackToText = false;
+    // … und sein Report zeigt, wie ER gelaufen ist: die `qr:error`s des toten Austauschs wandern nicht
+    // in die Zeitleiste der frischen Verbindung (ein F9 von einem Peer, den es nicht mehr gibt).
+    relay.reset();
     autoScanOffer();
     return slot;
   });

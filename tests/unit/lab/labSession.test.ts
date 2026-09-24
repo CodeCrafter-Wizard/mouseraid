@@ -365,4 +365,41 @@ describe('labSession', () => {
     expect(result.report.timeline.map((event) => event.kind)).toEqual(expect.arrayContaining(['camera-error', 'camera:track:live']));
     expect(result.report.failures).toEqual(['F9']);
   });
+
+  // Auch INNERHALB der Lauf-Zeitleiste zählt der letzte Kamera-Eintrag. Ein Platz benutzt für JEDEN
+  // seiner Läufe dieselbe Zeitleiste: der `camera-error` des ersten Laufs stünde sonst für immer darin
+  // und hinge jedem weiteren Lauf desselben Platzes ein F9 an, das „Kamera neu starten" längst behoben hat.
+  it('ein behobener Kamera-Fehler im selben Lauf-Protokoll ist kein F9 mehr', async () => {
+    const timeline = createTimeline(now);
+    timeline.push('camera-error', 'NotAllowedError');
+    timeline.push('camera:running');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.failures).toEqual([]);
+  });
+
+  it('ist der Kamera-Fehler der letzte Eintrag des Lauf-Protokolls, bleibt F9', async () => {
+    const timeline = createTimeline(now);
+    timeline.push('camera:running');
+    timeline.push('camera-error', 'NotAllowedError');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.failures).toEqual(['F9']);
+  });
+
+  it('ohne jeden Kamera-Eintrag im Lauf entscheiden weiterhin die Seiten-Ereignisse', async () => {
+    recordLabEvent('camera-error', 'track-ended');
+    const result = await run(lonely(), 'host', createTimeline(now));
+    expect(result.report.failures).toEqual(['F9']);
+  });
+
+  // Beide Reihen werden für sich gelesen. Die Notiz `camera:running` entsteht am ANFANG des Laufs aus
+  // `cameraStatus()`; eine danach von der Seite gemeldete verlorene Spur darf sie nicht aufheben –
+  // sonst verschwände genau das F9, das der Nutzer am Handy sehen soll (E2E „Verlorene Kamera-Spur").
+  it('die Lauf-Notiz „Kamera läuft" hebt eine von der Seite gemeldete verlorene Spur NICHT auf', async () => {
+    recordLabEvent('camera:track:ended');
+    recordLabEvent('camera-error', 'track-ended');
+    const timeline = createTimeline(now);
+    timeline.push('camera:running');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.failures).toEqual(['F9']);
+  });
 });

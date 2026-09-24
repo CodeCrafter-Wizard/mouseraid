@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { S } from '../../src/ui/strings';
 import type { LabHook } from '../../src/lab/labHook';
 import type { ClientJoin, HostLobby } from '../../src/net/connector';
@@ -635,15 +635,22 @@ async function uiLabelCellQr(page: Page, role: 'host' | 'client', device: string
   await expect(page.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
 }
 
+/**
+ * „Steht schon ein Code im Feld?" – die Prüfung läuft IN der Seite, heraus kommt nur ein
+ * Wahrheitswert. Der Payload selbst trägt echte Adressen dieses Rechners und bleibt deshalb dort.
+ */
+const hasPayload = (area: Locator): Promise<boolean> =>
+  area.evaluate((node) => node instanceof HTMLTextAreaElement && node.value.startsWith('MB1.'));
+
 /** Angebot → Antwort → verbinden, bis beide Seiten „verbunden" zeigen. */
 async function uiHandshake(host: Page, client: Page): Promise<void> {
   const slot = host.getByTestId('slot-1');
   const offerOut = slot.getByTestId('offer-out');
-  await expect.poll(async () => (await offerOut.inputValue()).startsWith('MB1.'), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => hasPayload(offerOut), { timeout: 15_000 }).toBe(true);
   await client.getByTestId('offer-in').fill(await offerOut.inputValue());
   await client.getByTestId('make-answer').click();
   const answerOut = client.getByTestId('answer-out');
-  await expect.poll(async () => (await answerOut.inputValue()).startsWith('MB1.'), { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => hasPayload(answerOut), { timeout: 15_000 }).toBe(true);
   await slot.getByTestId('answer-in').fill(await answerOut.inputValue());
   await slot.getByTestId('connect').click();
   await expect(slot.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
@@ -666,6 +673,7 @@ async function fakeVisibility(page: Page, hidden: boolean): Promise<void> {
 /** Nur Zahlen und Wahrheitswerte aus den gespeicherten Host-Reports mit Sperrtest. */
 interface StoredLockReport {
   cell: { role: string };
+  timeline: { kind: string }[];
   lockTest: { runs: { plannedSeconds: number; hiddenMs: number; transportAfter: string; trackAfter: string; reconnected: boolean; pingAfter: { events: { sent: number } | null; state: { sent: number } | null } | null }[] } | null;
 }
 async function lockFacts(page: Page) {
@@ -684,6 +692,8 @@ async function lockFacts(page: Page) {
           reconnected: first?.reconnected ?? null,
           eventsSent: first?.pingAfter?.events?.sent ?? -1,
           stateSent: first?.pingAfter?.state?.sent ?? -1,
+          // Nur die ANZAHL der Marken – Zeitleisten-Details verlassen die Seite nie.
+          lockStarts: report.timeline.filter((event) => event.kind === 'lock:start').length,
         };
       });
   }, UI_REPORTS_KEY);
@@ -698,10 +708,11 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
   const client = await context.newPage();
   await host.goto('lab.html?quick=1');
   await client.goto('lab.html?quick=1');
-  await uiLabelCell(host, 'host', 'Sperr-Host');
-  // Der Client steht auf dem QR-PFAD: nur dort ist prüfbar, dass „Neu verbinden" den Scan wieder
-  // aufnimmt. Der Handshake selbst läuft wie gehabt über die Textfelder (Rückfallweg, D7) – die
-  // Datei-Fake-Kamera liefert je Browser-Start nur EINEN Code und taugt für keinen echten Austausch.
+  // BEIDE Seiten stehen auf dem QR-PFAD: nur dort ist prüfbar, dass „Neu verbinden" den Scan wieder
+  // aufnimmt – und das muss auf beiden Seiten gelten. Der Handshake selbst läuft über die Textfelder
+  // (Rückfallweg, D7): die Datei-Fake-Kamera liefert je Browser-Start nur EINEN Code und taugt für
+  // keinen echten Austausch.
+  await uiLabelCellQr(host, 'host', 'Sperr-Host');
   await uiLabelCellQr(client, 'client', 'Sperr-Client');
 
   // ── Das Tor: „Auf Text-Pfad wechseln" ist keine Sackgasse ──
@@ -716,10 +727,14 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
 
   await host.bringToFront();
   await host.getByTestId('add-player').click();
+  const slot = host.getByTestId('slot-1');
+  // Auch der HOST weicht für diesen Austausch auf den Text-Pfad aus – genau die Lage, aus der „Neu
+  // verbinden" seinen QR-Block wiederbeleben muss. (Der Tipp auf „Verbinden" täte es ohnehin.)
+  await expect(slot.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 15_000 });
+  await slot.getByTestId('qr-to-text').click();
   await uiHandshake(host, client);
 
   // ── Ein Lauf über 30 s ──
-  const slot = host.getByTestId('slot-1');
   await expect(slot.getByTestId('lock-block')).toBeVisible();
   // Den bisherigen Angebots-Code NUR in der Seite merken – er enthält echte Adressen dieses Rechners.
   await host.evaluate(() => {
@@ -747,11 +762,18 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
   await slot.getByTestId('start-ping').click();
   await expect.poll(async () => (await lockFacts(host)).length, { timeout: 40_000 }).toBe(1);
   expect((await lockFacts(host))[0]).toEqual({
-    runs: 1, plannedSeconds: 30, hiddenMsIsNumber: true, transportAfter: 'open', reconnected: false, eventsSent: 20, stateSent: 20,
+    // `lockStarts: 1` hält fest, dass das Umschwenken von 10 auf 30 EINEN gemessenen Lauf ergibt und
+    // nicht zwei Startmarken: `lock:start` gehört zur Messung, nicht zum Knopfdruck.
+    runs: 1, plannedSeconds: 30, hiddenMsIsNumber: true, transportAfter: 'open', reconnected: false, eventsSent: 20, stateSent: 20, lockStarts: 1,
   });
 
   // ── „Neu verbinden": frisches Angebot auf DEMSELBEN Platz ──
   await slot.getByTestId('lock-reconnect').click();
+  // Spiegelbild zum Client: auch der HOST muss danach wieder scannen können. Ohne das Zurücksetzen
+  // von `userLeftScan` bliebe sein frischer QR-Block stumm, weil er für den ALTEN Austausch auf den
+  // Text-Pfad gewechselt war. Zuerst prüfen – der nächste Klick holt den Client nach vorn und
+  // beendet die Schleife des Hosts (ein Scan im Hintergrund läuft nicht weiter).
+  await expect(slot.getByTestId('qr-status'), 'nach „Neu verbinden" scannt auch der Host wieder').toHaveText(S.lab.qr.scanning, { timeout: 15_000 });
   await client.getByTestId('lock-reconnect').click();
   // Der Client muss den frischen Code auch scannen KÖNNEN: ein „Neu verbinden" ist ein neuer
   // Austausch, also nimmt der QR-Block die Schleife wieder auf (das Tor gilt nur für den alten

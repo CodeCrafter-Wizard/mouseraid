@@ -107,6 +107,30 @@ describe('createRelayTimeline', () => {
     expect(second.events()).toHaveLength(4);
     expect(first.events()).toHaveLength(3);
   });
+
+  // „Neu verbinden" (Sperrtest, D9) ist ein NEUER Austausch: sein Report soll zeigen, wie ER gelaufen
+  // ist. Ein `qr:error` des toten Peers dort erneut aufzuführen, hängte dem frischen Lauf ein F9 an,
+  // das mit ihm nichts zu tun hat. Der zweite Versuch am SELBEN Austausch („Erneut scannen") behält
+  // dagegen den ganzen Verlauf – das prüft der Test darüber.
+  it('reset(): der nächste Austausch erbt den Verlauf des alten nicht', () => {
+    const relay = createRelayTimeline(() => 0);
+    relay.timeline.push('qr:backend', 'worker');
+    relay.timeline.push('qr:error', 'scan-timeout');
+    const first = createTimeline(() => 0);
+    relay.drainInto(first);
+    expect(first.events()).toHaveLength(2);
+
+    relay.reset();
+
+    // Der alte Lauf behält, was er schon hat – geschrieben wird dort aber nichts mehr.
+    relay.timeline.push('qr:shown', 'offer 704 Zeichen, 101 Module, 4 px/Modul');
+    expect(first.events()).toHaveLength(2);
+    expect(relay.timeline.events().map((event) => event.kind)).toEqual(['qr:shown']);
+
+    const second = createTimeline(() => 0);
+    relay.drainInto(second);
+    expect(second.events().map((event) => event.kind)).toEqual(['qr:shown']);
+  });
 });
 
 // Ganz am Ende, weil dieser Block den Seiten-Puffer absichtlich überlaufen lässt.

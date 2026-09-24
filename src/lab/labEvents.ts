@@ -50,10 +50,11 @@ export function flushLabEvents(timeline: Timeline): void {
  * bisherigen Verlauf bekommen, nicht nur den Teil vor dem ersten Andocken. Wer wie viel davon schon
  * hat, steht je Zeitleiste in `seen` – dieselbe Buchführung wie `flushedUpTo` oben, damit ein
  * zweites Andocken derselben Zeitleiste nichts doppelt. Geschrieben wird immer nur in die NEUESTE.
+ * Die Ausnahme ist `reset()`: „Neu verbinden" beginnt einen NEUEN Austausch, und der erbt nichts.
  */
-export function createRelayTimeline(now: () => number): { timeline: Timeline; drainInto(target: Timeline): void } {
-  const buffer = createTimeline(now);
-  const seen = new WeakMap<Timeline, number>();
+export function createRelayTimeline(now: () => number): { timeline: Timeline; drainInto(target: Timeline): void; reset(): void } {
+  let buffer = createTimeline(now);
+  let seen = new WeakMap<Timeline, number>();
   let target: Timeline | null = null;
   return {
     timeline: {
@@ -71,6 +72,17 @@ export function createRelayTimeline(now: () => number): { timeline: Timeline; dr
       for (const event of events.slice(seen.get(next) ?? 0)) next.push(event.kind, event.detail);
       seen.set(next, events.length);
       target = next;
+    },
+    /**
+     * „Neu verbinden" (Sperrtest, D9): ab hier zählt nur noch der frische Austausch. Frischer Puffer,
+     * frische Buchführung, kein Ziel – sonst trüge der Report der neuen Verbindung die `qr:error`s des
+     * toten Peers und damit ein F9, das mit ihr nichts zu tun hat. Der zweite Versuch am SELBEN
+     * Austausch („Erneut scannen") geht weiterhin durch `drainInto` und behält alles (D7).
+     */
+    reset() {
+      buffer = createTimeline(now);
+      seen = new WeakMap<Timeline, number>();
+      target = null;
     },
   };
 }
