@@ -700,6 +700,27 @@ async function lockFacts(page: Page) {
 }
 
 /**
+ * Dasselbe für den CLIENT: Anzahlen und Wahrheitswerte seiner Sperrtest-Reports. Beide Seiten teilen
+ * denselben Ursprung und damit denselben `localStorage` – die Rolle trennt sie.
+ */
+async function clientLockFacts(page: Page) {
+  return page.evaluate((key) => {
+    const reports = (JSON.parse(localStorage.getItem(key) ?? '[]') as StoredLockReport[])
+      .filter((report) => report.cell.role === 'client' && report.lockTest !== null);
+    const newest = reports[0];
+    const runs = newest?.lockTest?.runs ?? [];
+    return {
+      reports: reports.length,
+      runs: runs.length,
+      transportAfter: runs[0]?.transportAfter ?? '',
+      reconnected: runs[0]?.reconnected ?? null,
+      // Nur die ART des Eintrags: der frische Austausch muss seine Backend-Zeile selbst mitbringen.
+      hasQrBackend: (newest?.timeline ?? []).some((event) => event.kind === 'qr:backend'),
+    };
+  }, UI_REPORTS_KEY);
+}
+
+/**
  * Die gemessene Paarungsdauer des NEUESTEN Host-Reports (nur diese Seite speichert Host-Reports) –
  * eine Zahl, keine Adresse. Marken rasten je Name ein: teilten sich zwei Austausche eine Buchführung,
  * stünde nach „Neu verbinden" wieder exakt der Wert des toten Peers im Report.
@@ -815,6 +836,28 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
   // … und eine EIGENE Paarung: ein frischer Austausch misst neu. Ohne frische Marken stünde hier
   // wieder die Zahl des toten Peers (sie rasten je Name ein und ließen sich nie überschreiben).
   expect(await hostPairingConnectedMs(host), 'der frische Austausch misst seine Paarung neu').not.toBe(firstPairingMs);
+
+  // ── Derselbe Lauf auf dem CLIENT: eine ÜBERLEBTE Sperre muss auch dort einen Report ergeben ──
+  // D9 und die Tabelle „Sperrbildschirm-Test" wollen je GERÄT eine Zeile. Der Client hat keinen
+  // „Ping-Test starten"-Knopf: von selbst speichert bei ihm nur der VERLUST (über `transport:failed`) –
+  // ausgerechnet der Normalfall „hat gehalten" fiele ohne Report unter den Tisch.
+  await client.bringToFront();
+  await client.getByTestId('lock-10').click();
+  await expect(client.getByTestId('lock-status')).toContainText('10');
+  await fakeVisibility(client, true);
+  await fakeVisibility(client, false);
+  // Mitten in die laufende Messung getippt: „Neu verbinden" gehört zu DIESEM Lauf. Vorher gibt es auf
+  // dem Client gar keinen Lauf – ohne Merker fiele die Marke ganz aus, statt beim Falschen zu landen.
+  await expect(client.getByTestId('lock-phase'), 'die Ping-Serie des Sperrtests läuft noch').toHaveText(S.lab.lock.running);
+  await client.getByTestId('lock-reconnect').click();
+  await expect(client.getByTestId('lock-result')).toHaveAttribute('data-state', 'ok', { timeout: 30_000 });
+
+  // Ein Client-Report mit genau diesem Lauf – und die Zeitleiste des frischen Austauschs bringt ihre
+  // eigene Backend-Zeile mit (der QR-Block des Clients überlebt „Neu verbinden", seine Erkennung
+  // meldet sich aber nur einmal je Seitenaufruf).
+  await expect.poll(() => clientLockFacts(client), { timeout: 40_000 }).toEqual({
+    reports: 1, runs: 1, transportAfter: 'open', reconnected: true, hasQrBackend: true,
+  });
 });
 
 // ───────── Selbsttest (Task 9) ─────────

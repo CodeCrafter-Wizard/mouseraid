@@ -458,10 +458,10 @@ zusätzlich den QR-Fall. Die Tabelle oben („Fehlercodes F1–F9") ist entsprec
 und Bedeutung der übrigen Codes sind unverändert.
 
 ### Budget nach M2
-Lab-Bundle: **61.4 kB** gzip (Budget 150 kB, `npm run check-dist`) – gegenüber 29.3 kB nach M1. Davon
+Lab-Bundle: **61.5 kB** gzip (Budget 150 kB, `npm run check-dist`) – gegenüber 29.3 kB nach M1. Davon
 entfällt der Worker-Chunk des Scanners allein auf 10,2 kB gzip (43 951 B roh); der Rest sind die beiden
 Bibliotheken und die neuen Lab-Module. Das Spiel-Bundle wächst von 9,2 auf **10.1 kB** gzip, weil
-`src/ui/strings.ts` geteilt ist (Budget 900 kB). Precache: 16 Dateien, 253,1 kB. `check-dist` prüft seit
+`src/ui/strings.ts` geteilt ist (Budget 900 kB). Precache: 16 Dateien, 253,2 kB. `check-dist` prüft seit
 M2 zusätzlich, dass der Worker-Chunk des Scanners (1) im Build liegt, (2) zum JS-Graph von `lab.html`
 gehört, (3) **nicht** zum Graph von `index.html` und (4) im Precache-Manifest von `sw.js` steht.
 

@@ -134,12 +134,13 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
     });
   }
 
-  // JEDER geglückte Neustart heilt die Karte – auch der aus dem QR-Block (dessen eigener Knopf ruft
-  // dasselbe `restartCamera`). Die frische Beobachtung gehört dazu: ohne sie meldete die geheilte
-  // Kamera nie wieder `camera:track:live`, jeder weitere Lauf trüge ein F9, das es nicht mehr gibt,
-  // und ein späterer Spur-Verlust bliebe unbemerkt. Die Karte lebt so lange wie die Seite, deshalb
-  // wird der Zuhörer nie abgemeldet.
-  onCameraRestarted((status) => { show(status); observe(); });
+  // JEDER geglückte Neustart heilt hier – auch der aus dem QR-Block (dessen eigener Knopf ruft dasselbe
+  // `restartCamera`): Karte aktualisieren, Spuren neu beobachten, alle lebenden Sucher wieder anhängen.
+  // Ohne die frische Beobachtung meldete die geheilte Kamera nie wieder `camera:track:live` (jeder
+  // weitere Lauf trüge ein F9, das es nicht mehr gibt, ein späterer Spur-Verlust bliebe unbemerkt);
+  // ohne das Anhängen zeigte ein Sucher das eingefrorene Bild des alten Streams und scannte ins Leere.
+  // Die Karte lebt so lange wie die Seite, deshalb wird der Zuhörer nie abgemeldet.
+  onCameraRestarted((status) => { show(status); observe(); reattachLiveExchanges(); });
 
   start.onclick = () => {
     start.disabled = true;
@@ -151,10 +152,8 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
     state.textContent = S.lab.camera.starting;
     void restartCamera().then((status) => {
       restart.disabled = false;
-      // Den Erfolg hat der Zuhörer oben schon angezeigt; hier bleibt der Fehlschlag, den er nie sieht.
+      // Den Erfolg hat der Zuhörer oben schon erledigt; hier bleibt der Fehlschlag, den er nie sieht.
       if (!status.running) show(status);
-      // Der Neustart liefert einen NEUEN Stream: die Sucher der QR-Blöcke hängen sonst am toten alten.
-      else reattachLiveExchanges();
     });
   };
   // Kamera-zuerst (D5, Spec-Absatz M2): auf dem QR-Pfad öffnet die Seite den Dauer-Stream beim Eintritt

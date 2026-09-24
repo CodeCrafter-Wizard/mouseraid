@@ -131,8 +131,16 @@ interface RunBox {
   onLockBusy(listener: (busy: boolean) => void): void;
 }
 
-/** Zustands-Chip + Statuszeile + Ping-Ergebnisse einer Verbindung. */
-function createRunBox(ctx: ConnectContext): RunBox {
+/**
+ * Zustands-Chip + Statuszeile + Ping-Ergebnisse einer Verbindung.
+ *
+ * `autoReportLock` (nur der Client): speichert nach einer gemessenen Sperre von selbst einen Lauf.
+ * Der Client hat keinen Knopf dafür – ohne das bliebe ausgerechnet der Normalfall „die Verbindung hat
+ * gehalten" ungespeichert, denn von selbst speichert bei ihm nur der Verlust (`transport:failed`).
+ * D9 und die Messtabelle wollen je GERÄT eine Zeile. Der Host behält seinen Knopf: „Ping-Test starten"
+ * steht direkt neben dem Ergebnis, ein zweiter Lauf von selbst wäre dort nur Verwirrung.
+ */
+function createRunBox(ctx: ConnectContext, { autoReportLock = false }: { autoReportLock?: boolean } = {}): RunBox {
   const element = h('div', 'lab-run');
   const chip = h('span', 'chip', S.lab.state.offer);
   chip.dataset.testid = 'conn-state';
@@ -176,6 +184,10 @@ function createRunBox(ctx: ConnectContext): RunBox {
   /** Gewählte Dauer, solange ein Lauf scharf ist. */
   let armed: LockSeconds | null = null;
   let plan: LockTestPlan | null = null;
+  /** Von „verdeckt" bis zum fertigen Lauf (die Ping-Serie danach gehört dazu). */
+  let lockMeasuring = false;
+  /** „Neu verbinden" wurde WÄHREND der Messung getippt – die Marke gehört dem Lauf, der gerade entsteht. */
+  let pendingReconnect = false;
   /** Ohne offene Kamera gibt es keine Spur, die verloren gehen könnte – 'live' heißt hier „kein Spur-Problem". */
   let trackState: TrackState = 'live';
   let stopTracks: (() => void) | null = null;
@@ -249,6 +261,7 @@ function createRunBox(ctx: ConnectContext): RunBox {
       if (plan !== null) return; // zweites hidden ohne visible dazwischen: der erste Start zählt
       plan = beginLockRun({ plannedSeconds: armed, transport: link.transport.state, track: trackState, now });
       // Ab hier läuft die Messung – jetzt erst sind die Dauer-Knöpfe gesperrt.
+      lockMeasuring = true;
       setLockButtons(false);
       // `lock:start` gehört zur MESSUNG, nicht zum Knopfdruck: wer sich vertippt und die Dauer noch
       // einmal wechselt, hinterlässt sonst mehrere Starts für einen einzigen gemessenen Lauf.
@@ -272,14 +285,18 @@ function createRunBox(ctx: ConnectContext): RunBox {
     void measureLockPings(link.transport, now)
       .catch((): LockPings => ({ state: null, events: null }))
       .then((pingAfter) => {
-        // `reconnected` wird erst durch den Knopf „Neu verbinden" wahr – der kommt nach dieser Messung.
+        // `reconnected` ist wahr, wenn der Knopf „Neu verbinden" während dieser Messung getippt wurde:
+        // sie dauert mit ihrer Ping-Serie über eine Sekunde, und wer in dieser Zeit neu verbindet, tut
+        // es wegen DIESES Laufs. Der Merker wird hier verbraucht.
         const finished = finishLockRun(started, {
           transport: link.transport.state,
           track: trackState,
           pingAfter: measuredLockPings(openAtUnlock, pingAfter),
-          reconnected: false,
+          reconnected: pendingReconnect,
           now: () => visibleAtMs,
         });
+        pendingReconnect = false;
+        lockMeasuring = false;
         lockRuns.push(finished);
         showLockRun(finished);
         bindLock(false);
@@ -287,6 +304,9 @@ function createRunBox(ctx: ConnectContext): RunBox {
         lockPhase.hidden = true;
         lockStatus.textContent = '';
         onLockBusyChange?.(false);
+        // Der Client speichert die Messung selbst (siehe `autoReportLock`); ist die Verbindung nicht
+        // mehr offen, hat `transport:failed` den Report längst geschrieben.
+        if (autoReportLock && link.transport.state === 'open') void run(link);
       });
   }
 
@@ -308,8 +328,14 @@ function createRunBox(ctx: ConnectContext): RunBox {
     if (link === null || handler === null) return;
     const slot = handler();
     link.timeline.push('lock:reconnect', `slot ${slot === null ? '?' : slot}`);
-    const last = lockRuns[lockRuns.length - 1];
-    if (last !== undefined) lockRuns[lockRuns.length - 1] = { ...last, reconnected: true };
+    // Läuft die Messung noch, gehört die Marke dem Lauf, der gerade entsteht – NICHT dem vorherigen:
+    // der hat die Sperre ja überlebt, und beim ersten Lauf gibt es gar keinen vorherigen, dem man sie
+    // anhängen könnte. Ohne laufende Messung wird wie bisher der letzte fertige Lauf nachgetragen.
+    if (lockMeasuring) pendingReconnect = true;
+    else {
+      const last = lockRuns[lockRuns.length - 1];
+      if (last !== undefined) lockRuns[lockRuns.length - 1] = { ...last, reconnected: true };
+    }
     lockHint.hidden = true;
   };
 
@@ -681,7 +707,8 @@ export function buildHostPanel(ctx: ConnectContext): HTMLElement {
 /** Schritt 3 (Client): Angebot einfügen → Antwort zurückgeben → bei offener Verbindung misst der Lauf von selbst. */
 export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   const element = card(S.lab.client.title, 'client-card');
-  const box = createRunBox(ctx);
+  // Nur hier: ein gemessener Sperrtest speichert seinen Lauf selbst (siehe `createRunBox`).
+  const box = createRunBox(ctx, { autoReportLock: true });
   const qrPath = ctx.cell.path === 'qr';
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
   const marks = createExchangeMarks(now);
@@ -848,8 +875,6 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     offer.area.value = '';
     answer.area.value = '';
     makeAnswer.disabled = false;
-    // Die gezeigte Antwort gehört dem toten Peer: niemand darf sie noch scannen oder abschreiben.
-    qr?.clear();
     // Ein „Neu verbinden" ist ein NEUER Austausch – der Rückfall auf Text galt dem alten Schritt.
     // Ohne dieses Zurücksetzen bliebe der QR-Pfad für den Rest der Sitzung stumm.
     userLeftScan = false;
@@ -861,6 +886,9 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     // … und sein Report zeigt, wie ER gelaufen ist: die `qr:error`s des toten Austauschs wandern nicht
     // in die Zeitleiste der frischen Verbindung (ein F9 von einem Peer, den es nicht mehr gibt).
     relay.reset();
+    // ERST danach `clear()`: die gezeigte Antwort gehört dem toten Peer (niemand darf sie noch scannen
+    // oder abschreiben), und die Zeilen, die der Block dabei schreibt, gehören in den FRISCHEN Puffer.
+    qr?.clear();
     autoScanOffer();
     return slot;
   });

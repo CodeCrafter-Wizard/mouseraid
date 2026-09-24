@@ -200,9 +200,8 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
       restart.disabled = false;
       restart.hidden = camera.running;
       status.textContent = camera.running ? S.lab.camera.lobbyRunning : fmt(S.lab.camera.lobbyFailed, { reason: camera.error ?? '?' });
-      // Der Neustart liefert einen NEUEN Stream: jeder lebende Sucher braucht ihn, auch der eines
-      // anderen Platzes – sonst hinge der am toten alten.
-      if (camera.running) reattachLiveExchanges();
+      // Das Anhängen der Sucher an den NEUEN Stream macht die Kamera-Karte: sie hört auf jeden
+      // geglückten Neustart (`onCameraRestarted`) und erreicht damit auch die Blöcke anderer Plätze.
     });
   };
 
@@ -303,12 +302,27 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
     if (status.textContent === S.lab.qr.scanning) status.textContent = '';
   }
 
-  /** Der gezeigte Code ist tot: Kachel und Lupe weg, `shownText` leer – ein Tipp öffnet nichts mehr. */
+  /**
+   * Der gezeigte Code ist tot: Kachel und Lupe weg, `shownText` leer – ein Tipp öffnet nichts mehr.
+   * Damit endet der AUSTAUSCH, und der nächste beginnt bei null. Das betrifft nur den Client: er
+   * behält EINEN Block über „Neu verbinden" hinweg, während der Host für jedes frische Angebot einen
+   * neuen bekommt (der seine Zahlen und seine Backend-Zeile ohnehin selbst mitbringt).
+   */
   function clear(): void {
     shownText = '';
     tap.hidden = true;
     brightness.hidden = true;
     overlay.close();
+    // Die Zahlen gelten je AUSTAUSCH (so liest sie der Report): ohne dieses Zurücksetzen trüge der
+    // frische die Code-Längen, die Versuche und die Dekodierdauer des toten Peers.
+    offerChars = 0;
+    answerChars = 0;
+    decodeLatencyMs = 0;
+    attempts = 0;
+    // Die Erkennung läuft nur EINMAL je Seitenaufruf und hat sich längst gemeldet. Der Client setzt
+    // beim „Neu verbinden" seinen Ereignis-Puffer zurück – ohne diese Zeile stünde im Report der
+    // frischen Verbindung nie, welches Backend gescannt hat.
+    deps.timeline.push('qr:backend', backend);
   }
 
   return {

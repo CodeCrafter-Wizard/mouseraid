@@ -281,7 +281,28 @@ test('Verlorene Kamera-Spur: Hinweis, „Kamera neu starten" und F9 im Report', 
     (video?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.dispatchEvent(new Event('ended'));
   });
   await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.trackLost);
-  await page.evaluate(() => (window as unknown as { __mbLab: LabHook }).__mbLab.restartCamera());
+  // Ein lebender QR-Sucher hängt am Stream: nach dem Neustart MUSS er den neuen haben, sonst zeigte er
+  // ein eingefrorenes Bild und scannte ins Leere. Verglichen werden Stream-Identitäten IN der Seite.
+  const reattached = await page.evaluate(async () => {
+    const lab = (window as unknown as { __mbLab: LabHook }).__mbLab;
+    const exchange = lab.createQrExchange({
+      timeline: lab.createTimeline(() => performance.now()),
+      marks: lab.createPairingTracker(() => performance.now()),
+      // Der Scan darf nie fertig werden: dieser Block ist hier nur ein Sucher am Dauer-Stream.
+      looksLikePayload: () => Promise.resolve(false),
+      onQrFacts: () => undefined,
+    });
+    document.body.append(exchange.element);
+    void exchange.scan('offer').catch(() => undefined);
+    const video = exchange.element.querySelector('video');
+    const attached = (): boolean => lab.cameraStream() !== null && video?.srcObject === lab.cameraStream();
+    const before = attached();
+    await lab.restartCamera();
+    const after = attached();
+    exchange.dispose();
+    return { before, after };
+  });
+  expect(reattached, 'der Neustart hängt JEDEN lebenden Sucher wieder ein').toEqual({ before: true, after: true });
   await expect(page.getByTestId('camera-state'), 'auch ein Neustart von außen heilt die Karte').toHaveText(S.lab.camera.running);
   await expect(page.getByTestId('camera-video')).toBeVisible();
   await expect(page.getByTestId('camera-restart')).toBeHidden();
@@ -411,7 +432,7 @@ test('QR-Pfad: die Auswahl spiegelt sich im Zellen-Chip, der Text-Code bleibt al
   await expect(page.getByTestId('qr-retry')).toBeHidden();
 });
 
-test('QR-Pfad: ein zu großer Code wird nicht gezeigt, sondern als qr:error „too-large" gemeldet', async ({ page }) => {
+test('QR-Pfad am Test-Haken: ein zu großer Code meldet „too-large", clear() beginnt einen neuen Austausch', async ({ page }) => {
   await page.goto('lab.html?hook=1');
   await page.waitForFunction(() => '__mbLab' in window, undefined, { timeout: 10_000 });
 
@@ -443,6 +464,41 @@ test('QR-Pfad: ein zu großer Code wird nicht gezeigt, sondern als qr:error „t
   expect(facts.status).toBe(S.lab.qr.tooLarge);
   expect(facts.codeHidden, 'kein halbgares Bild: ohne Code bleibt die Fläche leer').toBe(true);
   await expect(page.getByTestId('qr-block').getByText(S.lab.qr.fallbackHint)).toBeVisible();
+
+  // `clear()` beendet einen AUSTAUSCH (der Client behält seinen QR-Block über „Neu verbinden" hinweg):
+  // Der nächste zählt bei null und bringt seine Backend-Zeile selbst mit – ohne beides trüge der
+  // Report der frischen Verbindung die Längen des toten Peers und gar kein Backend.
+  const fresh = await page.evaluate(async () => {
+    const lab = (window as unknown as { __mbLab: LabHook }).__mbLab;
+    const timeline = lab.createTimeline(() => performance.now());
+    const seen: { offerChars: number; answerChars: number }[] = [];
+    const exchange = lab.createQrExchange({
+      timeline,
+      marks: lab.createPairingTracker(() => performance.now()),
+      looksLikePayload: () => Promise.resolve(true),
+      onQrFacts: (entry) => { seen.push({ offerChars: entry.offerChars, answerChars: entry.answerChars }); },
+    });
+    document.body.append(exchange.element);
+    // Die Erkennung meldet sich asynchron; ihr Eintrag muss vor dem Zählen stehen (der Adapter
+    // antwortet aus seinem Gedächtnis, der Rückruf des Blocks stand vor diesem `await` in der Schlange).
+    await lab.detectScanBackend();
+    exchange.show('offer', `MB1.p.${'A'.repeat(194)}`);
+    exchange.show('answer', `MB1.p.${'B'.repeat(94)}`);
+    const before = seen[seen.length - 1];
+    exchange.clear();
+    exchange.show('answer', `MB1.p.${'C'.repeat(94)}`);
+    const after = seen[seen.length - 1];
+    exchange.dispose();
+    return {
+      before: { offerChars: before?.offerChars ?? -1, answerChars: before?.answerChars ?? -1 },
+      after: { offerChars: after?.offerChars ?? -1, answerChars: after?.answerChars ?? -1 },
+      backendRows: timeline.events().filter((event) => event.kind === 'qr:backend').length,
+    };
+  });
+
+  expect(fresh.before, 'der erste Austausch hat beide Codes gezeigt').toEqual({ offerChars: 200, answerChars: 100 });
+  expect(fresh.backendRows, 'die frische Zeitleiste bekommt ihre Backend-Zeile').toBe(2);
+  expect(fresh.after, 'nach clear() zählt nur noch der neue Austausch').toEqual({ offerChars: 0, answerChars: 100 });
 });
 
 // ───────── Fixrunde 2: der Nutzer ist schneller als die Kamera ─────────
