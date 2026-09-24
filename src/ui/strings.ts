@@ -103,6 +103,8 @@ export const S = {
       notAPayload: 'Das war kein Mäusebau-Code – es wird weitergescannt.',
       decodeFailed: 'Der Code ließ sich nicht lesen. Noch einmal scannen oder den Text-Pfad benutzen.',
       cameraError: 'Die Kamera steht nicht mehr zur Verfügung.',
+      overtaken: 'Ein anderer Platz scannt – „Erneut scannen“ übernimmt die Kamera.',
+      noCamera: 'Ohne Kamera kein Scan – Text-Pfad benutzen oder Kamera neu starten.',
       restartCamera: 'Kamera neu starten',
       fallbackText: 'Auf Text-Pfad wechseln',
       fallbackHint: 'Der Text-Code bleibt der Rückfallweg: kopieren, schicken, einfügen.',

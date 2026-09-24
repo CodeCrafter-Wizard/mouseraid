@@ -83,6 +83,14 @@ export async function requestWakeLock(
   let released = false;
   /** Einmal „nein" heißt nein: ohne diesen Riegel liefe die Neuanforderung in eine Endlosschleife. */
   let denied = false;
+  /**
+   * Ein Gerät, das die Sperre sofort wieder einzieht (Energiesparmodus, Systementzug), flattert
+   * sonst endlos: jede Freigabe fordert neu an, jede Anforderung kommt zurückgenommen an. Nach so
+   * vielen Wiederholungen OHNE Zutun des Nutzers ist Schluss – der Report zeigt dann ehrlich, dass
+   * die Sperre nicht zu halten war, statt die Zeitleiste mit hunderten Einträgen zu fluten.
+   */
+  const MAX_REACQUIRES = 5;
+  let reacquires = 0;
   /** Genau eine Anforderung gleichzeitig – sonst entstünden zwei Sentinels, von denen nur einer freigegeben wird. */
   let requesting = false;
   const unsubscribe: (() => void)[] = [];
@@ -100,9 +108,10 @@ export async function requestWakeLock(
   const reacquire = (): void => {
     // Nichts zu tun, solange die Sperre noch gehalten wird, eine Anforderung läuft, sie schon
     // abgelehnt wurde oder der Handle endgültig freigegeben ist.
-    if (released || denied || requesting) return;
+    if (released || denied || requesting || reacquires >= MAX_REACQUIRES) return;
     if (sentinel !== null && !sentinel.released) return;
     requesting = true;
+    reacquires += 1;
     try {
       void request('screen').then((next) => {
         requesting = false;
@@ -144,7 +153,14 @@ export async function requestWakeLock(
   };
 
   watch(sentinel);
-  unsubscribe.push(env.on('visibilitychange', () => { if (env.isVisible()) reacquire(); }));
+  unsubscribe.push(env.on('visibilitychange', () => {
+    if (!env.isVisible()) return;
+    // Der Wechsel auf „sichtbar" ist eine Handlung des Nutzers: er hebt sowohl den `denied`-Riegel
+    // als auch den Zähler auf. Eine Schleife kann daraus nicht werden – sie müsste jemand treten.
+    denied = false;
+    reacquires = 0;
+    reacquire();
+  }));
   unsubscribe.push(env.on('pagehide', () => { handle.release(); }));
   // Auch die erste Sperre kann schon zurückgenommen ankommen (Energiesparmodus beim Antippen).
   report(sentinel.released ? 'released' : 'acquired');

@@ -196,12 +196,23 @@ describe('requestWakeLock', () => {
     expect(fake.requests).toBe(2);
     expect(fake.states).toEqual(['acquired', 'released', 'denied']);
 
-    // Auch ein späterer Anlass fragt nicht wieder: wer einmal „nein" gesagt hat, sagt es wieder.
+    // Der Riegel hält gegen jeden AUTOMATISCHEN Anlass: ein weiteres `release`-Ereignis des Browsers
+    // fordert nichts Neues an …
+    fake.sentinels[0]?.fireRelease();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(2);
+
+    // … und eine Sichtbarkeits-Flanke bei VERBORGENER Seite erst recht nicht.
+    fake.visible = false;
     fake.fire('visibilitychange');
     await Promise.resolve();
     await Promise.resolve();
     expect(fake.requests).toBe(2);
-    expect(handle?.state).toBe('denied');
+    // Genau EINE Ablehnung in der Zeitleiste, nicht eine Kette davon.
+    expect(fake.states.filter((state) => state === 'denied')).toHaveLength(1);
+    // Aufheben kann den Riegel nur der Nutzer selbst (Wechsel auf „sichtbar") – siehe Test weiter unten.
+    expect(handle).not.toBeNull();
   });
 
   it('zwei Sichtbarkeits-Flanken während EINER laufenden Anforderung erzeugen nur eine Sperre', async () => {
@@ -257,5 +268,39 @@ describe('requestWakeLock', () => {
     await Promise.resolve();
     expect(fake.sentinels[1]?.releases).toBe(1);
     expect(fake.states).toEqual(['acquired', 'released']);
+  });
+  it('begrenzt die Neuanforderung: nach fünf Wiederholungen ohne Zutun des Nutzers ist Schluss', async () => {
+    const fake = fakeEnv(Array.from({ length: 10 }, () => 'ok' as const));
+    await requestWakeLock((state) => fake.states.push(state), fake.env);
+    expect(fake.requests).toBe(1);
+
+    // Ein Gerät, das die Sperre sofort wieder einzieht (Energiesparmodus), flattert sonst endlos:
+    // jede Freigabe fordert neu an, jede Anforderung wird sofort wieder zurückgenommen.
+    for (let flap = 0; flap < 6; flap += 1) {
+      fake.sentinels[fake.sentinels.length - 1]?.fireRelease();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    expect(fake.requests, 'erste Anforderung plus fünf Wiederholungen').toBe(6);
+    expect(fake.states.filter((state) => state === 'acquired')).toHaveLength(6);
+  });
+
+  it('ein Wechsel auf „sichtbar“ hebt Zähler UND `denied`-Riegel auf – der Nutzer war es selbst', async () => {
+    // Erste Anforderung gelingt, die zweite wird abgelehnt: ab da schweigt die Neuanforderung …
+    const fake = fakeEnv(['ok', 'reject', 'ok']);
+    await requestWakeLock((state) => fake.states.push(state), fake.env);
+    fake.sentinels[0]?.fireRelease();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(2);
+    expect(fake.states).toEqual(['acquired', 'released', 'denied']);
+
+    // … bis die Seite wieder sichtbar wird. Daraus kann keine Schleife werden: den Wechsel löst der Nutzer aus.
+    fake.fire('visibilitychange');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(3);
+    expect(fake.states[fake.states.length - 1]).toBe('acquired');
   });
 });

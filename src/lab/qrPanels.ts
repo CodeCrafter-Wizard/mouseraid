@@ -86,6 +86,17 @@ export function reattachLiveExchanges(): void {
   liveExchanges.forEach((exchange) => { exchange.reattach(); });
 }
 
+/**
+ * Wie viele QR-Blöcke gerade leben. Nur für den Test-Haken: ein freigegebener Platz, dessen
+ * `createOffer` noch lief, darf keinen zweiten Block hinterlassen – der überholte sonst jeden Scan
+ * des echten Platzes. Nach außen geht damit eine ANZAHL, nie ein Block oder ein Payload.
+ */
+export function liveExchangeCount(): number {
+  let count = 0;
+  liveExchanges.forEach(() => { count += 1; });
+  return count;
+}
+
 /** D7: nach einer Minute ohne Treffer ist der Scan vorbei – auch wenn dauernd FREMDE Codes im Bild sind. */
 const SCAN_DEADLINE_MS = 60_000;
 
@@ -137,7 +148,13 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
   let running: AbortController | null = null;
 
   const live: LiveExchange = {
-    stop: () => { cancel(); },
+    stop: () => {
+      // Nur ein wirklich laufender Scan wird überholt – sonst überschriebe die Meldung ein „Code
+      // erkannt ✓" eines längst fertigen Platzes.
+      if (running === null) return;
+      cancel();
+      status.textContent = S.lab.qr.overtaken;
+    },
     // Nur ein Block, der gerade scannt, zeigt überhaupt ein Video – die anderen haben nichts anzuhängen.
     reattach: () => { if (!video.hidden) attachCamera(video); },
   };

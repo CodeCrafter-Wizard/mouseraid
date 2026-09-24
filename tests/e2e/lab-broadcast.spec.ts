@@ -404,3 +404,69 @@ test('QR-Pfad: ein zu großer Code wird nicht gezeigt, sondern als qr:error „t
   expect(facts.codeHidden, 'kein halbgares Bild: ohne Code bleibt die Fläche leer').toBe(true);
   await expect(page.getByTestId('qr-block').getByText(S.lab.qr.fallbackHint)).toBeVisible();
 });
+
+// ───────── Fixrunde 2: der Nutzer ist schneller als die Kamera ─────────
+
+/** Lässt `getUserMedia` erst auf Kommando antworten – so steht die Berechtigungs-Blase im Test still. */
+async function holdCamera(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const media = navigator.mediaDevices;
+    const real = media.getUserMedia.bind(media);
+    const win = window as unknown as { __letCameraAnswer?: () => void };
+    media.getUserMedia = (constraints?: MediaStreamConstraints) =>
+      new Promise<MediaStream>((resolve, reject) => {
+        win.__letCameraAnswer = () => { void real(constraints).then(resolve, reject); };
+      });
+  });
+}
+
+/** Wählt den QR-Pfad als Client und übernimmt die Zelle. */
+async function confirmQrClient(page: Page, device: string): Promise<void> {
+  await page.getByTestId('cell-path-choice-qr').check();
+  await page.getByTestId('cell-device').fill(device);
+  await page.getByTestId('cell-role-client').check();
+  await page.getByTestId('cell-confirm').click();
+}
+
+test('QR-Pfad: wer während der Kamera-Abfrage auf den Text-Pfad wechselt, bekommt keinen Scan mehr', async ({ page }) => {
+  await page.goto('lab.html');
+  await holdCamera(page);
+  await confirmQrClient(page, 'QR-Ueberholt');
+
+  // Am Handy steht jetzt die Berechtigungs-Blase; der Nutzer tippt in der Zeit auf „Auf Text-Pfad
+  // wechseln". Antwortet die Kamera danach, darf KEIN Scan mehr anspringen – auf der Client-Seite
+  // führte er sonst zu einem zweiten `acceptOffer`, das die schon laufende Verbindung schließt.
+  await page.getByTestId('qr-to-text').click();
+  await page.evaluate(() => { (window as unknown as { __letCameraAnswer?: () => void }).__letCameraAnswer?.(); });
+  await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.lobbyRunning, { timeout: 10_000 });
+
+  await expect(page.getByTestId('qr-status'), 'kein Scan nach dem Wechsel auf den Text-Pfad').not.toHaveText(S.lab.qr.scanning);
+  await expect(page.getByTestId('qr-retry'), 'wer selbst gewechselt hat, bekommt keinen Knopf aufgedrängt').toBeHidden();
+
+  // Gegenprobe im gleichen Aufbau: OHNE den Wechsel startet der Scan sehr wohl, sobald die Kamera
+  // antwortet. Die Zusicherung oben misst also den Wechsel – nicht einen Aufbau, in dem nie scannt.
+  const control = await page.context().newPage();
+  await control.goto('lab.html');
+  await holdCamera(control);
+  await confirmQrClient(control, 'QR-Kontrolle');
+  await control.evaluate(() => { (window as unknown as { __letCameraAnswer?: () => void }).__letCameraAnswer?.(); });
+  await expect(control.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 10_000 });
+  await control.close();
+});
+
+test('QR-Pfad ohne Kamera: der Block nennt den Grund, der Neustart-Knopf bleibt weg', async ({ page }) => {
+  await page.goto('lab.html');
+  // Eine Kamera, die ablehnt (Erlaubnis entzogen, Gerät belegt) – der häufigste Fall am Handy.
+  await page.evaluate(() => {
+    navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('abgelehnt', 'NotAllowedError'));
+  });
+  await confirmQrClient(page, 'QR-Ohne-Kamera');
+
+  await expect(page.getByTestId('camera-state')).toHaveAttribute('data-state', 'bad', { timeout: 10_000 });
+  // Nach dem ERSTEN Fehlschlag gibt es nichts neu zu starten – nur einzuschalten.
+  await expect(page.getByTestId('camera-restart')).toBeHidden();
+  await expect(page.getByTestId('camera-start')).toBeEnabled();
+  // Der QR-Block sagt selbst, warum nichts passiert, statt stumm zu bleiben.
+  await expect(page.getByTestId('qr-no-camera')).toHaveText(S.lab.qr.noCamera);
+  await expect(page.getByTestId('qr-status')).not.toHaveText(S.lab.qr.scanning);
+});

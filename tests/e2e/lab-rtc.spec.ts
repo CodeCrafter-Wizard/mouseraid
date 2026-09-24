@@ -993,9 +993,39 @@ test('QR-Pfad am Host: ein zweiter Platz übernimmt die Kamera, der erste bietet
   const slot2 = host.getByTestId('slot-2');
   await expect(slot2.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 10_000 });
   await expect(slot1.getByTestId('qr-retry'), 'der überholte Platz bietet den zweiten Versuch an').toBeVisible();
+  // … und sagt auch, WARUM er aufgehört hat – „Kamera draufhalten" wäre hier eine Lüge.
+  await expect(slot1.getByTestId('qr-status')).toHaveText(S.lab.qr.overtaken);
 
   // Und zurück: „Erneut scannen" auf Platz 1 überholt nun Platz 2.
   await slot1.getByTestId('qr-retry').click();
   await expect(slot1.getByTestId('qr-retry')).toBeHidden();
   await expect(slot2.getByTestId('qr-retry')).toBeVisible();
+});
+
+test('QR-Pfad am Host: ein freigegebener Platz hinterlässt keinen verwaisten QR-Block', { tag: '@local' }, async ({ context }) => {
+  await context.grantPermissions(['local-network-access']);
+  const host = await context.newPage();
+  await host.goto('lab.html?hook=1&quick=1');
+  await host.waitForFunction(() => '__mbLab' in window, undefined, { timeout: 10_000 });
+  await host.getByTestId('cell-device').fill('QR-Waise');
+  await host.getByTestId('cell-role-host').check();
+  await host.getByTestId('cell-camera-an').check();
+  await host.getByTestId('cell-path-choice-qr').check();
+  await host.getByTestId('cell-confirm').click();
+  await expect(host.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+
+  // Platz belegen und sofort wieder freigeben, WÄHREND `createOffer` noch sammelt – danach denselben
+  // Platz neu belegen. Ein noch laufendes `createOffer` des alten Platzes darf keinen zweiten
+  // QR-Block auf dem neuen Eintrag anlegen: der überholte dann jeden Scan des echten.
+  await host.bringToFront();
+  await host.getByTestId('add-player').click();
+  await host.getByTestId('slot-1').getByTestId('release').click();
+  await expect(host.getByTestId('slot-1')).toHaveCount(0);
+  await host.getByTestId('add-player').click();
+
+  const slot1 = host.getByTestId('slot-1');
+  await expect.poll(async () => (await slot1.getByTestId('offer-out').inputValue()).startsWith('MB1.'), { timeout: 15_000 }).toBe(true);
+  await expect(slot1.getByTestId('qr-block')).toHaveCount(1);
+  // Nach außen geht nur die ANZAHL lebender QR-Blöcke – genau einer, nämlich der des neuen Platzes.
+  expect(await host.evaluate(() => (window as unknown as { __mbLab: LabHook }).__mbLab.liveExchangeCount())).toBe(1);
 });

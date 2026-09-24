@@ -7,7 +7,7 @@ import { MAX_QR_PAYLOAD_CHARS, qrModuleCount, renderQr } from './qrRender';
 import { detectScanBackend, scanImage, scanVideo } from './scannerAdapter';
 import { attachCamera, cameraStream, openLobbyCamera } from './camera';
 import { createPairingTracker } from './pairing';
-import { createQrExchange } from './qrPanels';
+import { createQrExchange, liveExchangeCount } from './qrPanels';
 
 /** Test-Haken des Labors: die Netz-Schicht ohne UI, für `tests/e2e/lab-rtc.spec.ts`. */
 export interface LabHook {
@@ -37,6 +37,8 @@ export interface LabHook {
    */
   createQrExchange: typeof createQrExchange;
   createPairingTracker: typeof createPairingTracker;
+  /** Anzahl lebender QR-Blöcke – der E2E prüft damit, dass ein freigegebener Platz keinen zurücklässt. */
+  liveExchangeCount: typeof liveExchangeCount;
 }
 
 /** Hängt den Haken als `window.__mbLab` ein. `labMain.ts` ruft das NUR bei `?hook=1` auf. */
@@ -60,6 +62,7 @@ export function installLabHook(): void {
     attachCamera,
     createQrExchange,
     createPairingTracker,
+    liveExchangeCount,
   };
   (window as unknown as { __mbLab?: LabHook }).__mbLab = hook;
 }

@@ -354,4 +354,15 @@ describe('labSession', () => {
     const result = await run(lonely(), 'host');
     expect(result.report.failures).toEqual(['F9']);
   });
+
+  it('der Kamera-Fehler DIESES Laufs schlägt die Seiten-Ereignisse – die Lobby-Kamera läuft ja weiter', async () => {
+    // Genau der Selbsttest-Fall: Lauf A scheitert an der Kamera, während der Dauer-Stream der Lobby
+    // munter läuft. Entschiede die (immer zuletzt angehängte) Seiten-Spur, verschluckte sie das F9.
+    recordLabEvent('camera:track:live');
+    const timeline = createTimeline(now);
+    timeline.push('camera-error', 'NotAllowedError');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.timeline.map((event) => event.kind)).toEqual(expect.arrayContaining(['camera-error', 'camera:track:live']));
+    expect(result.report.failures).toEqual(['F9']);
+  });
 });

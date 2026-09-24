@@ -98,8 +98,11 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
   const restart = actionButton(S.lab.camera.restart, 'camera-restart', 'secondary');
   restart.hidden = true;
   let stopObserving: (() => void) | null = null;
+  /** Lief die Kamera in diesem Seitenaufruf jemals? Vorher gibt es nichts NEU zu starten. */
+  let everRan = false;
 
   function show(status: CameraStatus): void {
+    everRan = everRan || status.running;
     state.textContent = status.running
       ? (autoStart ? S.lab.camera.lobbyRunning : S.lab.camera.running)
       : fmt(autoStart ? S.lab.camera.lobbyFailed : S.lab.camera.failed, { reason: status.error ?? '?' });
@@ -111,7 +114,9 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
     // Nur eine LAUFENDE Kamera braucht keinen Neustart-Knopf. Scheitert der Neustart (Kamera von einer
     // anderen App belegt, Erlaubnis entzogen), muss er stehen bleiben – sonst gäbe es am Handy keinen
     // zweiten Versuch mehr, und die Karte behauptete einen Zustand, aus dem sie nicht herausfindet.
-    restart.hidden = status.running;
+    // Vor dem ERSTEN erfolgreichen Start gibt es dagegen nichts neu zu starten: dann führen zwei
+    // Knöpfe nebeneinander mit demselben Ziel nur in die Irre – „Kamera einschalten" genügt.
+    restart.hidden = status.running || !everRan;
   }
 
   function observe(): void {

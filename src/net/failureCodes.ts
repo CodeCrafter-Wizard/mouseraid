@@ -25,7 +25,8 @@ export interface FailureInput {
   cameraError: boolean;
   /**
    * QR-Pfad: mindestens ein `qr:error` in der Zeitleiste (zu groß, Zeitüberschreitung, unlesbar,
-   * kein Mäusebau-Code, Kamera weg). Absichtlich ein EIGENES Feld statt einer Umdeutung von
+   * Kamera weg). Ein übersprungener FREMDER Code ist KEIN Fehlschlag – er steht als `qr:skipped`
+   * und zählt hier bewusst nicht mit. Absichtlich ein EIGENES Feld statt einer Umdeutung von
    * `cameraError`: der Aufrufer speist beide aus verschiedenen Quellen, und ein vergessener
    * Aufrufer fällt so im Typecheck auf statt still ein F9 zu verschlucken.
    */

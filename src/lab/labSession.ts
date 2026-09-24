@@ -137,8 +137,21 @@ async function selectedPairOf(peer: RtcPeer | null): Promise<SelectedPair | null
  * einen Befund mit sich, den „Kamera neu starten" längst behoben hat (`camera:track:live` danach).
  * Bleibt der Fehler der letzte Kamera-Eintrag, bleibt F9.
  */
-function cameraStillBroken(events: readonly TimelineEvent[]): boolean {
-  const camera = events.filter((event) => event.kind === 'camera-error' || event.kind.startsWith('camera:'));
+const cameraEntries = (events: readonly TimelineEvent[]): TimelineEvent[] =>
+  events.filter((event) => event.kind === 'camera-error' || event.kind.startsWith('camera:'));
+
+/**
+ * Ein `camera-error`, den DIESER Lauf selbst gemessen hat, wiegt schwerer als jede Seiten-Meldung:
+ * `flushLabEvents` hängt die immer ans ENDE, und im Selbsttest läuft die Lobby-Kamera munter weiter –
+ * ihr `camera:track:live` verschluckte sonst genau den Fehler, den der Lauf gerade gemessen hat.
+ * Sonst entscheidet der LETZTE Kamera-Eintrag über alles: ein Befund, den „Kamera neu starten"
+ * behoben hat (`camera:track:live` danach), gehört nicht in jeden weiteren Report.
+ * Der Lauf-Vermerk `camera:running` ist dabei nur eine Notiz, kein Freispruch – er zählt bloß als
+ * Kamera-Eintrag, nicht als Fehler.
+ */
+function cameraStillBroken(runEvents: readonly TimelineEvent[], allEvents: readonly TimelineEvent[]): boolean {
+  if (runEvents.some((event) => event.kind === 'camera-error')) return true;
+  const camera = cameraEntries(allEvents);
   return camera[camera.length - 1]?.kind === 'camera-error';
 }
 
@@ -212,6 +225,9 @@ export async function finishRun(input: {
   const [environment, permissions, selectedPair] = await Promise.all([collectEnvironment(), queryPermissions(), selectedPairOf(peer)]);
   const gathered = artifacts === null ? null : parsedCandidates(artifacts);
   timeline.push('run:diagnose', transport.state);
+  // Was DIESER Lauf selbst gemessen hat – festgehalten VOR dem Nachtragen der Seiten-Ereignisse, die
+  // sonst immer das letzte Wort hätten (siehe `cameraStillBroken`).
+  const runEvents = [...timeline.events()];
   // Seiten-Ereignisse (Wake Lock, Kamera-Spuren) gehören in JEDEN Report dieses Seitenaufrufs – sie
   // entstehen, bevor der erste Platz existiert, und betreffen danach jede Verbindung.
   flushLabEvents(timeline);
@@ -231,7 +247,7 @@ export async function finishRun(input: {
     msSinceIceConnected: msSinceIceConnected(events),
     wasOpenBefore: events.some((event) => event.kind.startsWith('channel-open:') || event.kind === 'transport:open'),
     codecError: hello !== null && !hello.versionMatch,
-    cameraError: cameraStillBroken(events),
+    cameraError: cameraStillBroken(runEvents, events),
     // Eigenes Feld statt einer Umdeutung von cameraError: die Quelle ist eine andere (der QR-Block
     // schreibt `qr:error`), und ein vergessener Aufrufer fällt so im Typecheck auf.
     qrError: events.some((event) => event.kind === 'qr:error'),

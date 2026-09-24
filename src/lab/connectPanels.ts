@@ -394,6 +394,10 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   const toText = actionButton(S.lab.qr.fallbackText, 'qr-to-text', 'secondary');
   const qrActions = h('div', 'qr-actions');
   qrActions.append(rescan, toText);
+  // Ohne laufende Kamera scannt nichts – dann soll der Block das auch sagen, statt stumm dazustehen.
+  const noCamera = h('p', 'lab-line', S.lab.qr.noCamera);
+  noCamera.dataset.testid = 'qr-no-camera';
+  noCamera.hidden = true;
   // Fester Container für den Pass-Chip: GENAU EINER je Platz. Ein zweites Angebot (Task 5,
   // „Neu verbinden") ersetzt ihn per `replaceChildren`, statt einen weiteren daneben zu hängen.
   const pass = h('div', 'lab-pass-mount');
@@ -410,6 +414,8 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   let qrFacts: LabReport['qr'] = null;
   /** Der Nutzer hat den Scan SELBST beendet (Text-Pfad) – nur dann bleibt „Erneut scannen" verborgen. */
   let userLeftScan = false;
+  /** Der Platz ist freigegeben: ein noch laufendes `createOffer` darf ihn nicht wiederbeleben. */
+  let released = false;
   /** Genau EIN `qr:fallback-text` je Platz, über welchen der beiden Wege auch ausgewichen wurde. */
   let fellBackToText = false;
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
@@ -441,6 +447,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
     const current = link;
     const close = (): void => {
       // Der Platz verschwindet – sein `pagehide`-Zuhörer und sein Scan dürfen ihn nicht überleben.
+      released = true;
       qr?.dispose();
       box.dispose();
       if (broadcast) current?.transport.close();
@@ -482,6 +489,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
     };
     const scanAnswer = (): void => {
       rescan.hidden = true;
+      noCamera.hidden = true;
       userLeftScan = false;
       void qr?.scan('answer').then((text) => {
         answer.area.value = text;
@@ -531,6 +539,10 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       // nicht erst nach dem Handshake. Beides trägt keine Adresse und landet als Zeitleisten-Eintrag im Report.
       const gumAtOffer = cameraStatus().gumCalled; const permissionsAtOffer = queryPermissions();
       void lobby.createOffer(slot).then((artifacts) => {
+        // „Platz freigeben" während des Gatherings: der Eintrag unter dieser Nummer gehört dann schon
+        // einem NEUEN Platz. Ohne diesen Riegel hängte der alte Lauf ihm einen zweiten QR-Block an,
+        // der jeden Scan des echten Platzes überholte.
+        if (released) return;
         const entry = lobby.entries().get(slot);
         if (entry === undefined) return;
         // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
@@ -543,19 +555,26 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
         watch({ transport: entry.peer.transport, peer: entry.peer, timeline: entry.timeline, artifacts, remoteSdp: null, qrRun });
         if (qrPath) {
           qr = createQrExchange({ timeline: entry.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } });
-          qrMount.append(qr.element, qrActions);
+          qrMount.append(qr.element, qrActions, noCamera);
           qr.show('offer', artifacts.payload);
           // C4: der Scan startet von selbst – aber ERST mit laufender Kamera. Die Karte öffnet den Stream
           // im selben Tick; ohne dieses Warten fände `attachCamera` keinen, der Block meldete einen
           // Kamera-Fehler und der Lauf trüge ein falsches F9. `openLobbyCamera` ist dabei kein zweiter
           // Zugriff: es liefert den laufenden Stream bzw. die schon laufende Anforderung.
           void openLobbyCamera().then((camera) => {
-            // Ohne Kamera gibt es nichts zu scannen: den Grund nennt die Kamera-Karte, hier bleibt der zweite Versuch.
+            // Der Nutzer kann in der Zwischenzeit selbst gehandelt haben (Antwort eingefügt, auf den
+            // Text-Pfad gewechselt) oder den Platz freigegeben haben – dann darf hier KEIN Scan mehr
+            // anspringen: er überholte die schon laufende Annahme und fräße die Kamera des Nachbarn.
+            if (userLeftScan || released) return;
+            // Ohne Kamera gibt es nichts zu scannen: der Block sagt es, die Karte nennt den Grund.
             if (camera.running) scanAnswer();
-            else rescan.hidden = false;
+            else {
+              noCamera.hidden = false;
+              rescan.hidden = false;
+            }
           });
         }
-      }, (error: unknown) => { showError(alert, error); });
+      }, (error: unknown) => { if (!released) showError(alert, error); });
     };
     makeOffer();
     box.setReconnect(() => { makeOffer(); return slot; });
@@ -644,6 +663,10 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   const toText = actionButton(S.lab.qr.fallbackText, 'qr-to-text', 'secondary');
   const qrActions = h('div', 'qr-actions');
   qrActions.append(rescan, toText);
+  // Wie am Host: ohne laufende Kamera sagt der Block, warum nichts passiert.
+  const noCamera = h('p', 'lab-line', S.lab.qr.noCamera);
+  noCamera.dataset.testid = 'qr-no-camera';
+  noCamera.hidden = true;
   // Fester Container für den Pass-Chip (wie am Host): genau einer, auch nach „Neu verbinden" (Task 5).
   const pass = h('div', 'lab-pass-mount');
   codes.append(qrMount, codeBlock(offer.wrap, makeAnswer), answerBlock);
@@ -656,7 +679,7 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   const qr: QrExchange | null = qrPath
     ? createQrExchange({ timeline: relay.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } })
     : null;
-  if (qr !== null) qrMount.append(qr.element, qrActions);
+  if (qr !== null) qrMount.append(qr.element, qrActions, noCamera);
 
   let join: ClientJoin | null = null;
   /** Angebot annehmen – aus dem Text-Feld ODER aus dem Scan; beide Wege laufen hier zusammen. */
@@ -723,6 +746,7 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   if (qr !== null) {
     const scanOffer = (): void => {
       rescan.hidden = true;
+      noCamera.hidden = true;
       userLeftScan = false;
       void qr.scan('offer').then((text) => {
         offer.area.value = text;
@@ -737,8 +761,14 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     rescan.onclick = scanOffer;
     // C4: der Scan startet von selbst – aber ERST mit laufender Kamera (siehe Host-Seite).
     void openLobbyCamera().then((camera) => {
+      // War der Nutzer schneller (Code eingefügt, auf Text gewechselt), startet nichts mehr: ein
+      // zweiter `acceptOffer` schlösse die gerade entstehende Verbindung wieder (F5/F3-Sackgasse).
+      if (userLeftScan) return;
       if (camera.running) scanOffer();
-      else rescan.hidden = false;
+      else {
+        noCamera.hidden = false;
+        rescan.hidden = false;
+      }
     });
   }
   // „Neu verbinden" (Sperrtest, D9): der Host legt den frischen Code an, hier wird nur wieder Platz dafür
