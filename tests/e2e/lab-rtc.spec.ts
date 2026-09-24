@@ -622,6 +622,19 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
 // Damit prüft der Test die Naht (Messung, Report-Feld, „Neu verbinden") in Sekunden; die echten Dauern
 // misst der Nutzer in Sitzung A. Codes enthalten echte Adressen → der Vergleich passiert IN der Seite.
 
+/**
+ * Zelle beschriften und den QR-Pfad wählen. Dort öffnet die Kamera-Karte den Stream SELBST (D5/C3) –
+ * „Kamera einschalten" ist gesperrt, ein Klick darauf liefe in die Zeitüberschreitung.
+ */
+async function uiLabelCellQr(page: Page, role: 'host' | 'client', device: string): Promise<void> {
+  await page.getByTestId('cell-device').fill(device);
+  await page.getByTestId(`cell-role-${role}`).check();
+  await page.getByTestId('cell-camera-an').check();
+  await page.getByTestId('cell-path-choice-qr').check();
+  await page.getByTestId('cell-confirm').click();
+  await expect(page.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+}
+
 /** Angebot → Antwort → verbinden, bis beide Seiten „verbunden" zeigen. */
 async function uiHandshake(host: Page, client: Page): Promise<void> {
   const slot = host.getByTestId('slot-1');
@@ -686,7 +699,22 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
   await host.goto('lab.html?quick=1');
   await client.goto('lab.html?quick=1');
   await uiLabelCell(host, 'host', 'Sperr-Host');
-  await uiLabelCell(client, 'client', 'Sperr-Client');
+  // Der Client steht auf dem QR-PFAD: nur dort ist prüfbar, dass „Neu verbinden" den Scan wieder
+  // aufnimmt. Der Handshake selbst läuft wie gehabt über die Textfelder (Rückfallweg, D7) – die
+  // Datei-Fake-Kamera liefert je Browser-Start nur EINEN Code und taugt für keinen echten Austausch.
+  await uiLabelCellQr(client, 'client', 'Sperr-Client');
+
+  // ── Das Tor: „Auf Text-Pfad wechseln" ist keine Sackgasse ──
+  // Der Scan läuft von selbst (C4). Wer von Hand auf Text wechselt, muss von Hand zurückkönnen:
+  // `userLeftScan` sperrt allein den AUTOMATISCHEN Start.
+  await expect(client.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 15_000 });
+  await client.getByTestId('qr-to-text').click();
+  await expect(client.getByTestId('qr-video'), 'der Wechsel beendet die Schleife').toBeHidden();
+  await expect(client.getByTestId('qr-retry'), 'der Weg zurück zum Scan bleibt offen').toBeVisible();
+  await client.getByTestId('qr-retry').click();
+  await expect(client.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning);
+
+  await host.bringToFront();
   await host.getByTestId('add-player').click();
   await uiHandshake(host, client);
 
@@ -698,12 +726,22 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
     const area = document.querySelector('[data-testid="offer-out"]');
     (window as unknown as { __lockOffer?: string }).__lockOffer = area instanceof HTMLTextAreaElement ? area.value : '';
   });
+  // Ein scharfer Lauf ist noch abbrechbar: solange nichts verdeckt war, gilt der ZULETZT getippte Knopf.
+  await slot.getByTestId('lock-10').click();
+  await expect(slot.getByTestId('lock-status')).toContainText('10');
+  await expect(slot.getByTestId('lock-30'), 'vor dem Verdecken bleibt die Wahl offen').toBeEnabled();
   await slot.getByTestId('lock-30').click();
   await expect(slot.getByTestId('lock-status')).toContainText('30');
   await fakeVisibility(host, true);
+  // Jetzt läuft die Messung – erst jetzt sind die Dauer-Knöpfe zu.
+  await expect(slot.getByTestId('lock-30')).toBeDisabled();
   await fakeVisibility(host, false);
+  // Während der Ping-Serie des Sperrtests bleibt „Ping-Test starten" gesperrt: zwei Serien auf
+  // demselben Router messen einander.
+  await expect(slot.getByTestId('start-ping'), 'kein zweiter Ping-Test in die Messung hinein').toBeDisabled();
   await expect(slot.getByTestId('lock-result')).toHaveAttribute('data-state', 'ok', { timeout: 30_000 });
   await expect(slot.getByTestId('lock-pings')).toContainText('events');
+  await expect(slot.getByTestId('start-ping'), 'nach der Messung wieder frei').toBeEnabled();
 
   // Der Lauf landet im Report: geprüft werden nur Zahlen und Wahrheitswerte.
   await slot.getByTestId('start-ping').click();
@@ -715,6 +753,13 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
   // ── „Neu verbinden": frisches Angebot auf DEMSELBEN Platz ──
   await slot.getByTestId('lock-reconnect').click();
   await client.getByTestId('lock-reconnect').click();
+  // Der Client muss den frischen Code auch scannen KÖNNEN: ein „Neu verbinden" ist ein neuer
+  // Austausch, also nimmt der QR-Block die Schleife wieder auf (das Tor gilt nur für den alten
+  // Schritt). Die Fake-Kamera dieses Rechners läuft – ohne sie stünde stattdessen „Erneut scannen".
+  await expect(client.getByTestId('qr-status'), 'nach „Neu verbinden" scannt der Client wieder').toHaveText(S.lab.qr.scanning, { timeout: 15_000 });
+  await expect(client.getByTestId('qr-video')).toBeVisible();
+  // Die gezeigte Antwort gehört dem toten Peer und ist weg – sonst scannte der Host sie erneut.
+  await expect(client.getByTestId('qr-enlarge'), 'der Antwort-Code des toten Peers ist weg').toBeHidden();
   // Der Vergleich bleibt IN der Seite; heraus kommt nur ein Wahrheitswert.
   const freshOffer = (): Promise<boolean> =>
     host.evaluate(() => {

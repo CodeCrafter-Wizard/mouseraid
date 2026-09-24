@@ -14,7 +14,7 @@ import { createRelayTimeline } from './labEvents';
 import type { LabQuery } from './labQuery';
 import { attachLabLink, finishRun, measureLockPings, type LabRunResult } from './labSession';
 import type { TrackState } from './labTypes';
-import { LOCK_SECONDS, beginLockRun, finishLockRun, needsReconnect, type LockPings, type LockSeconds, type LockTestPlan, type LockTestRun } from './lockTest';
+import { LOCK_SECONDS, armedTrackState, beginLockRun, finishLockRun, measuredLockPings, needsReconnect, type LockPings, type LockSeconds, type LockTestPlan, type LockTestRun } from './lockTest';
 import { createPairingTracker, measuredPairing, type PairingTracker } from './pairing';
 import { createQrExchange, type QrExchange } from './qrPanels';
 import { pingLine } from './reportsPanel';
@@ -123,6 +123,12 @@ interface RunBox {
    * DEMSELBEN Platz) und liefert die Platznummer für die Zeitleiste. Ohne Rückruf bleibt der Knopf weg.
    */
   setReconnect(handler: () => number | null): void;
+  /**
+   * Meldet, solange die Ping-Serie des Sperrtests läuft. Der Platz sperrt darüber „Ping-Test starten":
+   * ein zweiter Lauf auf demselben Router mischte sich in die Messung, die gerade entscheidet, was den
+   * Sperrbildschirm überlebt hat.
+   */
+  onLockBusy(listener: (busy: boolean) => void): void;
 }
 
 /** Zustands-Chip + Statuszeile + Ping-Ergebnisse einer Verbindung. */
@@ -174,6 +180,7 @@ function createRunBox(ctx: ConnectContext): RunBox {
   let trackState: TrackState = 'live';
   let stopTracks: (() => void) | null = null;
   let onReconnect: (() => number | null) | null = null;
+  let onLockBusyChange: ((busy: boolean) => void) | null = null;
   let lockBound = false;
   /** Links, zu denen schon ein Report entstanden ist – „Platz freigeben" diagnostiziert nie doppelt. */
   const reported = new WeakSet<Link>();
@@ -199,14 +206,23 @@ function createRunBox(ctx: ConnectContext): RunBox {
     else document.removeEventListener('visibilitychange', onVisibility);
   }
 
+  /**
+   * Scharf machen. Solange noch nichts verdeckt war (`plan === null`), bleiben die drei Knöpfe frei:
+   * wer sich vertippt hat, wählt einfach die andere Dauer, statt den Platz freigeben zu müssen. Erst
+   * das tatsächliche Verdecken sperrt sie (siehe `onVisibility`).
+   */
   function armLock(seconds: LockSeconds): void {
-    if (watched === null || armed !== null) return;
+    if (watched === null || plan !== null) return;
     armed = seconds;
-    plan = null;
     lockResult.hidden = true;
     lockHint.hidden = true;
     lockPings.replaceChildren();
-    setLockButtons(false);
+    // Die Spur JE LAUF neu beobachten: nach „Kamera neu starten" hängt der alte Beobachter an einer
+    // toten Spur und `trackState` stünde für immer auf 'ended' – jeder weitere Lauf meldete dann
+    // „Kamera ist weg", obwohl sie längst wieder läuft.
+    stopTracks?.();
+    trackState = armedTrackState(cameraStatus().running, trackState);
+    stopTracks = observeTracks((state) => { trackState = state; });
     bindLock(true);
     watched.timeline.push('lock:start', `${seconds}s`);
     lockStatus.textContent = fmt(S.lab.lock.instruction, { seconds: String(seconds) });
@@ -233,6 +249,8 @@ function createRunBox(ctx: ConnectContext): RunBox {
     if (document.hidden) {
       if (plan !== null) return; // zweites hidden ohne visible dazwischen: der erste Start zählt
       plan = beginLockRun({ plannedSeconds: armed, transport: link.transport.state, track: trackState, now });
+      // Ab hier läuft die Messung – jetzt erst sind die Dauer-Knöpfe gesperrt.
+      setLockButtons(false);
       link.timeline.push('lock:hidden');
       return;
     }
@@ -243,19 +261,30 @@ function createRunBox(ctx: ConnectContext): RunBox {
     // Uhr auf den Zeitpunkt des Entsperrens EINFRIEREN: die Ping-Serie darunter dauert gut eine Sekunde
     // und dürfte die verdeckte Zeit nicht verlängern. `finishLockRun` rechnet daraus dieselbe Zahl.
     const visibleAtMs = now();
+    // Zustand ZUM ZEITPUNKT des Entsperrens: war die Verbindung schon tot, misst die Serie gar nichts
+    // mehr – dann gehört `null` in den Lauf und nicht eine Serie aus zwei leeren Kanälen.
+    const openAtUnlock = link.transport.state === 'open';
     link.timeline.push('lock:visible', `${Math.max(0, Math.round(visibleAtMs - started.hiddenAtMs))}ms`);
     lockPhase.textContent = S.lab.lock.running;
+    onLockBusyChange?.(true);
     void measureLockPings(link.transport, now)
       .catch((): LockPings => ({ state: null, events: null }))
       .then((pingAfter) => {
         // `reconnected` wird erst durch den Knopf „Neu verbinden" wahr – der kommt nach dieser Messung.
-        const finished = finishLockRun(started, { transport: link.transport.state, track: trackState, pingAfter, reconnected: false, now: () => visibleAtMs });
+        const finished = finishLockRun(started, {
+          transport: link.transport.state,
+          track: trackState,
+          pingAfter: measuredLockPings(openAtUnlock, pingAfter),
+          reconnected: false,
+          now: () => visibleAtMs,
+        });
         lockRuns.push(finished);
         showLockRun(finished);
         bindLock(false);
         setLockButtons(true);
         lockPhase.hidden = true;
         lockStatus.textContent = '';
+        onLockBusyChange?.(false);
       });
   }
 
@@ -332,6 +361,9 @@ function createRunBox(ctx: ConnectContext): RunBox {
     setReconnect(handler) {
       onReconnect = handler;
       reconnect.hidden = false;
+    },
+    onLockBusy(listener) {
+      onLockBusyChange = listener;
     },
     watch(link, options) {
       // Ab jetzt beantwortet diese Seite Pings und merkt sich das Hello der Gegenstelle.
@@ -425,13 +457,19 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   // der wertvollste Report (F7/F3). `finishRun` kommt ohne offene Verbindung zurecht und sagt es in der
   // Statuszeile; ohne diesen Weg bliebe die Diagnose in der Zwei-Geräte-Oberfläche unerreichbar.
   const canRun = (state: TransportState | undefined): boolean => state === 'open' || state === 'connecting';
+  /** Solange die Ping-Serie des Sperrtests läuft, bleibt „Ping-Test starten" zu – zwei Serien auf einem Router messen einander. */
+  let lockBusy = false;
   const syncPing = (state: TransportState): void => {
-    startPing.disabled = !canRun(state);
+    startPing.disabled = lockBusy || !canRun(state);
     if (state === 'open') {
       codes.hidden = true;
       marks.mark('connectedMs');
     }
   };
+  box.onLockBusy((busy) => {
+    lockBusy = busy;
+    startPing.disabled = lockBusy || !canRun(link?.transport.state);
+  });
   const watch = (next: Link): void => {
     link = next;
     // Der Zustand VOR dem ersten Wechsel zählt mit – `onStateChange` feuert erst beim nächsten.
@@ -441,7 +479,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   startPing.onclick = () => {
     if (link === null) return;
     startPing.disabled = true;
-    void box.run(link).then(() => { startPing.disabled = !canRun(link?.transport.state); });
+    void box.run(link).then(() => { startPing.disabled = lockBusy || !canRun(link?.transport.state); });
   };
   release.onclick = () => {
     const current = link;
@@ -508,7 +546,10 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       if (qr === null) return;
       userLeftScan = true;
       qr.cancel();
-      rescan.hidden = true;
+      // „Erneut scannen" BLEIBT stehen: `userLeftScan` sperrt nur den AUTOMATISCHEN Start. Wer von Hand
+      // tippt, will zurück zum Scan – ohne den Knopf gäbe es für diesen Schritt keinen Weg dorthin.
+      noCamera.hidden = true;
+      rescan.hidden = false;
       if (!fellBackToText) {
         fellBackToText = true;
         link?.timeline.push('qr:fallback-text', 'answer');
@@ -729,7 +770,10 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     if (qr === null) return;
     userLeftScan = true;
     qr.cancel();
-    rescan.hidden = true;
+    // Wie am Host: der Knopf bleibt: `userLeftScan` sperrt allein den AUTOMATISCHEN Start, nicht den
+    // ausdrücklichen Wunsch, wieder zu scannen.
+    noCamera.hidden = true;
+    rescan.hidden = false;
     if (!fellBackToText) {
       fellBackToText = true;
       relay.timeline.push('qr:fallback-text', 'offer');
@@ -743,23 +787,29 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     fallBackToText(false);
     acceptOffer(offer.area.value);
   };
-  if (qr !== null) {
-    const scanOffer = (): void => {
-      rescan.hidden = true;
-      noCamera.hidden = true;
-      userLeftScan = false;
-      void qr.scan('offer').then((text) => {
-        offer.area.value = text;
-        acceptOffer(text);
-      }, (error: unknown) => {
-        // Nur der selbst gewählte Weg auf den Text-Pfad kommt ohne „Erneut scannen" aus; ein von einem
-        // anderen Platz oder vom Seitenwechsel überholter Scan braucht den Knopf.
-        if (isAbortedScan(error) && userLeftScan) return;
-        rescan.hidden = false;
-      });
-    };
-    rescan.onclick = scanOffer;
-    // C4: der Scan startet von selbst – aber ERST mit laufender Kamera (siehe Host-Seite).
+  /** Von Hand angestoßener Scan („Erneut scannen") – ein ausdrücklicher Wunsch hebt den Text-Pfad auf. */
+  const scanOffer = (): void => {
+    if (qr === null) return;
+    rescan.hidden = true;
+    noCamera.hidden = true;
+    userLeftScan = false;
+    void qr.scan('offer').then((text) => {
+      offer.area.value = text;
+      acceptOffer(text);
+    }, (error: unknown) => {
+      // Nur der selbst gewählte Weg auf den Text-Pfad kommt ohne „Erneut scannen" aus; ein von einem
+      // anderen Platz oder vom Seitenwechsel überholter Scan braucht den Knopf.
+      if (isAbortedScan(error) && userLeftScan) return;
+      rescan.hidden = false;
+    });
+  };
+  /**
+   * AUTOMATISCHER Start (C4): erst mit laufender Kamera und nur, solange niemand von Hand auf den
+   * Text-Pfad gewechselt ist. Ein von Hand getippter „Erneut scannen" geht an diesem Tor vorbei –
+   * das Tor schützt nur davor, dem Nutzer ungefragt in einen laufenden Schritt zu fahren.
+   */
+  const autoScanOffer = (): void => {
+    if (qr === null) return;
     void openLobbyCamera().then((camera) => {
       // War der Nutzer schneller (Code eingefügt, auf Text gewechselt), startet nichts mehr: ein
       // zweiter `acceptOffer` schlösse die gerade entstehende Verbindung wieder (F5/F3-Sackgasse).
@@ -770,16 +820,27 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
         rescan.hidden = false;
       }
     });
+  };
+  if (qr !== null) {
+    rescan.onclick = scanOffer;
+    autoScanOffer();
   }
   // „Neu verbinden" (Sperrtest, D9): der Host legt den frischen Code an, hier wird nur wieder Platz dafür
   // gemacht. Der Platz der bisherigen Verbindung geht als Zeitleisten-Detail mit.
   box.setReconnect(() => {
+    const slot = join?.slot ?? null;
     codes.hidden = false;
     answerBlock.hidden = true;
     offer.area.value = '';
     answer.area.value = '';
     makeAnswer.disabled = false;
-    return join?.slot ?? null;
+    // Die gezeigte Antwort gehört dem toten Peer: niemand darf sie noch scannen oder abschreiben.
+    qr?.clear();
+    // Ein „Neu verbinden" ist ein NEUER Austausch – der Rückfall auf Text galt dem alten Schritt.
+    // Ohne dieses Zurücksetzen bliebe der QR-Pfad für den Rest der Sitzung stumm.
+    userLeftScan = false;
+    autoScanOffer();
+    return slot;
   });
   return element;
 }

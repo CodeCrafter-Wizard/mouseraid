@@ -26,7 +26,11 @@ export interface LockTestRun {
   transportAfter: TransportState;
   trackBefore: TrackState;
   trackAfter: TrackState;
-  /** `null`, wenn beim Entsperren keine offene Verbindung mehr da war. */
+  /**
+   * `null`, wenn beim Entsperren keine offene Verbindung mehr da war und deshalb nichts gemessen
+   * wurde – der Aufrufer entscheidet das mit `measuredLockPings`, der Bericht schreibt dann
+   * „Ping nicht gemessen" statt zweier nichtssagender Gedankenstriche.
+   */
   pingAfter: LockPings | null;
   reconnected: boolean;
 }
@@ -67,6 +71,27 @@ export function finishLockRun(
     pingAfter: input.pingAfter,
     reconnected: input.reconnected,
   };
+}
+
+/**
+ * Spur-Zustand beim SCHÄRFEN eines Laufs. Läuft die Kamera, ist ihre Spur frisch und lebt: ein
+ * `'ended'` aus der Zeit vor einem Kamera-Neustart darf den nächsten Lauf nicht mehr belasten –
+ * sonst meldete der jedes Mal „Verbindung oder Kamera ist weg", obwohl beides steht. Ohne laufende
+ * Kamera bleibt der bisherige Zustand stehen; es gibt dann keine Spur, die etwas anderes behauptet.
+ */
+export function armedTrackState(cameraRunning: boolean, previous: TrackState): TrackState {
+  return cameraRunning ? 'live' : previous;
+}
+
+/**
+ * Ping-Serie, wie sie in den Lauf gehört. War die Verbindung beim Entsperren nicht mehr offen, gab
+ * es nichts zu messen – dann steht `null` im Lauf. Zwei leere Kanäle bedeuten dasselbe (die Serie
+ * kam gar nicht erst zustande oder ist geworfen); ohne diese Zusammenfassung bliebe der Zweig
+ * „Ping nicht gemessen" des Berichts unerreichbar und stattdessen stünden dort zwei Gedankenstriche.
+ */
+export function measuredLockPings(openAtUnlock: boolean, pings: LockPings): LockPings | null {
+  if (!openAtUnlock) return null;
+  return pings.state === null && pings.events === null ? null : pings;
 }
 
 /**

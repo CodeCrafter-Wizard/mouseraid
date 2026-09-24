@@ -166,7 +166,7 @@ export const S = {
       title: 'Sperrbildschirm-Test',
       hint: 'Hält die Verbindung, wenn der Bildschirm ausgeht? Dauer wählen, sofort sperren, nach Ablauf entsperren.',
       start: '{seconds} s sperren',
-      instruction: 'Jetzt den Bildschirm sperren und nach {seconds} Sekunden wieder entsperren.',
+      instruction: 'Jetzt den Bildschirm sperren und nach {seconds} Sekunden wieder entsperren. Nichts anderes öffnen – auch ein App-Wechsel zählt als Sperren.',
       waiting: 'Warte auf das Sperren …',
       running: 'Bildschirm war aus – es wird gemessen …',
       back: 'Wieder da nach {ms} ms.',

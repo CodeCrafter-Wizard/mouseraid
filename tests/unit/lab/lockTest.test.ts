@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { LOCK_SECONDS, beginLockRun, finishLockRun, needsReconnect, type LockPings, type LockSeconds } from '../../../src/lab/lockTest';
+import {
+  LOCK_SECONDS,
+  armedTrackState,
+  beginLockRun,
+  finishLockRun,
+  measuredLockPings,
+  needsReconnect,
+  type LockPings,
+  type LockSeconds,
+} from '../../../src/lab/lockTest';
 import type { PingStats } from '../../../src/net/pingTest';
 
 /** Verstellbare Uhr: der Test sagt, wie viel Zeit zwischen den Aufrufen vergeht. */
@@ -77,6 +86,43 @@ describe('finishLockRun', () => {
     expect(first.hiddenMs).toBe(10_000);
     expect(second.hiddenMs).toBe(11_000);
     expect(first.transportAfter).toBe('open');
+  });
+});
+
+describe('armedTrackState', () => {
+  it('eine laufende Kamera hat eine frische, lebende Spur – ein altes „ended" belastet den nächsten Lauf nicht', () => {
+    // Genau der Fall „Spur verloren → Kamera neu starten → nächsten Lauf schärfen".
+    expect(armedTrackState(true, 'ended')).toBe('live');
+    expect(armedTrackState(true, 'muted')).toBe('live');
+    expect(armedTrackState(true, 'live')).toBe('live');
+  });
+
+  it('ohne laufende Kamera bleibt es beim bisherigen Zustand – es gibt keine Spur, die etwas anderes sagt', () => {
+    for (const previous of ['live', 'muted', 'unmuted', 'ended'] as const) {
+      expect(armedTrackState(false, previous)).toBe(previous);
+    }
+  });
+});
+
+describe('measuredLockPings', () => {
+  const full = (): LockPings => pings(stats(20, 20), stats(20, 19));
+
+  it('ohne offene Verbindung beim Entsperren gab es nichts zu messen', () => {
+    expect(measuredLockPings(false, full())).toBeNull();
+    expect(measuredLockPings(false, { state: null, events: null })).toBeNull();
+  });
+
+  it('zwei leere Kanäle sind dasselbe wie keine Messung – sonst stünden im Bericht zwei Gedankenstriche statt „nicht gemessen"', () => {
+    expect(measuredLockPings(true, { state: null, events: null })).toBeNull();
+  });
+
+  it('eine echte Serie kommt unverändert durch – auch wenn nur ein Kanal etwas geliefert hat', () => {
+    const both = full();
+    expect(measuredLockPings(true, both)).toBe(both);
+    const onlyEvents = pings(stats(20, 20), null);
+    expect(measuredLockPings(true, onlyEvents)).toBe(onlyEvents);
+    const onlyState = pings(null, stats(20, 17));
+    expect(measuredLockPings(true, onlyState)).toBe(onlyState);
   });
 });
 

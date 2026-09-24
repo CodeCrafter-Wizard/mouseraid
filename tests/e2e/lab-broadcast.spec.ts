@@ -367,8 +367,14 @@ test('QR-Pfad: die Auswahl spiegelt sich im Zellen-Chip, der Text-Code bleibt al
 
   // … und „Auf Text-Pfad wechseln" beendet sie und setzt den Fokus ins Textfeld.
   await page.getByTestId('qr-to-text').click();
-  await expect(page.getByTestId('qr-retry')).toBeHidden();
+  await expect(page.getByTestId('qr-status'), 'der Wechsel beendet die Schleife').not.toHaveText(S.lab.qr.scanning);
   expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('offer-in');
+  // Der Weg zurück bleibt offen (Fixrunde 1/5): `userLeftScan` sperrt allein den AUTOMATISCHEN Start.
+  // Ohne diesen Knopf gäbe es für diesen Schritt keine Möglichkeit mehr, doch noch zu scannen.
+  await expect(page.getByTestId('qr-retry'), 'nach dem Wechsel auf Text bleibt der Weg zurück offen').toBeVisible();
+  await page.getByTestId('qr-retry').click();
+  await expect(page.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning);
+  await expect(page.getByTestId('qr-retry')).toBeHidden();
 });
 
 test('QR-Pfad: ein zu großer Code wird nicht gezeigt, sondern als qr:error „too-large" gemeldet', async ({ page }) => {
@@ -441,7 +447,9 @@ test('QR-Pfad: wer während der Kamera-Abfrage auf den Text-Pfad wechselt, bekom
   await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.lobbyRunning, { timeout: 10_000 });
 
   await expect(page.getByTestId('qr-status'), 'kein Scan nach dem Wechsel auf den Text-Pfad').not.toHaveText(S.lab.qr.scanning);
-  await expect(page.getByTestId('qr-retry'), 'wer selbst gewechselt hat, bekommt keinen Knopf aufgedrängt').toBeHidden();
+  // Das Tor sperrt den AUTOMATISCHEN Start – nicht den ausdrücklichen Wunsch: der Knopf bleibt
+  // erreichbar, damit dieser Schritt nicht in einer Sackgasse endet (Fixrunde 1/5).
+  await expect(page.getByTestId('qr-retry'), 'von Hand geht es weiterhin zurück zum Scan').toBeVisible();
 
   // Gegenprobe im gleichen Aufbau: OHNE den Wechsel startet der Scan sehr wohl, sobald die Kamera
   // antwortet. Die Zusicherung oben misst also den Wechsel – nicht einen Aufbau, in dem nie scannt.

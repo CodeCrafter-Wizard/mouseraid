@@ -24,6 +24,11 @@ export interface QrExchange {
   scan(role: 'offer' | 'answer'): Promise<string>;
   /** Bricht eine laufende Scan-Schleife ab (Platz freigeben, Rückfall auf Text, Seitenwechsel). */
   cancel(): void;
+  /**
+   * Blendet den GEZEIGTEN Code aus (Lupe inklusive). Nach „Neu verbinden" (Sperrtest, D9) gehört er
+   * einem toten Peer: wer ihn dann noch scannt oder abschreibt, landet in einem F5, das niemand erklärt.
+   */
+  clear(): void;
   dispose(): void;
 }
 
@@ -292,6 +297,18 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
   function cancel(): void {
     running?.abort();
     running = null;
+    // Eine abgebrochene Schleife scannt nicht mehr: die Aufforderung „Kamera auf den Code halten"
+    // stünde sonst neben „Erneut scannen" und behauptete einen laufenden Scan. Zurückgenommen wird
+    // NUR diese eine Meldung – „überholt", ein Fehlergrund und „Code erkannt ✓" bleiben stehen.
+    if (status.textContent === S.lab.qr.scanning) status.textContent = '';
+  }
+
+  /** Der gezeigte Code ist tot: Kachel und Lupe weg, `shownText` leer – ein Tipp öffnet nichts mehr. */
+  function clear(): void {
+    shownText = '';
+    tap.hidden = true;
+    brightness.hidden = true;
+    overlay.close();
   }
 
   return {
@@ -299,6 +316,7 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
     show,
     scan,
     cancel,
+    clear,
     dispose() {
       document.removeEventListener('visibilitychange', onVisibility);
       removeEventListener('pagehide', onPagehide);
