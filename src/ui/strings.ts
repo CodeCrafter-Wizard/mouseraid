@@ -79,6 +79,11 @@ export const S = {
       starting: 'Kamera wird angefragt …',
       running: 'Kamera läuft ✓',
       failed: 'Kamera nicht verfügbar ({reason}). Der Text-Pfad funktioniert trotzdem.',
+      restart: 'Kamera neu starten',
+      trackLost: 'Die Kamera wurde unterbrochen. Zum Weitermachen neu starten.',
+      lobbyStarting: 'Kamera für den QR-Pfad wird geöffnet …',
+      lobbyRunning: 'Kamera läuft – Code der Gegenstelle ins Bild halten.',
+      lobbyFailed: 'Kamera nicht verfügbar ({reason}). Ohne Kamera bleibt nur der Text-Pfad.',
     },
     qr: {
       brightness: 'Bildschirm hell stellen – im Dunkelmodus oder Energiesparmodus wird der Code oft nicht erkannt.',

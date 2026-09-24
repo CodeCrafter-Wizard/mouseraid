@@ -1,7 +1,9 @@
+import { requestWakeLock } from '../platform/wakeLock';
 import { S, fmt } from '../ui/strings';
-import { startCamera } from './camera';
+import { attachCamera, observeTracks, openLobbyCamera, restartCamera, type CameraStatus } from './camera';
 import { buildClientPanel, buildHostPanel } from './connectPanels';
 import { actionButton, card, h } from './labDom';
+import { recordLabEvent } from './labEvents';
 import { parseLabQuery, type LabQuery } from './labQuery';
 import type { LabRunResult } from './labSession';
 import { createReportsPanel } from './reportsPanel';
@@ -76,22 +78,80 @@ function hotspotSelect(): HTMLSelectElement {
   return select;
 }
 
-function buildCameraCard(): HTMLElement {
+/**
+ * Kamera-Karte: öffnet den DAUER-Stream der Lobby (Kamera-zuerst), zeigt ihn im Sucher und beobachtet
+ * seine Spuren. Eine beendete Spur ist nicht wiederbelebbar – deshalb „Kamera neu starten" statt
+ * stillem Weiterlaufen. Jeder Spur-Wechsel geht als Seiten-Ereignis in jeden Report dieses Aufrufs.
+ *
+ * `autoStart` = der QR-Pfad (D5, C3): dort ist die Kamera Voraussetzung, kein Zubehör – die Karte
+ * öffnet den Stream beim Eintritt in die Lobby selbst. Auf dem Text-Pfad bleibt es beim Knopf.
+ * In diesem Task ist `autoStart` immer `false` (den Pfad `'qr'` gibt es erst mit der Auswahl aus T4);
+ * die Verzweigung steht schon hier, damit T4 nur noch das Argument setzen muss.
+ */
+function buildCameraCard(autoStart: boolean): HTMLElement {
   const element = card(S.lab.camera.title, 'camera-card');
   const state = h('p', 'lab-line');
   state.dataset.testid = 'camera-state';
+  const video = h('video', 'lab-video');
+  video.dataset.testid = 'camera-video';
+  video.hidden = true;
   const start = actionButton(S.lab.camera.start, 'camera-start');
+  const restart = actionButton(S.lab.camera.restart, 'camera-restart', 'secondary');
+  restart.hidden = true;
+  let stopObserving: (() => void) | null = null;
+
+  function show(status: CameraStatus): void {
+    state.textContent = status.running
+      ? (autoStart ? S.lab.camera.lobbyRunning : S.lab.camera.running)
+      : fmt(autoStart ? S.lab.camera.lobbyFailed : S.lab.camera.failed, { reason: status.error ?? '?' });
+    state.dataset.state = status.running ? 'ready' : 'bad';
+    video.hidden = !status.running;
+    if (status.running) attachCamera(video);
+    // Nach einem Fehlschlag darf erneut versucht werden (z. B. nach geänderter Website-Einstellung).
+    start.disabled = status.running;
+    restart.hidden = true;
+  }
+
+  function observe(): void {
+    stopObserving?.();
+    stopObserving = observeTracks((trackState) => {
+      // Ohne Spur-ID: Zeitleisten-Details tragen nie eine Kennung der Kamera (Datenschutz).
+      recordLabEvent(`camera:track:${trackState}`);
+      if (trackState !== 'ended') return;
+      // Eine verlorene Spur ist ein Kamera-Befund (F9) – der Report soll das erklären können.
+      recordLabEvent('camera-error', 'track-ended');
+      state.textContent = S.lab.camera.trackLost;
+      state.dataset.state = 'bad';
+      video.hidden = true;
+      restart.hidden = false;
+    });
+  }
+
   start.onclick = () => {
     start.disabled = true;
     state.textContent = S.lab.camera.starting;
-    void startCamera().then((status) => {
-      state.textContent = status.running ? S.lab.camera.running : fmt(S.lab.camera.failed, { reason: status.error ?? '?' });
-      state.dataset.state = status.running ? 'ready' : 'bad';
-      // Nach einem Fehlschlag darf erneut versucht werden (z. B. nach geänderter Website-Einstellung).
-      start.disabled = status.running;
+    void openLobbyCamera().then((status) => { show(status); observe(); });
+  };
+  restart.onclick = () => {
+    restart.disabled = true;
+    state.textContent = S.lab.camera.starting;
+    void restartCamera().then((status) => {
+      restart.disabled = false;
+      show(status);
+      observe();
     });
   };
-  element.append(h('p', 'lab-line', S.lab.camera.hint), start, state);
+  // Kamera-zuerst (D5, Spec-Absatz M2): auf dem QR-Pfad öffnet die Seite den Dauer-Stream beim Eintritt
+  // in die Lobby selbst – dort ist die Kamera Voraussetzung, kein Zubehör. Der Knopf bleibt für den
+  // zweiten Versuch (nach einer abgelehnten Berechtigung) und für den Text-Pfad stehen.
+  if (autoStart) {
+    start.disabled = true;
+    state.textContent = S.lab.camera.lobbyStarting;
+    void openLobbyCamera().then((status) => { show(status); observe(); });
+  }
+  const actions = h('div', 'shell-row');
+  actions.append(start, restart);
+  element.append(h('p', 'lab-line', S.lab.camera.hint), actions, video, state);
   return element;
 }
 
@@ -143,12 +203,16 @@ export function mountLab(root: HTMLElement, search: string): LabUi {
   confirm.onclick = () => {
     const cell = readCell(role.value(), path);
     if (cell === null) return;
+    // Erste Nutzergeste der Seite: genau hier darf der Bildschirm-Wachhalter angefordert werden. Er ist
+    // nie fatal (headless Chromium lehnt ab, installierte iOS-Web-Apps < 18.4 ignorieren ihn) – sein
+    // Zustand geht als Seiten-Ereignis in jeden Report dieses Aufrufs.
+    void requestWakeLock((wakeState) => { recordLabEvent(`wakelock:${wakeState}`); });
     // Eine Zelle je Seitenaufruf: das Label darf sich während eines Laufs nicht mehr ändern.
     for (const control of [...role.inputs, ...camera.inputs, hotspot, device]) control.disabled = true;
     confirm.hidden = true;
     restart.hidden = false;
     const ctx = { cell, query, onRun: (result: LabRunResult) => { reports.showRun(result); } };
-    if (cell.camera === 'an') steps.append(buildCameraCard());
+    if (cell.camera === 'an') steps.append(buildCameraCard(cell.path === 'qr'));
     steps.append(cell.role === 'host' ? buildHostPanel(ctx) : buildClientPanel(ctx));
   };
 

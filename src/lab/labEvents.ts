@@ -1,0 +1,61 @@
+import { createTimeline, type Timeline } from '../net/timeline';
+
+/**
+ * Seiten-Ereignisse des Labors: Wake Lock und Kamera-Spuren gehören zum SEITENAUFRUF, nicht zu einer
+ * einzelnen Verbindung – sie entstehen, bevor der erste Platz existiert, und betreffen danach jeden.
+ * `finishRun` schreibt sie deshalb in die Zeitleiste jedes Laufs, so wie die Kamera-Zeile aus M1.
+ * Rein (DOM-frei), damit der Puffer ohne Browser testbar bleibt.
+ *
+ * Die Zeit im Eintrag ist die des Laufs, nicht die des Ereignisses: eine Zeitleiste beginnt erst mit
+ * ihrer Verbindung, ein früheres Seiten-Ereignis hat dort keinen eigenen Zeitpunkt.
+ */
+export interface LabEvent {
+  kind: string;
+  detail: string;
+}
+
+/** Deckel gegen eine flatternde Kamera-Spur; ältere Einträge fallen heraus. */
+const MAX_EVENTS = 200;
+
+const events: LabEvent[] = [];
+/** Wie viele Einträge vorne herausgefallen sind – hält die Merker unten in globaler Zählung. */
+let dropped = 0;
+const flushedUpTo = new WeakMap<Timeline, number>();
+
+export function recordLabEvent(kind: string, detail = ''): void {
+  events.push({ kind, detail });
+  if (events.length > MAX_EVENTS) {
+    const surplus = events.length - MAX_EVENTS;
+    dropped += surplus;
+    events.splice(0, surplus);
+  }
+}
+
+/** Schreibt alle Ereignisse in die Zeitleiste, die DIESE Zeitleiste noch nicht bekommen hat. */
+export function flushLabEvents(timeline: Timeline): void {
+  const from = Math.max(flushedUpTo.get(timeline) ?? 0, dropped);
+  for (const event of events.slice(from - dropped)) timeline.push(event.kind, event.detail);
+  flushedUpTo.set(timeline, dropped + events.length);
+}
+
+/**
+ * Zeitleiste, die puffert, bis es die echte gibt. Der Client scannt das Angebot, BEVOR `acceptOffer`
+ * seine Zeitleiste anlegt – ohne Puffer fehlten `qr:backend` und `qr:decoded` des Angebots-Scans
+ * genau in dem Report, der sie belegen soll. Zweiter Puffer derselben Art wie oben, deshalb hier und
+ * nicht in einem DOM-Modul: `connectPanels.ts` soll keine eigene Ereignis-Mechanik bekommen.
+ * Die Zeitstempel entstehen beim Nachtragen; gemessen wird die Paarung ohnehin über `PairingMarks`.
+ */
+export function createRelayTimeline(now: () => number): { timeline: Timeline; drainInto(target: Timeline): void } {
+  const buffer = createTimeline(now);
+  let target: Timeline | null = null;
+  return {
+    timeline: {
+      push: (kind, detail) => { (target ?? buffer).push(kind, detail); },
+      events: () => (target ?? buffer).events(),
+    },
+    drainInto(next) {
+      for (const event of buffer.events()) next.push(event.kind, event.detail);
+      target = next;
+    },
+  };
+}

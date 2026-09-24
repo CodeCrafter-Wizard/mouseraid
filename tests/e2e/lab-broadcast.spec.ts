@@ -12,6 +12,7 @@ interface StoredReport {
   failures: string[];
   hello: { versionMatch: boolean } | null;
   ping: { events: { sent: number; lossPct: number } | null; state: { sent: number } | null };
+  timeline: { kind: string; detail: string }[];
 }
 
 async function labelCell(page: Page, device: string): Promise<void> {
@@ -105,6 +106,17 @@ test('Zwei Tabs: Zelle beschriften, verbinden, Ping-Test, Report auf beiden Seit
   // Kamera-Schalter: die synthetische Kamera des Projekts liefert einen Stream, der offen bleibt.
   await host.getByTestId('camera-start').click();
   await expect(host.getByTestId('camera-state')).toHaveText(S.lab.camera.running);
+  // Der Sucher zeigt ein laufendes Bild (Kamera-zuerst): Maße und Wiedergabe kommen als Wahrheitswerte
+  // aus der Seite – `track.label` verlässt sie nie.
+  await expect(host.getByTestId('camera-video')).toBeVisible();
+  await expect
+    .poll(() => host.evaluate(() => {
+      const video = document.querySelector<HTMLVideoElement>('[data-testid="camera-video"]');
+      return video !== null && video.videoWidth > 0 && video.videoHeight > 0 && !video.paused;
+    }), { message: 'Kamera-Sucher zeigt ein laufendes Bild' })
+    .toBe(true);
+  // Solange die Spur lebt, bleibt „Kamera neu starten" verborgen.
+  await expect(host.getByTestId('camera-restart')).toBeHidden();
 
   await expect(host.getByTestId('slot-1').getByTestId('conn-state')).toHaveText(S.lab.state.open);
   await expect(client.getByTestId('conn-state')).toHaveText(S.lab.state.open);
@@ -135,6 +147,18 @@ test('Zwei Tabs: Zelle beschriften, verbinden, Ping-Test, Report auf beiden Seit
     expect(report?.ping.events).toMatchObject({ sent: 20, lossPct: 0 });
     expect(report?.ping.state?.sent).toBe(20);
   }
+
+  // Wake Lock und Kamera-Spuren stehen als Seiten-Ereignisse in der Zeitleiste jedes Laufs dieses
+  // Seitenaufrufs. Headless Chromium lehnt den Wake Lock mit NotAllowedError ab – der Fehlschlag wird
+  // geschluckt, die Seite läuft weiter (headful stünde hier `wakelock:acquired`; siehe Bekannte Grenzen).
+  const hostReport = stored.find((entry) => entry.cell.role === 'host');
+  const kinds = (hostReport?.timeline ?? []).map((event) => event.kind);
+  expect(kinds.filter((kind) => kind.startsWith('wakelock:'))).toEqual(['wakelock:denied']);
+  expect(kinds).toContain('camera:track:live');
+  // Datenschutz: weder die Spur-ID noch ein Gerätename verlässt die Seite.
+  expect((hostReport?.timeline ?? [])
+    .filter((event) => event.kind.startsWith('camera:track:') || event.kind.startsWith('wakelock:'))
+    .every((event) => event.detail === '')).toBe(true);
 
   // Die Liste zeigt den eigenen Report sofort und den des anderen Tabs über das storage-Ereignis.
   for (const page of [host, client]) {
@@ -208,6 +232,42 @@ test('Host ohne Gegenstelle: Ping-Test schon beim Verbinden erreichbar, „Platz
   await slot1.getByTestId('release').click();
   await expect(slot1).toHaveCount(0);
   await expect(page.getByTestId('report-item')).toHaveCount(2);
+});
+
+test('Verlorene Kamera-Spur: Hinweis, „Kamera neu starten" und F9 im Report', async ({ context }, testInfo) => {
+  // Ohne diese Freigabe stünde in jeder Diagnose zusätzlich F6 (siehe Anmerkung im ersten Test).
+  await context.grantPermissions(['local-network-access']);
+  const page = await context.newPage();
+  const room = `e2e-spur-${testInfo.workerIndex}-${Date.now().toString(36)}`;
+  await page.goto(`lab.html?transport=bc&room=${room}&role=host&slot=1&quick=1`);
+  await labelCell(page, 'E2E-Spur');
+  await page.getByTestId('camera-start').click();
+  await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.running);
+
+  // Eine echte Spur lässt sich im Test nicht beenden (`track.stop()` löst kein `ended` aus), das
+  // Ereignis dagegen schon: es kommt beim Handy vom Betriebssystem und geht denselben Weg.
+  await page.evaluate(() => {
+    const video = document.querySelector<HTMLVideoElement>('[data-testid="camera-video"]');
+    const stream = video?.srcObject as MediaStream | null;
+    stream?.getVideoTracks()[0]?.dispatchEvent(new Event('ended'));
+  });
+  await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.trackLost);
+  await expect(page.getByTestId('camera-video')).toBeHidden();
+  await expect(page.getByTestId('camera-restart')).toBeVisible();
+
+  // Der Befund landet im Report des Laufs: `camera-error` → F9.
+  await page.getByTestId('slot-1').getByTestId('start-ping').click();
+  await expect(page.getByTestId('slot-1').getByTestId('run-status')).toHaveText(S.lab.run.saved, { timeout: 20_000 });
+  const report = await page.evaluate((key) => (JSON.parse(localStorage.getItem(key) ?? '[]') as StoredReport[])[0], REPORTS_KEY);
+  expect(report?.failures).toContain('F9');
+  expect(report?.timeline.map((event) => event.kind)).toContain('camera:track:ended');
+  expect(report?.timeline.find((event) => event.kind === 'camera-error')?.detail).toBe('track-ended');
+
+  // „Kamera neu starten" holt einen frischen Stream – der Sucher zeigt wieder ein Bild.
+  await page.getByTestId('camera-restart').click();
+  await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.running);
+  await expect(page.getByTestId('camera-video')).toBeVisible();
+  await expect(page.getByTestId('camera-restart')).toBeHidden();
 });
 
 test('Text-Pfad ohne Parameter: Formular passt bei 667×375 ohne horizontalen Überlauf, Spitzname bleibt erhalten', async ({ page }) => {

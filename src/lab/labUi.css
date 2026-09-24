@@ -76,6 +76,16 @@ select.lab-input option { color: #1b2140; }
 .lab-check { display: flex; align-items: center; gap: 12px; min-height: 48px; font-size: 15px; }
 .lab-check input { flex: 0 0 auto; width: 28px; height: 28px; margin: 0; accent-color: var(--c-amber); }
 
+/* Sucher der Lobby-Kamera: nie breiter als die Karte, feste Bildform gegen Sprünge beim ersten Bild. */
+.lab-video {
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  background: #000;
+  object-fit: cover;
+}
+
 .lab-selftest { display: contents; }
 .lab-selftest:empty { display: none; }
 

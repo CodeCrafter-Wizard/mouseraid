@@ -10,6 +10,7 @@ import type { Timeline, TimelineEvent } from '../net/timeline';
 import type { Channel, Transport } from '../net/transport';
 import { BUILD_ID } from '../platform/buildInfo';
 import { S, fmt } from '../ui/strings';
+import { flushLabEvents } from './labEvents';
 import { pingCountFor } from './labQuery';
 import { createReportStore, isRunValid, type CellLabel, type LabReport } from './report';
 
@@ -130,6 +131,8 @@ function storeReport(report: LabReport): boolean {
  *
  * Zeitleisten-Konvention der Aufrufer: `transport:<state>` bei jedem Zustandswechsel, `camera-error`
  * (detail = Fehlername), wenn die Kamera-Anforderung scheiterte → F9, `camera:running`, `permissions:handshake`.
+ * Dazu die Seiten-Ereignisse aus `labEvents.ts` (`wakelock:<state>`, `camera:track:<state>`), die dieser
+ * Lauf selbst einsammelt.
  */
 export async function finishRun(input: {
   cell: CellLabel; transport: Transport; peer: RtcPeer | null; timeline: Timeline; artifacts: HandshakeArtifacts | null; remoteSdp: string | null;
@@ -167,6 +170,9 @@ export async function finishRun(input: {
   const [environment, permissions, selectedPair] = await Promise.all([collectEnvironment(), queryPermissions(), selectedPairOf(peer)]);
   const gathered = artifacts === null ? null : parsedCandidates(artifacts);
   timeline.push('run:diagnose', transport.state);
+  // Seiten-Ereignisse (Wake Lock, Kamera-Spuren) gehören in JEDEN Report dieses Seitenaufrufs – sie
+  // entstehen, bevor der erste Platz existiert, und betreffen danach jede Verbindung.
+  flushLabEvents(timeline);
   const events = [...timeline.events()];
 
   const failures = classifyFailures({
