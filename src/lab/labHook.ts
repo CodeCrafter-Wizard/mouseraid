@@ -3,6 +3,8 @@ import { createMessageRouter } from '../net/messageRouter';
 import { attachPongResponder, runPingSeries } from '../net/pingTest';
 import { PROTOCOL_VERSION } from '../net/protocol';
 import { createTimeline } from '../net/timeline';
+import { MAX_QR_PAYLOAD_CHARS, qrModuleCount, renderQr } from './qrRender';
+import { detectScanBackend, scanImage, scanVideo } from './scannerAdapter';
 
 /** Test-Haken des Labors: die Netz-Schicht ohne UI, für `tests/e2e/lab-rtc.spec.ts`. */
 export interface LabHook {
@@ -13,6 +15,14 @@ export interface LabHook {
   runPingSeries: typeof runPingSeries;
   attachPongResponder: typeof attachPongResponder;
   PROTOCOL_VERSION: number;
+  // QR-Pfad ohne Oberfläche: der Roundtrip-Test (tests/e2e/lab-qr-roundtrip.spec.ts) und der
+  // Fake-Kamera-Smoke treiben Erzeugung und Scan direkt, ohne durch die Zellen-Oberfläche zu gehen.
+  renderQr: typeof renderQr;
+  qrModuleCount: typeof qrModuleCount;
+  MAX_QR_PAYLOAD_CHARS: number;
+  detectScanBackend: typeof detectScanBackend;
+  scanImage: typeof scanImage;
+  scanVideo: typeof scanVideo;
 }
 
 /** Hängt den Haken als `window.__mbLab` ein. `labMain.ts` ruft das NUR bei `?hook=1` auf. */
@@ -25,6 +35,12 @@ export function installLabHook(): void {
     runPingSeries,
     attachPongResponder,
     PROTOCOL_VERSION,
+    renderQr,
+    qrModuleCount,
+    MAX_QR_PAYLOAD_CHARS,
+    detectScanBackend,
+    scanImage,
+    scanVideo,
   };
   (window as unknown as { __mbLab?: LabHook }).__mbLab = hook;
 }

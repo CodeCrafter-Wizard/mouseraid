@@ -167,6 +167,21 @@ export function findMissingPrecache(swText, relPaths) {
   return relPaths.filter((rel) => !new RegExp(`(?:"url"|url)\\s*:\\s*"${escapeForRegExp(rel)}"`).test(swText));
 }
 
+/**
+ * `qr-scanner` lädt seinen Worker über einen dynamischen ES-Import (`import('./qr-scanner-worker.min.js')`),
+ * den Vite als eigenen Chunk emittiert. Erkannt wird er am Namen, nicht am Inhalt: der Hash ändert
+ * sich mit jedem Build, der Name nicht.
+ */
+const SCANNER_WORKER_PATTERN = /(?:^|\/)qr-scanner-worker[.\w-]*\.js$/;
+
+/**
+ * @param {string[]} relPaths
+ * @returns {string | null} der Worker-Chunk oder null, wenn er nicht im Build liegt
+ */
+export function findScannerWorker(relPaths) {
+  return relPaths.find((rel) => SCANNER_WORKER_PATTERN.test(rel)) ?? null;
+}
+
 /** Dateien, die in jedem gültigen Build vorhanden sein müssen – fehlt eine, degradieren andere Prüfungen (Lab-Graph, Precache …) unbemerkt zum Leerlauf statt einen Fehler zu zeigen. */
 export const REQUIRED_FILES = ['index.html', 'lab.html', 'sw.js', 'manifest.webmanifest', 'version.json'];
 

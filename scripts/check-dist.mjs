@@ -2,7 +2,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { collectJsGraph, findForbiddenSignatures, findLabSignatures, findMissingPrecache, findMissingRequiredFiles, isPrecacheCandidate } from './lib/distChecks.mjs';
+import { collectJsGraph, findForbiddenSignatures, findLabSignatures, findMissingPrecache, findMissingRequiredFiles, findScannerWorker, isPrecacheCandidate } from './lib/distChecks.mjs';
 
 const DIST = 'dist';
 const BUDGET = { gameJsGzip: 900 * 1024, labJsGzip: 150 * 1024, precacheTotal: 80 * 1024 * 1024 };
@@ -78,6 +78,23 @@ if (swText === null) {
   const total = candidates.reduce((sum, rel) => sum + statSync(join(DIST, rel)).size, 0);
   console.log(`Precache: ${candidates.length} Dateien, ${kb(total)}`);
   if (total > BUDGET.precacheTotal) errors.push(`Precache ${kb(total)} > Budget ${kb(BUDGET.precacheTotal)}`);
+}
+
+// Der QR-Scanner-Worker: im Build, im Lab-Graphen (er zählt zum Lab-Budget), NICHT im Spiel-Graphen
+// und im Precache – sonst fehlt er offline genau dann, wenn das Labor ohne Netz arbeiten soll.
+const scannerWorker = findScannerWorker(files);
+if (scannerWorker === null) {
+  errors.push('Scanner-Worker fehlt im Build – importiert das Labor `qr-scanner` nicht mehr, oder hat Vite den Chunk anders benannt?');
+} else {
+  if (!labGraph.includes(scannerWorker)) {
+    errors.push(`${scannerWorker}: nicht im JS-Graph von lab.html – der Scanner-Worker muss zum Lab-Bundle zählen (Budget!)`);
+  }
+  if (gameGraph.includes(scannerWorker)) {
+    errors.push(`${scannerWorker}: im JS-Graph von index.html – der Scanner gehört ins Labor, nicht ins Spiel-Bundle`);
+  }
+  if (swText !== null && findMissingPrecache(swText, [scannerWorker]).length > 0) {
+    errors.push(`${scannerWorker}: fehlt im Precache – ohne den Chunk scannt das Labor offline nicht`);
+  }
 }
 
 console.log(`Build ${buildId} (base ${base}) – Spiel-JS ${kb(gameGzip)} gzip, Lab-JS ${kb(labGzip)} gzip`);

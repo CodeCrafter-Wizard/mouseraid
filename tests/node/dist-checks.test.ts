@@ -5,6 +5,7 @@ import {
   findLabSignatures,
   findMissingPrecache,
   findMissingRequiredFiles,
+  findScannerWorker,
   isPrecacheCandidate,
   REQUIRED_FILES,
 } from '../../scripts/lib/distChecks.mjs';
@@ -142,6 +143,32 @@ describe('Precache', () => {
 
   it('akzeptiert die Manifest-Form auch mit gequotetem Schluessel', () => {
     expect(findMissingPrecache('[{"url":"index.html","revision":null}]', ['index.html'])).toEqual([]);
+  });
+});
+
+describe('findScannerWorker', () => {
+  const WORKER = 'assets/qr-scanner-worker.min-DEadbeef.js';
+
+  it('findet den Worker-Chunk, den Vite aus dem dynamischen Import von qr-scanner emittiert', () => {
+    expect(findScannerWorker(['index.html', 'assets/lab-1.js', WORKER])).toBe(WORKER);
+    // Ohne .min und ohne Hash: der genaue Chunk-Name hängt an Vite und darf sich ändern.
+    expect(findScannerWorker(['assets/qr-scanner-worker.js'])).toBe('assets/qr-scanner-worker.js');
+    expect(findScannerWorker(['qr-scanner-worker.min-1.js'])).toBe('qr-scanner-worker.min-1.js');
+  });
+
+  it('meldet null, wenn er fehlt – das Hauptmodul von qr-scanner allein ist nicht der Worker', () => {
+    expect(findScannerWorker(['assets/lab-1.js', 'assets/qr-scanner-DEadbeef.js', 'assets/worker-1.js'])).toBeNull();
+    expect(findScannerWorker([])).toBeNull();
+  });
+
+  it('nimmt nur die .js-Datei, nicht die Sourcemap daneben', () => {
+    expect(findScannerWorker([`${WORKER}.map`])).toBeNull();
+  });
+
+  it('ein Precache-Manifest ohne den Worker-Chunk fällt durch (offline wäre der Scanner tot)', () => {
+    const withWorker = `precacheAndRoute([{url:"lab.html",revision:"1"},{url:"${WORKER}",revision:null}])`;
+    expect(findMissingPrecache(withWorker, [WORKER])).toEqual([]);
+    expect(findMissingPrecache('precacheAndRoute([{url:"lab.html",revision:"1"}])', [WORKER])).toEqual([WORKER]);
   });
 });
 
