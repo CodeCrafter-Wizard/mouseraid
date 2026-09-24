@@ -1,5 +1,6 @@
 import '../ui/shell.css';
 import './labUi.css';
+import './qr.css';
 import { installErrorPanel } from '../platform/errorPanel';
 import { initPwa } from '../platform/pwa';
 import { mountShell, type ShellHandles } from '../ui/shell';

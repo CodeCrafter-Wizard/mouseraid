@@ -80,6 +80,12 @@ export const S = {
       running: 'Kamera läuft ✓',
       failed: 'Kamera nicht verfügbar ({reason}). Der Text-Pfad funktioniert trotzdem.',
     },
+    qr: {
+      brightness: 'Bildschirm hell stellen – im Dunkelmodus oder Energiesparmodus wird der Code oft nicht erkannt.',
+      enlarge: 'Tippen zum Vergrößern',
+      close: 'Schließen',
+      tooLarge: 'Code zu groß für QR – Text-Pfad benutzen.',
+    },
     host: {
       title: '3 · Spieler verbinden (Host)',
       add: 'Spieler hinzufügen',

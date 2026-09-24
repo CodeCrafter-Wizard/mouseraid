@@ -1,0 +1,64 @@
+/* QR-Pfad des Testlabors – Kachel, Vollbild-Lupe. Farben und Knöpfe kommen aus src/ui/shell.css. */
+
+/* Der Code ist IMMER schwarz auf weiß (siehe qrRender.ts) – deshalb hier der weiße Rahmen, sonst
+   säße die Ruhezone auf dem dunklen Seitengrund und der Scanner fände den Code schlechter. */
+.qr-tile {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 10px;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+/* `pixelated`: ohne das verwischt der Browser beim Hochskalieren halbe Module. */
+.qr-code {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  touch-action: manipulation;
+}
+
+.qr-hint {
+  margin: 0;
+  color: #1b2140;
+  font-size: 13px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px;
+  background: #ffffff;
+  touch-action: manipulation;
+}
+.qr-overlay[hidden] { display: none; }
+
+/* 90 vmin = 90 % der kürzeren Bildschirmkante, wie vom Vertrag verlangt – unabhängig davon, auf
+   wie viele ganze Module die Canvas-Breite in qrRender gerundet wurde. */
+.qr-overlay-code {
+  width: 90vmin;
+  height: 90vmin;
+  image-rendering: pixelated;
+}
+
+.qr-overlay-hint {
+  margin: 0;
+  max-width: 90vmin;
+  color: #1b2140;
+  font-size: 14px;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.qr-overlay-close { min-height: 48px; }
