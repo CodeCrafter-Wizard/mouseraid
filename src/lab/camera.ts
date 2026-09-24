@@ -17,6 +17,13 @@ export interface CameraStatus {
 let stream: MediaStream | null = null;
 let gumCalled = false;
 let lastError: string | null = null;
+/**
+ * Die laufende Anforderung, solange sie läuft. Riegel gegen zwei gleichzeitige `getUserMedia`: am
+ * Handy tippt man den Knopf zweimal, und der QR-Pfad startet die Kamera ohnehin von selbst. Die
+ * zweite Anforderung überschriebe den Stream der ersten – der liefe dann unbeobachtet weiter
+ * (Akku, Kamera-Lämpchen), während Sucher und Scanner am toten Stream hingen.
+ */
+let pending: Promise<CameraStatus> | null = null;
 
 export function cameraStatus(): CameraStatus {
   return { running: stream !== null && stream.getVideoTracks().some((track) => track.readyState === 'live'), gumCalled, error: lastError };
@@ -43,12 +50,8 @@ const LOBBY_CONSTRAINTS: MediaStreamConstraints = {
   audio: false,
 };
 
-/**
- * Öffnet den Dauer-Stream der Lobby. Wirft nie; teilt sich Modul-Zustand und `gumCalled` mit
- * `openTemporaryCamera` (der Selbsttest bleibt unberührt). Läuft schon ein Stream, passiert nichts.
- */
-export async function openLobbyCamera(): Promise<CameraStatus> {
-  if (cameraStatus().running) return cameraStatus();
+/** Die eigentliche Anforderung. Wirft nie: ein Fehlschlag steht als Fehlername im Zustand. */
+async function requestLobbyStream(): Promise<CameraStatus> {
   gumCalled = true;
   try {
     stream = await navigator.mediaDevices.getUserMedia(LOBBY_CONSTRAINTS);
@@ -58,6 +61,20 @@ export async function openLobbyCamera(): Promise<CameraStatus> {
     lastError = error instanceof Error ? error.name : String(error);
   }
   return cameraStatus();
+}
+
+/**
+ * Öffnet den Dauer-Stream der Lobby. Wirft nie; teilt sich Modul-Zustand und `gumCalled` mit
+ * `openTemporaryCamera` (der Selbsttest bleibt unberührt). Läuft schon ein Stream, passiert nichts;
+ * läuft gerade eine Anforderung, bekommen alle Aufrufer DIESE – nie eine zweite Kamera.
+ */
+export function openLobbyCamera(): Promise<CameraStatus> {
+  if (cameraStatus().running) return Promise.resolve(cameraStatus());
+  // Das `finally` hängt am inneren Versprechen und läuft deshalb VOR jedem Aufrufer: wer danach
+  // wartet, sieht den Riegel schon offen und darf selbst neu anfordern.
+  const request = pending ?? requestLobbyStream().finally(() => { pending = null; });
+  pending = request;
+  return request;
 }
 
 export function cameraStream(): MediaStream | null {
@@ -125,6 +142,9 @@ export function observeTracks(onChange: (state: TrackState, trackId: string) => 
 
 /** „Kamera neu starten" nach einer beendeten Spur: eigene Tracks beenden, dann neu öffnen. */
 export async function restartCamera(): Promise<CameraStatus> {
+  // Eine laufende Anforderung zuerst abwarten: sonst fände der Neustart `stream === null` vor, und
+  // der erst danach eintreffende alte Stream überschriebe den frischen – ungenutzt, aber offen.
+  if (pending !== null) await pending;
   if (stream !== null) {
     for (const track of stream.getTracks()) track.stop();
     stream = null;

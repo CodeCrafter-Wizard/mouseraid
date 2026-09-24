@@ -6,6 +6,7 @@ import { attachPongResponder } from '../../../src/net/pingTest';
 import { PROTOCOL_VERSION, encodeMessage } from '../../../src/net/protocol';
 import { createTimeline, type Timeline } from '../../../src/net/timeline';
 import type { Transport } from '../../../src/net/transport';
+import { recordLabEvent } from '../../../src/lab/labEvents';
 import { attachLabLink, finishRun, makeReportId } from '../../../src/lab/labSession';
 import { createReportStore, type CellLabel } from '../../../src/lab/report';
 import { S, fmt } from '../../../src/ui/strings';
@@ -296,5 +297,26 @@ describe('labSession', () => {
     const statuses: string[] = [];
     await run(lonely(), 'host', createTimeline(now), statuses);
     expect(statuses[statuses.length - 1]).toBe(S.lab.run.saveFailed);
+  });
+
+  // F9 aus der Kamera hängt am LETZTEN Kamera-Eintrag, nicht an irgendeinem: die Seiten-Ereignisse
+  // gelten für den ganzen Seitenaufruf, also auch für Läufe NACH einem erfolgreichen „Kamera neu
+  // starten". Ein Befund, der nicht mehr besteht, gehörte sonst für immer in jeden weiteren Report.
+  // (Diese beiden Tests stehen am Ende: der Ereignis-Puffer ist Seiten-Zustand und wirkt vorwärts.)
+  it('ein Kamera-Fehler, auf den ein erfolgreicher Neustart folgt, ist kein F9 mehr', async () => {
+    recordLabEvent('camera:track:ended');
+    recordLabEvent('camera-error', 'track-ended');
+    recordLabEvent('camera:track:live');
+    const result = await run(lonely(), 'host');
+    expect(result.report.timeline.map((event) => event.kind)).toEqual(expect.arrayContaining(['camera-error', 'camera:track:live']));
+    expect(result.report.failures).toEqual([]);
+  });
+
+  it('ist der Kamera-Fehler der letzte Kamera-Eintrag, bleibt F9 stehen', async () => {
+    recordLabEvent('camera:track:live');
+    recordLabEvent('camera:track:ended');
+    recordLabEvent('camera-error', 'track-ended');
+    const result = await run(lonely(), 'host');
+    expect(result.report.failures).toEqual(['F9']);
   });
 });

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { S } from '../../src/ui/strings';
+import { S, fmt } from '../../src/ui/strings';
 import type { LabHook } from '../../src/lab/labHook';
 
 // CI-fähig (kein @local): zwei Tabs EINES Kontexts verbinden sich über BroadcastChannel – ohne WebRTC.
@@ -269,6 +269,21 @@ test('Verlorene Kamera-Spur: Hinweis, „Kamera neu starten" und F9 im Report', 
   await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.running);
   await expect(page.getByTestId('camera-video')).toBeVisible();
   await expect(page.getByTestId('camera-restart')).toBeHidden();
+
+  // Scheitert der Neustart (Kamera inzwischen von einer anderen App belegt oder entzogen), MUSS der
+  // Knopf stehen bleiben – sonst gäbe es am Handy keinen zweiten Versuch mehr.
+  await page.evaluate(() => {
+    navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('kein Geraet', 'NotFoundError'));
+  });
+  await page.evaluate(() => {
+    const video = document.querySelector<HTMLVideoElement>('[data-testid="camera-video"]');
+    (video?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.dispatchEvent(new Event('ended'));
+  });
+  await expect(page.getByTestId('camera-restart')).toBeVisible();
+  await page.getByTestId('camera-restart').click();
+  await expect(page.getByTestId('camera-state')).toHaveText(fmt(S.lab.camera.failed, { reason: 'NotFoundError' }));
+  await expect(page.getByTestId('camera-restart')).toBeVisible();
+  await expect(page.getByTestId('camera-restart')).toBeEnabled();
 });
 
 test('Text-Pfad ohne Parameter: Formular passt bei 667×375 ohne horizontalen Überlauf, Spitzname bleibt erhalten', async ({ page }) => {

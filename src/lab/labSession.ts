@@ -113,6 +113,17 @@ async function selectedPairOf(peer: RtcPeer | null): Promise<SelectedPair | null
   }
 }
 
+/**
+ * F9 aus der Kamera: es zählt der LETZTE Kamera-Eintrag der Zeitleiste, nicht irgendeiner. Die
+ * Seiten-Ereignisse gelten für den ganzen Seitenaufruf – ohne diese Regel trüge jeder weitere Lauf
+ * einen Befund mit sich, den „Kamera neu starten" längst behoben hat (`camera:track:live` danach).
+ * Bleibt der Fehler der letzte Kamera-Eintrag, bleibt F9.
+ */
+function cameraStillBroken(events: readonly TimelineEvent[]): boolean {
+  const camera = events.filter((event) => event.kind === 'camera-error' || event.kind.startsWith('camera:'));
+  return camera[camera.length - 1]?.kind === 'camera-error';
+}
+
 function storeReport(report: LabReport): boolean {
   try {
     const store = createReportStore(localStorage);
@@ -194,7 +205,7 @@ export async function finishRun(input: {
     msSinceIceConnected: msSinceIceConnected(events),
     wasOpenBefore: events.some((event) => event.kind.startsWith('channel-open:') || event.kind === 'transport:open'),
     codecError: hello !== null && !hello.versionMatch,
-    cameraError: events.some((event) => event.kind === 'camera-error'),
+    cameraError: cameraStillBroken(events),
     // Eigenes Feld statt einer Umdeutung von cameraError: die Quelle ist eine andere (der QR-Block
     // schreibt `qr:error`), und ein vergessener Aufrufer fällt so im Typecheck auf.
     qrError: events.some((event) => event.kind === 'qr:error'),

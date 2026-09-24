@@ -108,3 +108,29 @@ describe('createRelayTimeline', () => {
     expect(first.events()).toHaveLength(3);
   });
 });
+
+// Ganz am Ende, weil dieser Block den Seiten-Puffer absichtlich überlaufen lässt.
+describe('labEvents: Deckel bei 200 Einträgen', () => {
+  it('behält die jüngsten 200 Einträge und verrechnet die herausgefallenen', () => {
+    for (let index = 0; index < 205; index += 1) recordLabEvent('camera:track:muted', String(index));
+
+    const timeline = createTimeline(() => 0);
+    flushLabEvents(timeline);
+    const details = timeline.events().map((event) => event.detail);
+    // Der Deckel schneidet VORNE ab – ohne Platzhalter: eine flatternde Kamera-Spur soll den Report
+    // nicht sprengen, und die jüngsten Ereignisse erklären den Lauf.
+    expect(details).toHaveLength(200);
+    expect(details[0]).toBe('5');
+    expect(details[199]).toBe('204');
+
+    // Ein zweiter Durchgang derselben Zeitleiste doppelt nichts – auch nicht über die Lücke hinweg.
+    flushLabEvents(timeline);
+    expect(timeline.events()).toHaveLength(200);
+
+    // Und was danach kommt, kommt genau einmal an: die Merker zählen global, nicht im Puffer.
+    recordLabEvent('wakelock:acquired');
+    flushLabEvents(timeline);
+    expect(timeline.events()).toHaveLength(201);
+    expect(timeline.events().map((event) => event.kind).pop()).toBe('wakelock:acquired');
+  });
+});

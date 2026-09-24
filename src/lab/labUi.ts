@@ -107,7 +107,10 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
     if (status.running) attachCamera(video);
     // Nach einem Fehlschlag darf erneut versucht werden (z. B. nach geänderter Website-Einstellung).
     start.disabled = status.running;
-    restart.hidden = true;
+    // Nur eine LAUFENDE Kamera braucht keinen Neustart-Knopf. Scheitert der Neustart (Kamera von einer
+    // anderen App belegt, Erlaubnis entzogen), muss er stehen bleiben – sonst gäbe es am Handy keinen
+    // zweiten Versuch mehr, und die Karte behauptete einen Zustand, aus dem sie nicht herausfindet.
+    restart.hidden = status.running;
   }
 
   function observe(): void {

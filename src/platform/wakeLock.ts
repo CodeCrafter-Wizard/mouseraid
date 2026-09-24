@@ -81,6 +81,10 @@ export async function requestWakeLock(
   }
 
   let released = false;
+  /** Einmal „nein" heißt nein: ohne diesen Riegel liefe die Neuanforderung in eine Endlosschleife. */
+  let denied = false;
+  /** Genau eine Anforderung gleichzeitig – sonst entstünden zwei Sentinels, von denen nur einer freigegeben wird. */
+  let requesting = false;
   const unsubscribe: (() => void)[] = [];
   const watch = (next: WakeLockSentinelLike): void => {
     sentinel = next;
@@ -88,22 +92,38 @@ export async function requestWakeLock(
     next.addEventListener('release', () => {
       if (released || sentinel !== next) return;
       report('released');
+      // Der Browser nimmt die Sperre auch im Vordergrund zurück (Energiesparmodus, Systementzug).
+      // Solange die Seite sichtbar ist, läuft der Messlauf weiter – also einmal neu anfordern.
+      if (env.isVisible()) reacquire();
     });
   };
   const reacquire = (): void => {
-    // Nichts zu tun, solange die Sperre noch gehalten wird oder der Handle endgültig freigegeben ist.
-    if (released || (sentinel !== null && !sentinel.released)) return;
+    // Nichts zu tun, solange die Sperre noch gehalten wird, eine Anforderung läuft, sie schon
+    // abgelehnt wurde oder der Handle endgültig freigegeben ist.
+    if (released || denied || requesting) return;
+    if (sentinel !== null && !sentinel.released) return;
+    requesting = true;
     try {
       void request('screen').then((next) => {
+        requesting = false;
         if (released) {
           // Rennen: der Nutzer hat die Seite verlassen, bevor die neue Sperre eintraf.
           void next.release().catch(() => undefined);
           return;
         }
         watch(next);
-        report('acquired');
-      }, () => { report('denied'); });
+        // Eine Sperre, die schon zurückgenommen eintrifft, ist keine gehaltene Sperre – sie als
+        // `acquired` zu melden, machte den Report unwahr. Ein neuer Versuch käme hier in eine
+        // Schleife; er kommt erst mit dem nächsten echten `release`-Ereignis.
+        report(next.released ? 'released' : 'acquired');
+      }, () => {
+        requesting = false;
+        denied = true;
+        report('denied');
+      });
     } catch {
+      requesting = false;
+      denied = true;
       report('denied');
     }
   };
@@ -126,6 +146,7 @@ export async function requestWakeLock(
   watch(sentinel);
   unsubscribe.push(env.on('visibilitychange', () => { if (env.isVisible()) reacquire(); }));
   unsubscribe.push(env.on('pagehide', () => { handle.release(); }));
-  report('acquired');
+  // Auch die erste Sperre kann schon zurückgenommen ankommen (Energiesparmodus beim Antippen).
+  report(sentinel.released ? 'released' : 'acquired');
   return handle;
 }

@@ -1,24 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { requestWakeLock, type WakeLockEnv, type WakeLockSentinelLike, type WakeLockState } from '../../../src/platform/wakeLock';
 
-/** Attrappe eines `WakeLockSentinel`: zählt Freigaben und kann das `release`-Ereignis des Browsers auslösen. */
-function fakeSentinel(): WakeLockSentinelLike & { releases: number; fireRelease(): void } {
+/**
+ * Attrappe eines `WakeLockSentinel`: zählt Freigaben und kann das `release`-Ereignis des Browsers
+ * auslösen. Der echte Sentinel meldet JEDE Freigabe über dieses Ereignis – auch die selbst
+ * angeforderte –, und `release()` darf ablehnen (gemessen an Geräten, die die Sperre schon verloren
+ * hatten). Beides tut die Attrappe deshalb auch.
+ */
+function fakeSentinel(options: { rejectRelease?: boolean } = {}): WakeLockSentinelLike & { releases: number; fireRelease(): void } {
   const listeners: (() => void)[] = [];
   let released = false;
+  const fire = (): void => {
+    released = true;
+    for (const listener of [...listeners]) listener();
+  };
   return {
     get released() { return released; },
     releases: 0,
     release() {
-      released = true;
       this.releases += 1;
-      return Promise.resolve();
+      fire();
+      return options.rejectRelease === true ? Promise.reject(new Error('release abgelehnt')) : Promise.resolve();
     },
     addEventListener(_type, listener) { listeners.push(listener); },
     // Der Browser gibt die Sperre bei Unsichtbarkeit von selbst frei und meldet das genau so.
-    fireRelease() {
-      released = true;
-      for (const listener of listeners) listener();
-    },
+    fireRelease: fire,
   };
 }
 
@@ -32,8 +38,14 @@ interface FakeEnv {
   listenerCount(): number;
 }
 
-/** `request`-Verhalten je Aufruf: 'ok' liefert einen Sentinel, 'reject' lehnt ab, 'throw' wirft synchron. */
-function fakeEnv(behaviour: readonly ('ok' | 'reject' | 'throw')[], options: { supported?: boolean } = {}): FakeEnv {
+/**
+ * `request`-Verhalten je Aufruf: 'ok' liefert einen Sentinel, 'reject' lehnt ab, 'throw' wirft
+ * synchron, 'stale' liefert eine Sperre, die der Browser schon vor der Auslieferung zurückgenommen hat.
+ */
+function fakeEnv(
+  behaviour: readonly ('ok' | 'reject' | 'throw' | 'stale')[],
+  options: { supported?: boolean; rejectRelease?: boolean } = {},
+): FakeEnv {
   const listeners = new Map<string, Set<() => void>>();
   const state: FakeEnv = {
     env: {
@@ -43,8 +55,9 @@ function fakeEnv(behaviour: readonly ('ok' | 'reject' | 'throw')[], options: { s
         const mode = behaviour[state.requests - 1] ?? 'ok';
         if (mode === 'throw') throw new Error('kaputt');
         if (mode === 'reject') return Promise.reject(new Error('NotAllowedError'));
-        const sentinel = fakeSentinel();
+        const sentinel = fakeSentinel({ rejectRelease: options.rejectRelease });
         state.sentinels.push(sentinel);
+        if (mode === 'stale') sentinel.fireRelease();
         return Promise.resolve(sentinel);
       },
       on(type, listener) {
@@ -157,6 +170,81 @@ describe('requestWakeLock', () => {
     await Promise.resolve();
     expect(fake.states).toEqual(['acquired', 'released', 'denied']);
     expect(handle?.state).toBe('denied');
+  });
+
+  it('fordert neu an, wenn der Browser die Sperre bei SICHTBARER Seite zurücknimmt', async () => {
+    const fake = fakeEnv(['ok', 'ok']);
+    const handle = await requestWakeLock((state) => fake.states.push(state), fake.env);
+
+    // Energiesparmodus, Systemeinstellung, Anruf: das `release`-Ereignis kommt ohne Sichtbarkeitswechsel.
+    // Die Seite ist weiter im Vordergrund und der Messlauf läuft – also einmal neu anfordern.
+    fake.sentinels[0]?.fireRelease();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(2);
+    expect(fake.sentinels).toHaveLength(2);
+    expect(handle?.state).toBe('acquired');
+    expect(fake.states).toEqual(['acquired', 'released', 'acquired']);
+  });
+
+  it('hört nach einer Ablehnung auf zu fragen – sonst drehte sich die Schleife endlos', async () => {
+    const fake = fakeEnv(['ok', 'reject', 'ok']);
+    const handle = await requestWakeLock((state) => fake.states.push(state), fake.env);
+    fake.sentinels[0]?.fireRelease();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(2);
+    expect(fake.states).toEqual(['acquired', 'released', 'denied']);
+
+    // Auch ein späterer Anlass fragt nicht wieder: wer einmal „nein" gesagt hat, sagt es wieder.
+    fake.fire('visibilitychange');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(2);
+    expect(handle?.state).toBe('denied');
+  });
+
+  it('zwei Sichtbarkeits-Flanken während EINER laufenden Anforderung erzeugen nur eine Sperre', async () => {
+    const fake = fakeEnv(['ok', 'ok', 'ok']);
+    const handle = await requestWakeLock((state) => fake.states.push(state), fake.env);
+    fake.visible = false;
+    fake.sentinels[0]?.fireRelease();
+
+    fake.visible = true;
+    fake.fire('visibilitychange');   // startet die Neuanforderung
+    fake.fire('visibilitychange');   // zweite Flanke, bevor die erste geantwortet hat
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.requests).toBe(2);
+    // Zwei Sentinels hätte niemand mehr in der Hand: den zweiten gäbe `release` nie wieder frei.
+    expect(fake.sentinels).toHaveLength(2);
+    expect(fake.states).toEqual(['acquired', 'released', 'acquired']);
+
+    handle?.release();
+    expect(fake.sentinels[1]?.releases).toBe(1);
+  });
+
+  it('meldet „released“, wenn die Sperre schon zurückgenommen eintrifft', async () => {
+    const fake = fakeEnv(['stale']);
+    const handle = await requestWakeLock((state) => fake.states.push(state), fake.env);
+    expect(handle).not.toBeNull();
+    expect(handle?.state).toBe('released');
+    expect(fake.states).toEqual(['released']);
+    // Kein sofortiger zweiter Versuch: nur ein echtes `release`-Ereignis fordert neu an, sonst liefe
+    // eine Anforderung, die immer zurückgenommen ankommt, im Kreis.
+    expect(fake.requests).toBe(1);
+  });
+
+  it('wirft nicht, wenn `release` ablehnt – und meldet die Freigabe trotzdem genau einmal', async () => {
+    const fake = fakeEnv(['ok'], { rejectRelease: true });
+    const handle = await requestWakeLock((state) => fake.states.push(state), fake.env);
+    handle?.release();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.sentinels[0]?.releases).toBe(1);
+    // Das `release`-Ereignis der eigenen Freigabe darf keinen zweiten Eintrag erzeugen.
+    expect(fake.states).toEqual(['acquired', 'released']);
+    expect(handle?.state).toBe('released');
   });
 
   it('gibt eine Sperre, die erst nach `pagehide` eintrifft, sofort wieder frei', async () => {
