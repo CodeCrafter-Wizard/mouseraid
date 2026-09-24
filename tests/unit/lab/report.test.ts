@@ -10,9 +10,10 @@ import {
   type CellLabel,
   type LabReport,
 } from '../../../src/lab/report';
+import type { LockTestRun } from '../../../src/lab/lockTest';
 import type { ParsedCandidate } from '../../../src/net/candidates';
 import type { PermissionSnapshot } from '../../../src/net/environment';
-import { sampleAddresses, sampleCandidate, sampleReport } from '../../helpers/sampleReport';
+import { sampleAddresses, sampleCandidate, sampleLockRun, sampleReport } from '../../helpers/sampleReport';
 
 const REASON_OFF_BUT_GRANTED = 'Kamera aus, aber Berechtigung ist erteilt (echte IPs trotz fehlender Kamera)';
 const REASON_ON_NOT_GRANTED = 'Kamera an, aber Berechtigung ist nicht erteilt';
@@ -760,6 +761,7 @@ describe('reportToText', () => {
         ping: { state: null, events: null },
         pairing: null,
         qr: null,
+        lockTest: null,
         failures: [],
         timeline: [],
         notes: '',
@@ -775,6 +777,7 @@ describe('reportToText', () => {
     expect(text).toContain('Befunde: keine');
     expect(text).toContain('  (leer)');
     expect(text).toContain('Notizen: –');
+    expect(text).toContain('  keine Messung');
   });
 });
 
@@ -1079,9 +1082,13 @@ describe('createReportStore – verschachtelte Report-Form', () => {
     ),
   ];
 
-  /** Gespeicherter Text eines Reports, dessen `lockTest` `depth` Ebenen tief verschachtelt ist. */
+  /**
+   * Gespeicherter Text eines Reports mit einem UNBEKANNTEN Feld, das `depth` Ebenen tief verschachtelt
+   * ist: unbekannte Zusatzfelder ignoriert die Formprüfung, die Tiefenprüfung nicht. (Bis M1 trug
+   * `lockTest` diese Rolle – seit M2 hat es eine eigene Form und taugt dafür nicht mehr.)
+   */
   const nestedEntry = (id: string, depth: number): string =>
-    JSON.stringify(sampleReport({ id })).replace('"lockTest":null', `"lockTest":${'['.repeat(depth)}${']'.repeat(depth)}`);
+    `{"tiefe":${'['.repeat(depth)}${']'.repeat(depth)},${JSON.stringify(sampleReport({ id })).slice(1)}`;
   const storedList = (entries: readonly string[]): string => `[${entries.join(',')}]`;
 
   it('filtert Einträge mit richtigen Top-Level-Feldern, aber falscher verschachtelter Form aus', () => {
@@ -1103,7 +1110,7 @@ describe('createReportStore – verschachtelte Report-Form', () => {
     expect(accepted).toEqual([]);
   });
 
-  it('die Formprüfung ist nicht überstreng: leere Abschnitte, ein anonymisierter Report und ein mäßig verschachteltes lockTest bleiben', () => {
+  it('die Formprüfung ist nicht überstreng: leere Abschnitte, ein anonymisierter Report und ein mäßig verschachteltes Zusatzfeld bleiben', () => {
     const empty = sampleReport({
       id: 'leer',
       gather: null,
@@ -1847,5 +1854,118 @@ describe('createReportStore – Aufwaertskompatibilitaet der M1-Reports (R1)', (
       storage.data.set(REPORT_STORE_KEY, JSON.stringify([row.value]));
       expect(store.list().length > 0, row.id).toBe(row.accepted);
     }
+  });
+});
+
+// ───────── Sperrbildschirm-Test im Report (M2, Task 5) ─────────
+
+/** Die Zeilen des Blocks „Sperrbildschirm" (ohne Überschrift, bis zur nächsten Leerzeile). */
+function lockLines(report: LabReport): string[] {
+  const lines = reportToText(report).split('\n');
+  const start = lines.indexOf('Sperrbildschirm');
+  expect(start).toBeGreaterThan(0);
+  const end = lines.indexOf('', start + 1);
+  return lines.slice(start + 1, end === -1 ? undefined : end);
+}
+
+/** Flache Kopie des Beispiel-Reports OHNE den Schlüssel `lockTest` – so liegen M1-Reports im Speicher. */
+function reportWithoutLockTest(id: string): unknown {
+  const report = JSON.parse(JSON.stringify(sampleReport({ id }))) as Record<string, unknown>;
+  delete report.lockTest;
+  return report;
+}
+
+describe('reportToText – Block „Sperrbildschirm"', () => {
+  it('eine Zeile je Lauf: geplant, gemessen, beide Zustandspaare, Ping je Kanal, neu verbunden', () => {
+    expect(lockLines(sampleReport())).toEqual([
+      '  1: geplant 30 s, verdeckt 31240 ms · Transport open → open · Spur live → unmuted · Ping events 20/20, state 19/20 · neu verbunden: nein',
+    ]);
+  });
+
+  it('nummeriert mehrere Läufe durch; ohne Ping-Serie steht „nicht gemessen"', () => {
+    const runs = [
+      sampleLockRun(),
+      sampleLockRun({ plannedSeconds: 60, hiddenMs: 61_002, transportAfter: 'failed', trackAfter: 'ended', pingAfter: null, reconnected: true }),
+    ];
+    expect(lockLines(sampleReport({ lockTest: { runs } }))).toEqual([
+      lockLines(sampleReport())[0],
+      '  2: geplant 60 s, verdeckt 61002 ms · Transport open → failed · Spur live → ended · Ping nicht gemessen · neu verbunden: ja',
+    ]);
+  });
+
+  it('ein fehlendes Feld, null und eine leere Liste ergeben dieselbe eine Zeile', () => {
+    expect(lockLines(reportWithoutLockTest('m1') as LabReport)).toEqual(['  keine Messung']);
+    expect(lockLines(sampleReport({ lockTest: null }))).toEqual(['  keine Messung']);
+    expect(lockLines(sampleReport({ lockTest: { runs: [] } }))).toEqual(['  keine Messung']);
+  });
+
+  it('trägt keinen Datenmüll, wenn ein fremder Report etwas anderes unter lockTest führt', () => {
+    for (const lockTest of [{ runs: 'nein' }, { andere: 1 }, 42, 'x']) {
+      const text = reportToText({ ...sampleReport(), lockTest } as unknown as LabReport);
+      for (const garbage of ['undefined', 'NaN', '[object Object]']) expect(text, JSON.stringify(lockTest)).not.toContain(garbage);
+    }
+  });
+});
+
+describe('redactReport – lockTest', () => {
+  it('lässt Zahlen, Zustandswörter und Wahrheitswerte unangetastet', () => {
+    expect(redactReport(sampleReport()).lockTest).toEqual(sampleReport().lockTest);
+  });
+
+  it('säubert eine in einen Zustandswert geschmuggelte Adresse trotzdem (Positivliste über JEDEN String)', () => {
+    const run = { ...sampleLockRun(), transportAfter: 'failed 203.0.113.7' } as unknown as LockTestRun;
+    const redacted = redactReport(sampleReport({ lockTest: { runs: [run] } }));
+    expect(JSON.stringify(redacted)).not.toContain('203.0.113.7');
+    expect(redacted.lockTest?.runs[0]?.transportAfter).toMatch(/^failed ipv4\/other#\d+$/);
+  });
+});
+
+describe('createReportStore – Form von lockTest', () => {
+  /** Ein einzelner gespeicherter Eintrag, durch die Formprüfung gelesen. */
+  const stored = (report: unknown): LabReport[] => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, JSON.stringify([report]));
+    return createReportStore(storage).list();
+  };
+
+  it('ein M1-Report OHNE den Schlüssel bleibt gültig – sonst verlöre jedes Gerät beim Update seinen Verlauf', () => {
+    expect(ids(stored(reportWithoutLockTest('m1')))).toEqual(['m1']);
+  });
+
+  it('nimmt null und eine befüllte Liste an', () => {
+    expect(ids(stored(sampleReport({ id: 'null-wert', lockTest: null })))).toEqual(['null-wert']);
+    expect(stored(sampleReport({ id: 'gefuellt' }))[0]?.lockTest?.runs).toHaveLength(1);
+  });
+
+  it('sortiert jede kaputte Form aus', () => {
+    const broken: unknown[] = [
+      'x',
+      42,
+      [],
+      {},
+      { runs: 'nein' },
+      { runs: [42] },
+      { runs: [{ ...sampleLockRun(), hiddenMs: '7' }] },
+      { runs: [{ ...sampleLockRun(), plannedSeconds: null }] },
+      { runs: [{ ...sampleLockRun(), reconnected: 'ja' }] },
+      { runs: [{ ...sampleLockRun(), transportAfter: 42 }] },
+      { runs: [{ ...sampleLockRun(), trackBefore: null }] },
+      { runs: [{ ...sampleLockRun(), pingAfter: 'kurz' }] },
+      { runs: [{ ...sampleLockRun(), pingAfter: { events: {}, state: null } }] },
+      { runs: [{ ...sampleLockRun(), pingAfter: { events: null } }] },
+      { runs: [without(sampleLockRun(), 'pingAfter')] },
+      { runs: [without(sampleLockRun(), 'trackAfter')] },
+    ];
+    const accepted = broken.filter((lockTest) => stored({ ...sampleReport({ id: 'kaputt' }), lockTest }).length > 0);
+    expect(accepted).toEqual([]);
+  });
+
+  it('für einen gelesenen Report mit lockTest werfen Text, JSON und Schwärzung nicht', () => {
+    const [report] = stored(sampleReport({ id: 'gut' }));
+    expect(report).toBeDefined();
+    if (report === undefined) return;
+    expect(() => reportsToJson([report])).not.toThrow();
+    expect(() => redactReport(report)).not.toThrow();
+    expect(reportToText(redactReport(report))).toContain('Sperrbildschirm');
   });
 });

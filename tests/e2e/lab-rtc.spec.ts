@@ -616,6 +616,122 @@ test('Labor-UI: Host und Client verbinden sich per Text-Code und speichern je ei
   await expect(host.getByText(S.lab.reports.rawWarning)).toBeVisible();
 });
 
+// ───────── Sperrbildschirm-Test (Task 5) ─────────
+// Der echte Lauf dauert 10–60 s Sperrzeit plus Ping-Serie (bis zu ~90 s je Lauf, siehe Plan). Hier wird
+// NUR das Ereignis gefälscht: `document.hidden` überschrieben und `visibilitychange` von Hand ausgelöst.
+// Damit prüft der Test die Naht (Messung, Report-Feld, „Neu verbinden") in Sekunden; die echten Dauern
+// misst der Nutzer in Sitzung A. Codes enthalten echte Adressen → der Vergleich passiert IN der Seite.
+
+/** Angebot → Antwort → verbinden, bis beide Seiten „verbunden" zeigen. */
+async function uiHandshake(host: Page, client: Page): Promise<void> {
+  const slot = host.getByTestId('slot-1');
+  const offerOut = slot.getByTestId('offer-out');
+  await expect.poll(async () => (await offerOut.inputValue()).startsWith('MB1.'), { timeout: 15_000 }).toBe(true);
+  await client.getByTestId('offer-in').fill(await offerOut.inputValue());
+  await client.getByTestId('make-answer').click();
+  const answerOut = client.getByTestId('answer-out');
+  await expect.poll(async () => (await answerOut.inputValue()).startsWith('MB1.'), { timeout: 15_000 }).toBe(true);
+  await slot.getByTestId('answer-in').fill(await answerOut.inputValue());
+  await slot.getByTestId('connect').click();
+  await expect(slot.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+  await expect(client.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+}
+
+/**
+ * Sperrbildschirm vortäuschen. `hidden`/`visibilityState` sind Getter auf `Document.prototype`; eine
+ * eigene Eigenschaft auf dem Dokument überdeckt sie (in Chromium 153 geprüft). Das Ereignis feuert der
+ * Browser dann nicht selbst – also von Hand.
+ */
+async function fakeVisibility(page: Page, hidden: boolean): Promise<void> {
+  await page.evaluate((isHidden) => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => isHidden });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (isHidden ? 'hidden' : 'visible') });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, hidden);
+}
+
+/** Nur Zahlen und Wahrheitswerte aus den gespeicherten Host-Reports mit Sperrtest. */
+interface StoredLockReport {
+  cell: { role: string };
+  lockTest: { runs: { plannedSeconds: number; hiddenMs: number; transportAfter: string; trackAfter: string; reconnected: boolean; pingAfter: { events: { sent: number } | null; state: { sent: number } | null } | null }[] } | null;
+}
+async function lockFacts(page: Page) {
+  return page.evaluate((key) => {
+    const reports = JSON.parse(localStorage.getItem(key) ?? '[]') as StoredLockReport[];
+    return reports
+      .filter((report) => report.cell.role === 'host' && report.lockTest !== null)
+      .map((report) => {
+        const runs = report.lockTest?.runs ?? [];
+        const first = runs[0];
+        return {
+          runs: runs.length,
+          plannedSeconds: first?.plannedSeconds ?? -1,
+          hiddenMsIsNumber: typeof first?.hiddenMs === 'number',
+          transportAfter: first?.transportAfter ?? '',
+          reconnected: first?.reconnected ?? null,
+          eventsSent: first?.pingAfter?.events?.sent ?? -1,
+          stateSent: first?.pingAfter?.state?.sent ?? -1,
+        };
+      });
+  }, UI_REPORTS_KEY);
+}
+
+test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, „Neu verbinden" legt ein frisches Angebot an', { tag: '@local' }, async ({ context }) => {
+  // Zwei vollständige Handshakes, zwei Läufe mit je 20 Pings auf zwei Kanälen und eine Ping-Serie des
+  // Sperrtests – 60 s des Projekt-Standards sind dafür zu knapp.
+  test.setTimeout(150_000);
+  await context.grantPermissions(['local-network-access']);
+  const host = await context.newPage();
+  const client = await context.newPage();
+  await host.goto('lab.html?quick=1');
+  await client.goto('lab.html?quick=1');
+  await uiLabelCell(host, 'host', 'Sperr-Host');
+  await uiLabelCell(client, 'client', 'Sperr-Client');
+  await host.getByTestId('add-player').click();
+  await uiHandshake(host, client);
+
+  // ── Ein Lauf über 30 s ──
+  const slot = host.getByTestId('slot-1');
+  await expect(slot.getByTestId('lock-block')).toBeVisible();
+  // Den bisherigen Angebots-Code NUR in der Seite merken – er enthält echte Adressen dieses Rechners.
+  await host.evaluate(() => {
+    const area = document.querySelector('[data-testid="offer-out"]');
+    (window as unknown as { __lockOffer?: string }).__lockOffer = area instanceof HTMLTextAreaElement ? area.value : '';
+  });
+  await slot.getByTestId('lock-30').click();
+  await expect(slot.getByTestId('lock-status')).toContainText('30');
+  await fakeVisibility(host, true);
+  await fakeVisibility(host, false);
+  await expect(slot.getByTestId('lock-result')).toHaveAttribute('data-state', 'ok', { timeout: 30_000 });
+  await expect(slot.getByTestId('lock-pings')).toContainText('events');
+
+  // Der Lauf landet im Report: geprüft werden nur Zahlen und Wahrheitswerte.
+  await slot.getByTestId('start-ping').click();
+  await expect.poll(async () => (await lockFacts(host)).length, { timeout: 40_000 }).toBe(1);
+  expect((await lockFacts(host))[0]).toEqual({
+    runs: 1, plannedSeconds: 30, hiddenMsIsNumber: true, transportAfter: 'open', reconnected: false, eventsSent: 20, stateSent: 20,
+  });
+
+  // ── „Neu verbinden": frisches Angebot auf DEMSELBEN Platz ──
+  await slot.getByTestId('lock-reconnect').click();
+  await client.getByTestId('lock-reconnect').click();
+  // Der Vergleich bleibt IN der Seite; heraus kommt nur ein Wahrheitswert.
+  const freshOffer = (): Promise<boolean> =>
+    host.evaluate(() => {
+      const area = document.querySelector('[data-testid="offer-out"]');
+      const value = area instanceof HTMLTextAreaElement ? area.value : '';
+      return value.startsWith('MB1.') && value !== (window as unknown as { __lockOffer?: string }).__lockOffer;
+    });
+  await expect.poll(freshOffer, { message: 'nach „Neu verbinden" steht ein anderer Code im Feld', timeout: 15_000 }).toBe(true);
+
+  // … und mit dem frischen Code kommt die Verbindung erneut zustande.
+  await uiHandshake(host, client);
+  await slot.getByTestId('start-ping').click();
+  await expect.poll(async () => (await lockFacts(host)).length, { timeout: 40_000 }).toBe(2);
+  // Der neueste Report trägt denselben Lauf – jetzt mit „neu verbunden".
+  expect((await lockFacts(host))[0]).toMatchObject({ runs: 1, plannedSeconds: 30, reconnected: true });
+});
+
 // ───────── Selbsttest (Task 9) ─────────
 // Ein Gerät, eine Seite: Lauf A ohne getUserMedia, danach Lauf B mit offenem Kamera-Stream. NUR LOKAL (@local).
 // Das chromium-Projekt hat eine PERSISTIERTE Kamera-Erlaubnis (playwright.config.ts) – deshalb MUSS Lauf A

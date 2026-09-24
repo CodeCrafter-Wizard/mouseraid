@@ -5,6 +5,7 @@ import type { PingStats } from '../net/pingTest';
 import type { PayloadSizes } from '../net/sdpCodec';
 import type { TimelineEvent } from '../net/timeline';
 import type { QrFacts } from './labTypes';
+import type { LockTestRun } from './lockTest';
 import type { PairingReport } from './pairing';
 
 // Report-Modell des Testlabors. Alle Texte in dieser Datei sind Report-DATEN für den
@@ -49,8 +50,11 @@ export interface LabReport {
   pairing: PairingReport | null;
   /** QR-Pfad: Backend, Codegrößen und Dekodier-Aufwand. Gleiche Regel wie bei `pairing`. */
   qr: QrFacts | null;
-  /** Platzhalterfeld fürs Format, wird in M2 Task 5 befüllt (Sperrbildschirm-Test). */
-  lockTest: null;
+  /**
+   * Sperrbildschirm-Läufe dieses Platzes (M2). SCHREIBER setzen das Feld immer (deshalb kein `?`);
+   * LESER müssen mit seinem FEHLEN rechnen: gespeicherte M1-Reports kennen den Schlüssel nicht.
+   */
+  lockTest: { runs: LockTestRun[] } | null;
   failures: FailureCode[];
   valid: boolean;
   invalidReason: string | null;
@@ -514,6 +518,33 @@ function qrLine(qr: LabReport['qr']): string {
   );
 }
 
+/** Kurzform einer Ping-Serie im Sperrtest-Block: „20/20" bzw. „–". */
+const lockPingCount = (stats: PingStats | null | undefined): string => (stats === null || stats === undefined ? '–' : `${stats.received}/${stats.sent}`);
+
+function lockRunLine(run: LockTestRun, index: number): string {
+  const pings = run.pingAfter;
+  const ping =
+    pings === null || pings === undefined
+      ? 'Ping nicht gemessen'
+      : `Ping events ${lockPingCount(pings.events)}, state ${lockPingCount(pings.state)}`;
+  return (
+    `  ${index + 1}: geplant ${num(run.plannedSeconds)} s, verdeckt ${num(run.hiddenMs)} ms · ` +
+    `Transport ${run.transportBefore} → ${run.transportAfter} · Spur ${run.trackBefore} → ${run.trackAfter} · ` +
+    `${ping} · neu verbunden: ${yesNo(run.reconnected)}`
+  );
+}
+
+/**
+ * Ein fehlendes Feld (M1-Report aus dem Speicher), `null` und eine leere Liste ergeben dieselbe Zeile –
+ * nie zwei verschiedene Ausgaben. `Array.isArray` ist der Schutz gegen Fremddaten, die die Formprüfung
+ * nie gesehen haben (redactReport und reportToText laufen auch über frisch eingefügte Objekte).
+ */
+function lockTestLines(lockTest: LabReport['lockTest'] | undefined): string[] {
+  const runs = lockTest?.runs;
+  if (!Array.isArray(runs) || runs.length === 0) return [NO_MEASUREMENT];
+  return runs.map(lockRunLine);
+}
+
 function timelineLines(timeline: readonly TimelineEvent[]): string[] {
   if (timeline.length === 0) return ['  (leer)'];
   return timeline.map((event) => `  +${num(event.tMs)} ms ${event.kind}${event.detail === '' ? '' : ` – ${event.detail}`}`);
@@ -562,6 +593,10 @@ export function reportToText(report: LabReport): string {
     '',
     'QR',
     qrLine(report.qr ?? null),
+    '',
+    'Sperrbildschirm',
+    // `?? null` an JEDEM Lesepfad: ein gespeicherter M1-Report hat den Schlüssel gar nicht.
+    ...lockTestLines(report.lockTest ?? null),
     '',
     `Befunde: ${report.failures.length === 0 ? 'keine' : report.failures.join(', ')}`,
     '',
@@ -636,6 +671,20 @@ const PING_STATS_SHAPE = shape({
   outOfOrder: isNumber,
 });
 
+/** Ping-Serie nach dem Entsperren: je Kanal eine Statistik oder `null` (M2). */
+const LOCK_PINGS_SHAPE = shape({ state: nullOr(PING_STATS_SHAPE), events: nullOr(PING_STATS_SHAPE) });
+/** Zustandsfelder als isShortString: sie landen im Textbericht und laufen durch die Schwärzung. */
+const LOCK_RUN_SHAPE = shape({
+  plannedSeconds: isNumber,
+  hiddenMs: isNumber,
+  transportBefore: isShortString,
+  transportAfter: isShortString,
+  trackBefore: isShortString,
+  trackAfter: isShortString,
+  pingAfter: nullOr(LOCK_PINGS_SHAPE),
+  reconnected: isBoolean,
+});
+
 /**
  * Jedes Feld, das `reportToText`, `redactReport` oder `createTokenizer` einsetzt oder auf dem sie eine
  * Methode aufrufen – mit seinem Blatt-Typ. Eine Zeile pro Klausel; zu jeder gibt es in
@@ -707,6 +756,8 @@ const REPORT_SHAPE = shape({
   qr: absentOrNullOr(
     shape({ backend: isShortString, offerChars: isNumber, answerChars: isNumber, decodeLatencyMs: isNumber, attempts: isNumber }),
   ),
+  // `absentOrNullOr`: ein FEHLENDER Schlüssel zählt wie `null` – gespeicherte M1-Reports bleiben gültig.
+  lockTest: absentOrNullOr(shape({ runs: listOf(LOCK_RUN_SHAPE) })),
   failures: listOf(isString),
   valid: isBoolean,
   invalidReason: nullOr(isString),

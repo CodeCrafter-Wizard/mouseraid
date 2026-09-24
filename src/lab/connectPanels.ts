@@ -8,11 +8,13 @@ import type { RtcPeer } from '../net/rtcTransport';
 import { createTimeline, type Timeline } from '../net/timeline';
 import type { Transport, TransportState } from '../net/transport';
 import { S, fmt } from '../ui/strings';
-import { cameraStatus, openLobbyCamera } from './camera';
+import { cameraStatus, observeTracks, openLobbyCamera } from './camera';
 import { actionButton, card, codeArea, copyShareRow, h, showFailure, showMessage } from './labDom';
 import { createRelayTimeline } from './labEvents';
 import type { LabQuery } from './labQuery';
-import { attachLabLink, finishRun, type LabRunResult } from './labSession';
+import { attachLabLink, finishRun, measureLockPings, type LabRunResult } from './labSession';
+import type { TrackState } from './labTypes';
+import { LOCK_SECONDS, beginLockRun, finishLockRun, needsReconnect, type LockPings, type LockSeconds, type LockTestPlan, type LockTestRun } from './lockTest';
 import { createPairingTracker, measuredPairing, type PairingTracker } from './pairing';
 import { createQrExchange, type QrExchange } from './qrPanels';
 import { pingLine } from './reportsPanel';
@@ -116,6 +118,11 @@ interface RunBox {
   /** Platz freigegeben: meldet den `pagehide`-Zuhörer dieser Box wieder ab. */
   dispose(): void;
   setWaiting(text: string): void;
+  /**
+   * „Neu verbinden" nach dem Sperrtest: der Rückruf legt frische Codes an (Host: neues Angebot auf
+   * DEMSELBEN Platz) und liefert die Platznummer für die Zeitleiste. Ohne Rückruf bleibt der Knopf weg.
+   */
+  setReconnect(handler: () => number | null): void;
 }
 
 /** Zustands-Chip + Statuszeile + Ping-Ergebnisse einer Verbindung. */
@@ -128,8 +135,46 @@ function createRunBox(ctx: ConnectContext): RunBox {
   status.dataset.testid = 'run-status';
   const pings = h('div', 'lab-pings');
   pings.dataset.testid = 'run-pings';
-  element.append(chip, status, pings);
+
+  // ───────── Sperrbildschirm-Test (M2, D9) ─────────
+  const lock = h('div', 'lab-lock');
+  lock.dataset.testid = 'lock-block';
+  lock.hidden = true;
+  const lockStatus = h('p', 'lab-line');
+  lockStatus.dataset.testid = 'lock-status';
+  const lockPhase = h('p', 'lab-line');
+  lockPhase.dataset.testid = 'lock-phase';
+  lockPhase.hidden = true;
+  const lockResult = h('p', 'lab-line');
+  lockResult.dataset.testid = 'lock-result';
+  lockResult.hidden = true;
+  const lockPings = h('div', 'lab-pings');
+  lockPings.dataset.testid = 'lock-pings';
+  const lockHint = h('p', 'lab-line', S.lab.lock.reconnectHint);
+  lockHint.hidden = true;
+  const reconnect = actionButton(S.lab.lock.reconnect, 'lock-reconnect', 'secondary');
+  reconnect.hidden = true;
+  const lockRow = h('div', 'shell-row');
+  const lockButtons = LOCK_SECONDS.map((seconds) => {
+    const button = actionButton(fmt(S.lab.lock.start, { seconds: String(seconds) }), `lock-${seconds}`);
+    button.onclick = () => { armLock(seconds); };
+    return button;
+  });
+  lockRow.append(...lockButtons, reconnect);
+  lock.append(h('h4', 'lab-lock-title', S.lab.lock.title), h('p', 'lab-line', S.lab.lock.hint), lockRow, lockStatus, lockPhase, lockResult, lockPings, lockHint);
+
+  element.append(chip, status, pings, lock);
   let running = false;
+  /** Läufe dieses PLATZES: sie überleben ein „Neu verbinden" und stehen deshalb auch im Report der frischen Verbindung. */
+  const lockRuns: LockTestRun[] = [];
+  /** Gewählte Dauer, solange ein Lauf scharf ist. */
+  let armed: LockSeconds | null = null;
+  let plan: LockTestPlan | null = null;
+  /** Ohne offene Kamera gibt es keine Spur, die verloren gehen könnte – 'live' heißt hier „kein Spur-Problem". */
+  let trackState: TrackState = 'live';
+  let stopTracks: (() => void) | null = null;
+  let onReconnect: (() => number | null) | null = null;
+  let lockBound = false;
   /** Links, zu denen schon ein Report entstanden ist – „Platz freigeben" diagnostiziert nie doppelt. */
   const reported = new WeakSet<Link>();
   /** Der zuletzt beobachtete Link – Ziel des einen `pagehide`-Zuhörers dieser Box. */
@@ -141,6 +186,101 @@ function createRunBox(ctx: ConnectContext): RunBox {
     chip.textContent = S.lab.state[state];
     chip.dataset.state = state === 'open' ? 'ready' : state === 'connecting' ? 'pending' : 'bad';
   }
+
+  function setLockButtons(enabled: boolean): void {
+    for (const button of lockButtons) button.disabled = !enabled;
+  }
+
+  /** Der `visibilitychange`-Zuhörer hängt nur, solange ein Lauf scharf ist – und nie zweimal. */
+  function bindLock(bound: boolean): void {
+    if (bound === lockBound) return;
+    lockBound = bound;
+    if (bound) document.addEventListener('visibilitychange', onVisibility);
+    else document.removeEventListener('visibilitychange', onVisibility);
+  }
+
+  function armLock(seconds: LockSeconds): void {
+    if (watched === null || armed !== null) return;
+    armed = seconds;
+    plan = null;
+    lockResult.hidden = true;
+    lockHint.hidden = true;
+    lockPings.replaceChildren();
+    setLockButtons(false);
+    bindLock(true);
+    watched.timeline.push('lock:start', `${seconds}s`);
+    lockStatus.textContent = fmt(S.lab.lock.instruction, { seconds: String(seconds) });
+    lockPhase.textContent = S.lab.lock.waiting;
+    lockPhase.hidden = false;
+  }
+
+  function showLockRun(run: LockTestRun): void {
+    const lost = needsReconnect(run);
+    lockResult.textContent = `${fmt(S.lab.lock.back, { ms: String(run.hiddenMs) })} ${lost ? S.lab.lock.resultLost : S.lab.lock.resultOk}`;
+    lockResult.dataset.state = lost ? 'lost' : 'ok';
+    lockResult.hidden = false;
+    lockPings.replaceChildren(
+      h('p', 'lab-line', pingLine('events', run.pingAfter?.events ?? null)),
+      h('p', 'lab-line', pingLine('state', run.pingAfter?.state ?? null)),
+    );
+    lockHint.hidden = !lost || onReconnect === null;
+  }
+
+  /** Genau eine Messung je Knopfdruck: `hidden` nimmt den Start, `visible` den Rest. */
+  function onVisibility(): void {
+    const link = watched;
+    if (link === null || armed === null) return;
+    if (document.hidden) {
+      if (plan !== null) return; // zweites hidden ohne visible dazwischen: der erste Start zählt
+      plan = beginLockRun({ plannedSeconds: armed, transport: link.transport.state, track: trackState, now });
+      link.timeline.push('lock:hidden');
+      return;
+    }
+    const started = plan;
+    if (started === null) return; // sichtbar geworden, ohne je verdeckt gewesen zu sein
+    plan = null;
+    armed = null;
+    // Uhr auf den Zeitpunkt des Entsperrens EINFRIEREN: die Ping-Serie darunter dauert gut eine Sekunde
+    // und dürfte die verdeckte Zeit nicht verlängern. `finishLockRun` rechnet daraus dieselbe Zahl.
+    const visibleAtMs = now();
+    link.timeline.push('lock:visible', `${Math.max(0, Math.round(visibleAtMs - started.hiddenAtMs))}ms`);
+    lockPhase.textContent = S.lab.lock.running;
+    void measureLockPings(link.transport, now)
+      .catch((): LockPings => ({ state: null, events: null }))
+      .then((pingAfter) => {
+        // `reconnected` wird erst durch den Knopf „Neu verbinden" wahr – der kommt nach dieser Messung.
+        const finished = finishLockRun(started, { transport: link.transport.state, track: trackState, pingAfter, reconnected: false, now: () => visibleAtMs });
+        lockRuns.push(finished);
+        showLockRun(finished);
+        bindLock(false);
+        setLockButtons(true);
+        lockPhase.hidden = true;
+        lockStatus.textContent = '';
+      });
+  }
+
+  /**
+   * Der Block erscheint mit der ersten offenen Verbindung und bleibt danach stehen: „Neu verbinden"
+   * wird genau dann gebraucht, wenn die Verbindung weg ist. Die Spur wird hier NUR MITGELESEN –
+   * `camera:track:*` schreibt allein die Kamera-Karte (labUi.ts, T3) in den Seiten-Ereignis-Puffer;
+   * ein zweiter Schreiber ergäbe doppelte Zeitleisten-Einträge.
+   */
+  function revealLock(): void {
+    if (!lock.hidden) return;
+    lock.hidden = false;
+    stopTracks = observeTracks((state) => { trackState = state; });
+  }
+
+  reconnect.onclick = () => {
+    const link = watched;
+    const handler = onReconnect;
+    if (link === null || handler === null) return;
+    const slot = handler();
+    link.timeline.push('lock:reconnect', `slot ${slot === null ? '?' : slot}`);
+    const last = lockRuns[lockRuns.length - 1];
+    if (last !== undefined) lockRuns[lockRuns.length - 1] = { ...last, reconnected: true };
+    lockHint.hidden = true;
+  };
 
   async function run(link: Link): Promise<void> {
     if (running) return;
@@ -155,6 +295,8 @@ function createRunBox(ctx: ConnectContext): RunBox {
       const result = await finishRun({
         cell: ctx.cell, transport: link.transport, peer: link.peer, timeline: link.timeline, artifacts: link.artifacts, remoteSdp: link.remoteSdp,
         gumCalledThisSession: camera.gumCalled, now, pairing, qr,
+        // Die Sperrtest-Läufe gehören zum Platz: eine Kopie, damit ein späterer Lauf den Report nicht nachträglich ändert.
+        lockTest: lockRuns.length === 0 ? null : { runs: [...lockRuns] },
         hooks: {
           onStatus: (text) => { status.textContent = text; },
           onPingProgress: (channel, stats) => { pings.append(h('p', 'lab-line', pingLine(channel, stats))); },
@@ -178,10 +320,18 @@ function createRunBox(ctx: ConnectContext): RunBox {
       removeEventListener('pagehide', onPagehide);
       pagehideBound = false;
       watched = null;
+      // Der Platz verschwindet – weder der Sperrtest noch die Spur-Beobachtung dürfen ihn überleben.
+      bindLock(false);
+      stopTracks?.();
+      stopTracks = null;
     },
     setWaiting(text) {
       chip.textContent = text;
       chip.dataset.state = 'pending';
+    },
+    setReconnect(handler) {
+      onReconnect = handler;
+      reconnect.hidden = false;
     },
     watch(link, options) {
       // Ab jetzt beantwortet diese Seite Pings und merkt sich das Hello der Gegenstelle.
@@ -191,6 +341,8 @@ function createRunBox(ctx: ConnectContext): RunBox {
       // GENAU EIN Zuhörer je Box: `watched` zeigt immer auf den aktuellen Link, damit ein zweiter
       // Versuch (neues Angebot) keinen weiteren Listener anhäuft, der auf einen toten Link zeigt.
       watched = link;
+      // Nach „Neu verbinden" ist die frische Verbindung sofort offen genug für den nächsten Sperrtest.
+      if (link.transport.state === 'open') revealLock();
       if (!pagehideBound) {
         pagehideBound = true;
         addEventListener('pagehide', onPagehide, { once: true });
@@ -198,6 +350,7 @@ function createRunBox(ctx: ConnectContext): RunBox {
       link.transport.onStateChange = (state) => {
         link.timeline.push(`transport:${state}`);
         showState(state);
+        if (state === 'open') revealLock();
         options.onState?.(state);
         // Ein Fehlschlag ist der wertvollste Report: sofort mit Diagnose speichern.
         if (state === 'failed' || (state === 'open' && options.runOnOpen)) void run(link);
@@ -305,10 +458,6 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
     box.setWaiting(S.lab.state.connecting);
     watch({ transport: createBroadcastTransport({ room: ctx.query.room, selfId: 'host', peerId: `client-${slot}` }), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null, qrRun: NO_QR_RUN });
   } else {
-    box.setWaiting(S.lab.host.creating);
-    // Das Design verlangt Berechtigungsstatus und „getUserMedia in dieser Sitzung" ZUM ZEITPUNKT von createOffer –
-    // nicht erst nach dem Handshake. Beides trägt keine Adresse und landet als Zeitleisten-Eintrag im Report.
-    const gumAtOffer = cameraStatus().gumCalled; const permissionsAtOffer = queryPermissions();
     /** Antwort annehmen – aus dem Text-Feld ODER aus dem Scan; beide Wege laufen durch dasselbe `acceptAnswer`. */
     const acceptAnswer = (payload: string): void => {
       if (link === null) return;
@@ -359,32 +508,57 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       if (focusArea) answer.area.focus();
     };
     toText.onclick = () => { fallBackToText(true); };
-    void lobby.createOffer(slot).then((artifacts) => {
-      const entry = lobby.entries().get(slot);
-      if (entry === undefined) return;
-      // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
-      void permissionsAtOffer.then((p) => { entry.timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
-      offer.area.value = artifacts.payload;
-      codes.hidden = false;
-      box.setWaiting(S.lab.state.offer);
-      // Genau EIN Pass-Chip je Platz: ein zweites Angebot ersetzt ihn, es hängt sich keiner an.
-      pass.replaceChildren(passChip(artifacts));
-      watch({ transport: entry.peer.transport, peer: entry.peer, timeline: entry.timeline, artifacts, remoteSdp: null, qrRun });
-      if (qrPath) {
-        qr = createQrExchange({ timeline: entry.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } });
-        qrMount.append(qr.element, qrActions);
-        qr.show('offer', artifacts.payload);
-        // C4: der Scan startet von selbst – aber ERST mit laufender Kamera. Die Karte öffnet den Stream
-        // im selben Tick; ohne dieses Warten fände `attachCamera` keinen, der Block meldete einen
-        // Kamera-Fehler und der Lauf trüge ein falsches F9. `openLobbyCamera` ist dabei kein zweiter
-        // Zugriff: es liefert den laufenden Stream bzw. die schon laufende Anforderung.
-        void openLobbyCamera().then((camera) => {
-          // Ohne Kamera gibt es nichts zu scannen: den Grund nennt die Kamera-Karte, hier bleibt der zweite Versuch.
-          if (camera.running) scanAnswer();
-          else rescan.hidden = false;
-        });
-      }
-    }, (error: unknown) => { showError(alert, error); });
+    /**
+     * Ein frisches Angebot auf DIESEM Platz. Beim ersten Aufruf der Normalfall, nach „Neu verbinden"
+     * (Sperrtest, D9) der Neustart: `lobby.createOffer` schließt den alten Peer und legt einen neuen an –
+     * gleiche Zelle, gleicher Platz. Die Oberfläche muss dafür in den Ausgangszustand zurück.
+     */
+    const makeOffer = (): void => {
+      alert.hidden = true;
+      codes.hidden = true;
+      // Beide Felder leeren: der alte Angebots-Code ist mit dem alten Peer tot – niemand darf ihn noch
+      // abschreiben oder scannen, während das frische Angebot entsteht.
+      offer.area.value = '';
+      answer.area.value = '';
+      connect.disabled = false;
+      // Der alte QR-Block gehört zum toten Peer: Scan abbrechen, Overlay abmelden, Fläche leeren.
+      qr?.dispose();
+      qr = null;
+      qrMount.replaceChildren();
+      rescan.hidden = true;
+      box.setWaiting(S.lab.host.creating);
+      // Das Design verlangt Berechtigungsstatus und „getUserMedia in dieser Sitzung" ZUM ZEITPUNKT von createOffer –
+      // nicht erst nach dem Handshake. Beides trägt keine Adresse und landet als Zeitleisten-Eintrag im Report.
+      const gumAtOffer = cameraStatus().gumCalled; const permissionsAtOffer = queryPermissions();
+      void lobby.createOffer(slot).then((artifacts) => {
+        const entry = lobby.entries().get(slot);
+        if (entry === undefined) return;
+        // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
+        void permissionsAtOffer.then((p) => { entry.timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
+        offer.area.value = artifacts.payload;
+        codes.hidden = false;
+        box.setWaiting(S.lab.state.offer);
+        // Genau EIN Pass-Chip je Platz: ein zweites Angebot ersetzt ihn, es hängt sich keiner an.
+        pass.replaceChildren(passChip(artifacts));
+        watch({ transport: entry.peer.transport, peer: entry.peer, timeline: entry.timeline, artifacts, remoteSdp: null, qrRun });
+        if (qrPath) {
+          qr = createQrExchange({ timeline: entry.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } });
+          qrMount.append(qr.element, qrActions);
+          qr.show('offer', artifacts.payload);
+          // C4: der Scan startet von selbst – aber ERST mit laufender Kamera. Die Karte öffnet den Stream
+          // im selben Tick; ohne dieses Warten fände `attachCamera` keinen, der Block meldete einen
+          // Kamera-Fehler und der Lauf trüge ein falsches F9. `openLobbyCamera` ist dabei kein zweiter
+          // Zugriff: es liefert den laufenden Stream bzw. die schon laufende Anforderung.
+          void openLobbyCamera().then((camera) => {
+            // Ohne Kamera gibt es nichts zu scannen: den Grund nennt die Kamera-Karte, hier bleibt der zweite Versuch.
+            if (camera.running) scanAnswer();
+            else rescan.hidden = false;
+          });
+        }
+      }, (error: unknown) => { showError(alert, error); });
+    };
+    makeOffer();
+    box.setReconnect(() => { makeOffer(); return slot; });
     connect.onclick = () => {
       if (answer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
       // Von Hand eingefügt = für DIESEN Schritt auf den Text-Pfad ausgewichen. Das Zellenlabel bleibt
@@ -567,5 +741,15 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
       else rescan.hidden = false;
     });
   }
+  // „Neu verbinden" (Sperrtest, D9): der Host legt den frischen Code an, hier wird nur wieder Platz dafür
+  // gemacht. Der Platz der bisherigen Verbindung geht als Zeitleisten-Detail mit.
+  box.setReconnect(() => {
+    codes.hidden = false;
+    answerBlock.hidden = true;
+    offer.area.value = '';
+    answer.area.value = '';
+    makeAnswer.disabled = false;
+    return join?.slot ?? null;
+  });
   return element;
 }

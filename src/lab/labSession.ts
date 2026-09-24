@@ -12,6 +12,7 @@ import { BUILD_ID } from '../platform/buildInfo';
 import { S, fmt } from '../ui/strings';
 import { flushLabEvents } from './labEvents';
 import { pingCountFor } from './labQuery';
+import type { LockPings } from './lockTest';
 import { createReportStore, isRunValid, type CellLabel, type LabReport } from './report';
 
 export interface LabRunResult { report: LabReport; rawSdp: { local: string; remote: string } | null; }
@@ -20,6 +21,8 @@ export interface LabRunHooks { onStatus(text: string): void; onPingProgress?(cha
 const HELLO_TIMEOUT_MS = 3000;
 const PING_INTERVAL_MS = 33;
 const PING_TIMEOUT_MS = 2000;
+/** Sperrbildschirm-Test (D9): kurze Serie je Kanal – unabhängig von `pingCountFor`. */
+const LOCK_PING_COUNT = 20;
 /** Reihenfolge laut Plan: erst der zuverlässige Kanal, dann der unzuverlässige. */
 const PING_CHANNELS: readonly Channel[] = ['events', 'state'];
 const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
@@ -66,6 +69,21 @@ function linkFor(transport: Transport): LabLink {
  */
 export function attachLabLink(transport: Transport): void {
   linkFor(transport);
+}
+
+/**
+ * Kurze Ping-Serie nach dem Sperrbildschirm (20 je Kanal, Reihenfolge wie im Lauf) – über DENSELBEN
+ * Router wie `finishRun`; der liegt modul-privat je Transport, deshalb wohnt diese Naht hier und nicht
+ * im DOM-Modul. Wirft nie; ohne offene Verbindung bleiben beide Kanäle `null`.
+ */
+export async function measureLockPings(transport: Transport, now: () => number): Promise<LockPings> {
+  const pings: LockPings = { state: null, events: null };
+  if (transport.state !== 'open') return pings;
+  const link = linkFor(transport);
+  for (const channel of PING_CHANNELS) {
+    pings[channel] = await runPingSeries(link.router, channel, { count: LOCK_PING_COUNT, intervalMs: PING_INTERVAL_MS, timeoutMs: PING_TIMEOUT_MS, now });
+  }
+  return pings;
 }
 
 function waitForHello(link: LabLink, timeoutMs: number): Promise<Hello | null> {
@@ -149,12 +167,18 @@ function storeReport(report: LabReport): boolean {
  * `qr:fallback-text`, `camera:track:<state>`. KEIN Detail trägt je den gescannten Text, eine Adresse
  * oder `track.label`. Nur `qr:error` zählt für F9 – ein übersprungener FREMDER Code (`qr:skipped`,
  * D7) sagt über das Labor nichts aus, sonst trüge jeder Lauf neben einem Plakat einen Befund.
+ *
+ * M2 (Sperrbildschirm-Test, Task 5) ergänzt: `lock:start` (detail `'<seconds>s'`), `lock:hidden`
+ * (ohne Detail), `lock:visible` (detail `'<hiddenMs>ms'`) und `lock:reconnect` (detail `'slot <n>'`).
+ * Keiner dieser Einträge ist ein Befund – gemessen wird, was der Sperrbildschirm mit der Verbindung macht.
  */
 export async function finishRun(input: {
   cell: CellLabel; transport: Transport; peer: RtcPeer | null; timeline: Timeline; artifacts: HandshakeArtifacts | null; remoteSdp: string | null;
   gumCalledThisSession: boolean; hooks: LabRunHooks; now: () => number; notes?: string;
   /** QR-Pfad (M2): Marken der Paarung und QR-Fakten dieses Laufs; Vorgabe null. */
   pairing?: LabReport['pairing']; qr?: LabReport['qr'];
+  /** Messungen der Oberfläche; ohne Angabe steht `null` im Report (M2). */
+  lockTest?: LabReport['lockTest'];
 }): Promise<LabRunResult> {
   const { cell, transport, peer, timeline, artifacts, hooks } = input;
   const link = linkFor(transport);
@@ -234,7 +258,7 @@ export async function finishRun(input: {
     ping,
     pairing: input.pairing ?? null,
     qr: input.qr ?? null,
-    lockTest: null,
+    lockTest: input.lockTest ?? null,
     failures,
     valid: validity.valid,
     invalidReason: validity.reason,

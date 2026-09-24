@@ -1,3 +1,4 @@
+import type { LockTestRun } from '../../src/lab/lockTest';
 import type { LabReport } from '../../src/lab/report';
 import type { AddressFamily, AddressScope, ParsedCandidate } from '../../src/net/candidates';
 
@@ -37,6 +38,24 @@ export function sampleCandidate(
     type: 'host',
     family,
     scope,
+  };
+}
+
+/** Ein Sperrbildschirm-Lauf (M2), wie ihn der Verbindungs-Block aufzeichnet. Frisches Objekt pro Aufruf. */
+export function sampleLockRun(overrides: Partial<LockTestRun> = {}): LockTestRun {
+  return {
+    plannedSeconds: 30,
+    hiddenMs: 31_240,
+    transportBefore: 'open',
+    transportAfter: 'open',
+    trackBefore: 'live',
+    trackAfter: 'unmuted',
+    pingAfter: {
+      events: { sent: 20, received: 20, lossPct: 0, minMs: 2.4, medianMs: 3.7, p95Ms: 8.2, maxMs: 21, outOfOrder: 0 },
+      state: { sent: 20, received: 19, lossPct: 5, minMs: 2.2, medianMs: 3.5, p95Ms: 9.1, maxMs: 24, outOfOrder: 1 },
+    },
+    reconnected: false,
+    ...overrides,
   };
 }
 
@@ -118,7 +137,7 @@ export function sampleReport(overrides: Partial<LabReport> = {}): LabReport {
       projectedLobbyFullMs: 30_000,
     },
     qr: { backend: 'worker', offerChars: 704, answerChars: 521, decodeLatencyMs: 24.5, attempts: 7 },
-    lockTest: null,
+    lockTest: { runs: [sampleLockRun()] },
     failures: [],
     valid: true,
     invalidReason: null,

@@ -7,7 +7,8 @@ import { PROTOCOL_VERSION, encodeMessage } from '../../../src/net/protocol';
 import { createTimeline, type Timeline } from '../../../src/net/timeline';
 import type { Transport } from '../../../src/net/transport';
 import { recordLabEvent } from '../../../src/lab/labEvents';
-import { attachLabLink, finishRun, makeReportId } from '../../../src/lab/labSession';
+import { attachLabLink, finishRun, makeReportId, measureLockPings } from '../../../src/lab/labSession';
+import type { LockTestRun } from '../../../src/lab/lockTest';
 import { createReportStore, type CellLabel } from '../../../src/lab/report';
 import { S, fmt } from '../../../src/ui/strings';
 
@@ -299,6 +300,32 @@ describe('labSession', () => {
     expect(result.report.pairing).toBeNull();
     expect(result.report.qr).toBeNull();
   });
+
+  it('reicht die Sperrbildschirm-Läufe unverändert in den Report', async () => {
+    const lockRun: LockTestRun = {
+      plannedSeconds: 30, hiddenMs: 31_240, transportBefore: 'open', transportAfter: 'open',
+      trackBefore: 'live', trackAfter: 'unmuted', pingAfter: null, reconnected: true,
+    };
+    const result = await finishRun({
+      cell: cell('host'), transport: lonely(), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null,
+      gumCalledThisSession: false, hooks: { onStatus: () => undefined }, now, lockTest: { runs: [lockRun] },
+    });
+    expect(result.report.lockTest).toEqual({ runs: [lockRun] });
+    // Ohne Eingabe bleibt das Feld null (die anderen Tests prüfen genau das).
+    expect((await run(lonely(), 'host')).report.lockTest).toBeNull();
+  });
+
+  it('measureLockPings: 20 Pings je Kanal über dieselbe Verbindung, ohne offene Verbindung beide null', async () => {
+    const { host, client } = pair();
+    attachLabLink(client);
+    await Promise.all([untilOpen(host), untilOpen(client)]);
+
+    const pings = await measureLockPings(host, now);
+
+    expect(pings.events).toMatchObject({ sent: 20, received: 20, lossPct: 0 });
+    expect(pings.state).toMatchObject({ sent: 20, received: 20 });
+    expect(await measureLockPings(lonely(), now)).toEqual({ state: null, events: null });
+  }, 15_000);
 
   it('meldet, wenn der Report nicht gespeichert werden kann', async () => {
     vi.stubGlobal('localStorage', { ...storage, setItem: () => { throw new Error('QuotaExceededError'); } });
