@@ -85,8 +85,6 @@ function hotspotSelect(): HTMLSelectElement {
  *
  * `autoStart` = der QR-Pfad (D5, C3): dort ist die Kamera Voraussetzung, kein Zubehör – die Karte
  * öffnet den Stream beim Eintritt in die Lobby selbst. Auf dem Text-Pfad bleibt es beim Knopf.
- * In diesem Task ist `autoStart` immer `false` (den Pfad `'qr'` gibt es erst mit der Auswahl aus T4);
- * die Verzweigung steht schon hier, damit T4 nur noch das Argument setzen muss.
  */
 function buildCameraCard(autoStart: boolean): HTMLElement {
   const element = card(S.lab.camera.title, 'camera-card');
@@ -158,7 +156,8 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
 /** Baut das Labor unterhalb der Hülle auf: Zelle beschriften → Kamera → verbinden → Reports. */
 export function mountLab(root: HTMLElement, search: string): LabUi {
   const query: LabQuery = parseLabQuery(search);
-  const path: CellLabel['path'] = query.transport === 'broadcast' ? 'broadcast' : 'text';
+  // Der Testmodus hat keinen Signalweg zum Wählen – dort bleibt der Pfad fest.
+  const broadcast = query.transport === 'broadcast';
   const lab = h('section', 'lab');
   lab.dataset.testid = 'lab';
   const reports = createReportsPanel();
@@ -174,8 +173,26 @@ export function mountLab(root: HTMLElement, search: string): LabUi {
   device.value = loadDevice();
   device.dataset.testid = 'cell-device';
   device.setAttribute('autocomplete', 'off');
-  const pathChip = h('span', 'chip', path === 'broadcast' ? S.lab.cell.pathBroadcast : S.lab.cell.pathText);
+  // Pfad-Auswahl (M2): Text oder QR. Der Chip `cell-path` BLEIBT – er spiegelt jetzt die Auswahl,
+  // statt sie zu behaupten. So lesen Report-Liste, E2E und Nutzer denselben Wert an derselben Stelle.
+  const pathChoice = choiceGroup<'text' | 'qr'>(
+    'cell-path-choice',
+    [{ value: 'text', label: S.lab.cell.pathText }, { value: 'qr', label: S.lab.cell.pathQr }],
+    'text',
+  );
+  pathChoice.element.setAttribute('aria-label', S.lab.cell.pathChoice);
+  const pathChip = h('span', 'chip');
   pathChip.dataset.testid = 'cell-path';
+  const readPath = (): CellLabel['path'] => (broadcast ? 'broadcast' : pathChoice.value());
+  const syncPathChip = (): void => {
+    const current = readPath();
+    pathChip.textContent = current === 'broadcast' ? S.lab.cell.pathBroadcast : current === 'qr' ? S.lab.cell.pathQr : S.lab.cell.pathText;
+  };
+  for (const input of pathChoice.inputs) input.onchange = syncPathChip;
+  syncPathChip();
+  const pathBox = h('div', 'lab-path');
+  if (broadcast) pathBox.append(pathChip);
+  else pathBox.append(pathChoice.element, pathChip);
   const deviceError = h('p', 'lab-alert', S.lab.cell.deviceMissing);
   deviceError.setAttribute('role', 'alert');
   deviceError.hidden = true;
@@ -186,7 +203,7 @@ export function mountLab(root: HTMLElement, search: string): LabUi {
   restart.hidden = true;
   restart.onclick = () => { location.reload(); };
   const grid = h('div', 'lab-grid');
-  grid.append(field(S.lab.cell.role, role.element), field(S.lab.cell.camera, camera.element), field(S.lab.cell.hotspot, hotspot), field(S.lab.cell.device, device), field(S.lab.cell.path, pathChip));
+  grid.append(field(S.lab.cell.role, role.element), field(S.lab.cell.camera, camera.element), field(S.lab.cell.hotspot, hotspot), field(S.lab.cell.device, device), field(S.lab.cell.path, pathBox));
   const cellActions = h('div', 'shell-row');
   cellActions.append(confirm, restart, selfTestMount);
   cellCard.append(h('p', 'lab-line', S.lab.cell.hint), grid, deviceError, cellActions);
@@ -201,18 +218,19 @@ export function mountLab(root: HTMLElement, search: string): LabUi {
 
   const steps = h('div', 'lab-steps');
   confirm.onclick = () => {
-    const cell = readCell(role.value(), path);
+    const cell = readCell(role.value(), readPath());
     if (cell === null) return;
     // Erste Nutzergeste der Seite: genau hier darf der Bildschirm-Wachhalter angefordert werden. Er ist
     // nie fatal (headless Chromium lehnt ab, installierte iOS-Web-Apps < 18.4 ignorieren ihn) – sein
     // Zustand geht als Seiten-Ereignis in jeden Report dieses Aufrufs.
     void requestWakeLock((wakeState) => { recordLabEvent(`wakelock:${wakeState}`); });
     // Eine Zelle je Seitenaufruf: das Label darf sich während eines Laufs nicht mehr ändern.
-    for (const control of [...role.inputs, ...camera.inputs, hotspot, device]) control.disabled = true;
+    for (const control of [...role.inputs, ...camera.inputs, ...pathChoice.inputs, hotspot, device]) control.disabled = true;
     confirm.hidden = true;
     restart.hidden = false;
     const ctx = { cell, query, onRun: (result: LabRunResult) => { reports.showRun(result); } };
-    if (cell.camera === 'an') steps.append(buildCameraCard(cell.path === 'qr'));
+    // Der QR-Pfad BRAUCHT die Kamera (D5, Kamera-zuerst) – dort steht die Karte immer und startet selbst.
+    if (cell.camera === 'an' || cell.path === 'qr') steps.append(buildCameraCard(cell.path === 'qr'));
     steps.append(cell.role === 'host' ? buildHostPanel(ctx) : buildClientPanel(ctx));
   };
 

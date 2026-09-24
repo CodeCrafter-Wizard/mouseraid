@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { S } from '../../src/ui/strings';
+import type { LabHook } from '../../src/lab/labHook';
 
 // CI-fähig (kein @local): zwei Tabs EINES Kontexts verbinden sich über BroadcastChannel – ohne WebRTC.
 // Geprüft wird der ganze Labor-Ablauf: Zelle beschriften → verbunden → Ping-Test → Report → Kopieren.
@@ -295,4 +296,71 @@ test('Text-Pfad ohne Parameter: Formular passt bei 667×375 ohne horizontalen Ü
 
   await page.reload();
   await expect(page.getByTestId('cell-device')).toHaveValue('Handy-Test');
+});
+
+// ───────── M2 Task 4: QR-Pfad in der Oberfläche (Tor – kein @local) ─────────
+// Der Handshake über QR braucht ZWEI Kameras und lässt sich mit einer Datei-Fake-Kamera nicht
+// fahren (Abweichung 10 des M2-Plans). Hier laufen deshalb nur die beiden Teile, die ohne Scan
+// entscheidbar sind: die Pfad-Auswahl und der Weg „Code zu groß → Text-Pfad".
+
+test('QR-Pfad: die Auswahl spiegelt sich im Zellen-Chip, der Text-Code bleibt als Rückfall stehen', async ({ page }) => {
+  await page.goto('lab.html');
+  await expect(page.getByTestId('cell-path')).toHaveText(S.lab.cell.pathText);
+
+  await page.getByTestId('cell-path-choice-qr').check();
+  await expect(page.getByTestId('cell-path'), 'der Chip spiegelt die Auswahl').toHaveText(S.lab.cell.pathQr);
+  await page.getByTestId('cell-path-choice-text').check();
+  await expect(page.getByTestId('cell-path')).toHaveText(S.lab.cell.pathText);
+
+  await page.getByTestId('cell-path-choice-qr').check();
+  await page.getByTestId('cell-device').fill('QR-Auswahl');
+  await page.getByTestId('cell-role-client').check();
+  await page.getByTestId('cell-confirm').click();
+
+  // Eine Zelle je Seitenaufruf: nach „Zelle übernehmen" ist auch der Pfad festgeschrieben.
+  await expect(page.getByTestId('cell-path-choice-qr')).toBeDisabled();
+  await expect(page.getByTestId('cell-path')).toHaveText(S.lab.cell.pathQr);
+  // Der QR-Pfad BRAUCHT die Kamera – deshalb steht die Kamera-Karte auch ohne „Kamera an".
+  await expect(page.getByTestId('camera-card')).toBeVisible();
+  // Kamera-zuerst: der QR-Pfad öffnet den Stream ohne Knopfdruck (D5).
+  await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.lobbyRunning, { timeout: 10_000 });
+  // QR-Block UND Text-Rückfall stehen nebeneinander; der Hinweis nennt den Rückfallweg.
+  await expect(page.getByTestId('qr-block')).toBeAttached();
+  await expect(page.getByTestId('offer-in')).toBeVisible();
+  await expect(page.getByTestId('make-answer')).toBeVisible();
+  await expect(page.getByText(S.lab.qr.fallbackHint)).toBeVisible();
+});
+
+test('QR-Pfad: ein zu großer Code wird nicht gezeigt, sondern als qr:error „too-large" gemeldet', async ({ page }) => {
+  await page.goto('lab.html?hook=1');
+  await page.waitForFunction(() => '__mbLab' in window, undefined, { timeout: 10_000 });
+
+  // Der Payload entsteht IN der Seite und ist synthetisch (base64url-Füllung, keine echte Beschreibung):
+  // aus echtem Gathering kommt nie ein Code über 1100 Zeichen, und committet wird er schon gar nicht.
+  const facts = await page.evaluate((chars) => {
+    const lab = (window as unknown as { __mbLab: LabHook }).__mbLab;
+    const timeline = lab.createTimeline(() => performance.now());
+    const exchange = lab.createQrExchange({
+      timeline,
+      marks: lab.createPairingTracker(() => performance.now()),
+      looksLikePayload: () => Promise.resolve(true),
+      onQrFacts: () => undefined,
+    });
+    document.body.append(exchange.element);
+    exchange.show('offer', `MB1.p.${'A'.repeat(chars - 6)}`);
+    const status = exchange.element.querySelector<HTMLElement>('[data-testid="qr-status"]');
+    const tap = exchange.element.querySelector<HTMLElement>('[data-testid="qr-enlarge"]');
+    return {
+      events: [...timeline.events()].map((event) => `${event.kind}:${event.detail}`),
+      status: status?.textContent ?? '',
+      codeHidden: tap?.hidden ?? false,
+    };
+  }, 1101);
+
+  expect(facts.events).toContain('qr:error:too-large');
+  // Kein Eintrag trägt je den Code selbst – nur den Grund.
+  expect(facts.events.some((entry) => entry.includes('MB1.'))).toBe(false);
+  expect(facts.status).toBe(S.lab.qr.tooLarge);
+  expect(facts.codeHidden, 'kein halbgares Bild: ohne Code bleibt die Fläche leer').toBe(true);
+  await expect(page.getByTestId('qr-block').getByText(S.lab.qr.fallbackHint)).toBeVisible();
 });

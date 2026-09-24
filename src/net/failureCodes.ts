@@ -23,6 +23,13 @@ export interface FailureInput {
   wasOpenBefore: boolean;
   codecError: boolean;
   cameraError: boolean;
+  /**
+   * QR-Pfad: mindestens ein `qr:error` in der Zeitleiste (zu groß, Zeitüberschreitung, unlesbar,
+   * kein Mäusebau-Code, Kamera weg). Absichtlich ein EIGENES Feld statt einer Umdeutung von
+   * `cameraError`: der Aufrufer speist beide aus verschiedenen Quellen, und ein vergessener
+   * Aufrufer fällt so im Typecheck auf statt still ein F9 zu verschlucken.
+   */
+  qrError: boolean;
 }
 
 /** F7: so lange dürfen die Kanäle nach „ICE verbunden" zum Öffnen brauchen. */
@@ -33,7 +40,7 @@ const CHANNEL_OPEN_DEADLINE_MS = 10_000;
  *   F6 Umgebung ungeeignet – steht allein, weil ohne sie nichts anderes aussagekräftig ist.
  *   F1 keine Host-Kandidaten · F1S dasselbe auf WebKit ohne Kamera-Erlaubnis · F2 nur mDNS-Kandidaten
  *   F4 iPhone-Hotspot-Adresse (Kandidaten-Codes nur nach dem Gathering, candidates !== null)
- *   F3 ICE fehlgeschlagen · F5 Code ungültig/Versionskonflikt/falsche Rolle · F9 Kamera-Problem
+ *   F3 ICE fehlgeschlagen · F5 Code ungültig/Versionskonflikt/falsche Rolle · F9 Kamera-/QR-Problem
  *   F8 Verbindung verloren (war offen) – sonst F7, wenn ICE steht und die Kanäle nach 10 s nicht offen sind.
  */
 export function classifyFailures(input: FailureInput): FailureCode[] {
@@ -41,7 +48,7 @@ export function classifyFailures(input: FailureInput): FailureCode[] {
 
   const found = new Set<FailureCode>();
   if (input.codecError) found.add('F5');
-  if (input.cameraError) found.add('F9');
+  if (input.cameraError || input.qrError) found.add('F9');
 
   const candidates = input.candidates;
   if (candidates !== null) {

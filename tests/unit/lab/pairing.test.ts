@@ -1,0 +1,127 @@
+import { describe, expect, it } from 'vitest';
+import {
+  createPairingTracker,
+  EMPTY_PAIRING_MARKS,
+  projectLobbyFull,
+  type PairingMarks,
+} from '../../../src/lab/pairing';
+
+/** Verstellbare Uhr: `at(ms)` setzt den nächsten Rückgabewert. */
+function fakeClock(): { now: () => number; at(ms: number): void } {
+  let value = 0;
+  return { now: () => value, at: (ms) => { value = ms; } };
+}
+
+const marks = (overrides: Partial<PairingMarks> = {}): PairingMarks => ({ ...EMPTY_PAIRING_MARKS, ...overrides });
+
+describe('EMPTY_PAIRING_MARKS', () => {
+  it('ist durchgehend null und lässt sich nicht verändern', () => {
+    expect(EMPTY_PAIRING_MARKS).toEqual({
+      offerShownAt: null,
+      offerScannedMs: null,
+      answerShownAt: null,
+      answerScannedMs: null,
+      connectedMs: null,
+    });
+    expect(Object.isFrozen(EMPTY_PAIRING_MARKS)).toBe(true);
+  });
+});
+
+describe('createPairingTracker', () => {
+  it('der erste mark() setzt den Nullpunkt und trägt 0', () => {
+    const clock = fakeClock();
+    clock.at(5000);
+    const tracker = createPairingTracker(clock.now);
+    tracker.mark('offerShownAt');
+    expect(tracker.marks().offerShownAt).toBe(0);
+  });
+
+  it('spätere Marken zählen relativ zum ersten gezeigten Code, auf ganze ms gerundet', () => {
+    const clock = fakeClock();
+    clock.at(1000);
+    const tracker = createPairingTracker(clock.now);
+    tracker.mark('offerShownAt');
+    clock.at(4200.4);
+    tracker.mark('offerScannedMs');
+    clock.at(9300.6);
+    tracker.mark('connectedMs');
+    expect(tracker.marks()).toEqual(marks({ offerShownAt: 0, offerScannedMs: 3200, connectedMs: 8301 }));
+  });
+
+  it('die erste Marke eines Namens gilt – ein zweites Anzeigen verkürzt keine Messung', () => {
+    const clock = fakeClock();
+    const tracker = createPairingTracker(clock.now);
+    tracker.mark('offerShownAt');
+    clock.at(7000);
+    tracker.mark('offerShownAt');
+    expect(tracker.marks().offerShownAt).toBe(0);
+  });
+
+  it('marks() liefert eine Kopie – wer sie verändert, erreicht den Tracker nicht', () => {
+    const tracker = createPairingTracker(() => 0);
+    tracker.mark('offerShownAt');
+    const copy = tracker.marks();
+    copy.offerShownAt = 999;
+    expect(tracker.marks().offerShownAt).toBe(0);
+  });
+
+  it('report() hängt die Hochrechnung an dieselben Marken', () => {
+    const clock = fakeClock();
+    const tracker = createPairingTracker(clock.now);
+    tracker.mark('offerShownAt');
+    clock.at(4000);
+    tracker.mark('offerScannedMs');
+    clock.at(11_000);
+    tracker.mark('connectedMs');
+    expect(tracker.report()).toEqual({
+      offerShownAt: 0,
+      offerScannedMs: 4000,
+      answerShownAt: null,
+      answerScannedMs: null,
+      connectedMs: 11_000,
+      projectedLobbyFullMs: 6 * 4000 + 3 * 7000,
+    });
+  });
+});
+
+describe('projectLobbyFull', () => {
+  it('ohne connectedMs gibt es keine Hochrechnung', () => {
+    expect(projectLobbyFull(marks({ offerShownAt: 0, offerScannedMs: 4000 }))).toBeNull();
+  });
+
+  it('ohne eine einzige messbare Scan-Dauer gibt es keine Hochrechnung', () => {
+    expect(projectLobbyFull(marks({ connectedMs: 9000 }))).toBeNull();
+    expect(projectLobbyFull(marks({ offerShownAt: 0, connectedMs: 9000 }))).toBeNull();
+    expect(projectLobbyFull(marks({ offerScannedMs: 4000, connectedMs: 9000 }))).toBeNull();
+  });
+
+  it('eine Scan-Dauer: 6 × Dauer + 3 × Rest', () => {
+    // d1 = 4000; Rest = 11000 − 4000 = 7000 → 6·4000 + 3·7000 = 45000
+    expect(projectLobbyFull(marks({ offerShownAt: 0, offerScannedMs: 4000, connectedMs: 11_000 }))).toBe(45_000);
+  });
+
+  it('zwei Scan-Dauern: Median ist der Nearest-Rank-50 % (bei zwei Werten der kleinere)', () => {
+    // d1 = 4000, d2 = 3000 → Median 3000; Rest = 11000 − 7000 = 4000 → 6·3000 + 3·4000 = 30000
+    const both = marks({ offerShownAt: 0, offerScannedMs: 4000, answerShownAt: 5000, answerScannedMs: 8000, connectedMs: 11_000 });
+    expect(projectLobbyFull(both)).toBe(30_000);
+  });
+
+  it('eine negative Differenz zählt nicht als Dauer', () => {
+    const backwards = marks({ offerShownAt: 5000, offerScannedMs: 4000, answerShownAt: 5000, answerScannedMs: 8000, connectedMs: 11_000 });
+    // nur d2 = 3000 zählt; Rest = 11000 − 3000 = 8000 → 6·3000 + 3·8000 = 42000
+    expect(projectLobbyFull(backwards)).toBe(42_000);
+  });
+
+  it('eine Dauer von 0 zählt mit', () => {
+    expect(projectLobbyFull(marks({ offerShownAt: 900, offerScannedMs: 900, connectedMs: 1000 }))).toBe(3000);
+  });
+
+  it('der Rest wird nie negativ', () => {
+    // Summe der Dauern (9000) ist größer als connectedMs (5000) → Rest 0
+    expect(projectLobbyFull(marks({ offerShownAt: 0, offerScannedMs: 9000, connectedMs: 5000 }))).toBe(54_000);
+  });
+
+  it('das Ergebnis ist ganzzahlig gerundet', () => {
+    expect(projectLobbyFull(marks({ offerShownAt: 0, offerScannedMs: 100.5, connectedMs: 200.5 }))).toBe(Math.round(6 * 100.5 + 3 * 100));
+  });
+});

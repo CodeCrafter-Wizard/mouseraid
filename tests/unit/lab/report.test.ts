@@ -758,6 +758,8 @@ describe('reportToText', () => {
         sctpMaxMessageSize: null,
         hello: null,
         ping: { state: null, events: null },
+        pairing: null,
+        qr: null,
         failures: [],
         timeline: [],
         notes: '',
@@ -997,6 +999,8 @@ describe('createReportStore – verschachtelte Report-Form', () => {
   const PING_FIELDS = ['sent', 'received', 'lossPct', 'minMs', 'medianMs', 'p95Ms', 'maxMs', 'outOfOrder'];
   const FEATURE_FLAGS = ['rtc', 'compressionStream', 'wakeLock', 'barcodeDetector', 'storagePersist', 'shareText', 'clipboardWrite'];
   const PAIR_STRINGS = ['localType', 'localProtocol', 'localFamily', 'localScope', 'remoteType', 'remoteFamily', 'remoteScope'];
+  const PAIRING_MARKS = ['offerShownAt', 'offerScannedMs', 'answerShownAt', 'answerScannedMs', 'connectedMs', 'projectedLobbyFullMs'];
+  const QR_NUMBERS = ['offerChars', 'answerChars', 'decodeLatencyMs', 'attempts'];
 
   // Jede Klausel von looksLikeReport: Pfad plus die Werte, die dort NICHT stehen dürfen.
   const CLAUSES: Array<{ kind: string; paths: Path[]; wrong: unknown[] }> = [
@@ -1011,6 +1015,7 @@ describe('createReportStore – verschachtelte Report-Form', () => {
         ...['kind', 'detail'].map((key) => [...FIRST_EVENT, key]),
         ...PAIR_STRINGS.map((key) => ['selectedPair', key]),
         ['hello', 'remoteBuildId'],
+        ['qr', 'backend'],
       ],
       wrong: [42, null, true, { a: 1 }, { toString: 1 }, ['x']],
     },
@@ -1021,6 +1026,7 @@ describe('createReportStore – verschachtelte Report-Form', () => {
         ...['sdpBytes', 'minimisedBytes', 'packedBytes', 'textChars'].map((key) => ['payloadSizes', key]),
         ...PING_FIELDS.map((key) => ['ping', 'state', key]),
         ...PING_FIELDS.map((key) => ['ping', 'events', key]),
+        ...QR_NUMBERS.map((key) => ['qr', key]),
       ],
       wrong: ['7', null, true, { a: 1 }, { valueOf: 1 }, [1]],
     },
@@ -1034,7 +1040,11 @@ describe('createReportStore – verschachtelte Report-Form', () => {
       wrong: ['ja', 0, null, { a: 1 }, [true]],
     },
     { kind: 'Zeichenkette oder null', paths: [['invalidReason']], wrong: [42, true, { a: 1 }, ['x']] },
-    { kind: 'Zahl oder null', paths: [['sctpMaxMessageSize'], ['selectedPair', 'currentRttMs']], wrong: ['7', true, { a: 1 }, [1]] },
+    {
+      kind: 'Zahl oder null',
+      paths: [['sctpMaxMessageSize'], ['selectedPair', 'currentRttMs'], ...PAIRING_MARKS.map((key) => ['pairing', key])],
+      wrong: ['7', true, { a: 1 }, [1]],
+    },
     {
       kind: 'Objekt',
       paths: [['cell'], ['environment'], ['environment', 'features'], ['permissions'], ['ping'], FIRST_CANDIDATE, FIRST_EVENT],
@@ -1052,12 +1062,22 @@ describe('createReportStore – verschachtelte Report-Form', () => {
     },
     { kind: 'Liste von Objekten', paths: [['timeline'], ['gather', 'gathered']], wrong: ['x', 42, null, {}, ['x'], [null], [[]]] },
   ];
-  const clauseRows: Array<{ label: string; report: unknown }> = CLAUSES.flatMap(({ kind, paths, wrong }) =>
-    paths.flatMap((path) => [
-      { label: `${path.join('.')} fehlt (${kind})`, report: changedAt(path, 'fehlt') },
-      ...wrong.map((value) => ({ label: `${path.join('.')} = ${JSON.stringify(value)} (${kind})`, report: changedAt(path, { set: value }) })),
-    ]),
-  );
+  // `pairing` und `qr` DÜRFEN fehlen (M1-Reports, absentOrNullOr) – deshalb stehen sie nicht in
+  // CLAUSES, wo jede Zeile auch eine „fehlt"-Variante erzeugt, sondern hier nur mit falschen Werten.
+  const ABSENT_OK: Array<{ kind: string; paths: Path[]; wrong: unknown[] }> = [
+    { kind: 'Objekt, null oder fehlend', paths: [['pairing'], ['qr']], wrong: ['x', 42, true, [], {}] },
+  ];
+  const clauseRows: Array<{ label: string; report: unknown }> = [
+    ...CLAUSES.flatMap(({ kind, paths, wrong }) =>
+      paths.flatMap((path) => [
+        { label: `${path.join('.')} fehlt (${kind})`, report: changedAt(path, 'fehlt') },
+        ...wrong.map((value) => ({ label: `${path.join('.')} = ${JSON.stringify(value)} (${kind})`, report: changedAt(path, { set: value }) })),
+      ]),
+    ),
+    ...ABSENT_OK.flatMap(({ kind, paths, wrong }) =>
+      paths.flatMap((path) => wrong.map((value) => ({ label: `${path.join('.')} = ${JSON.stringify(value)} (${kind})`, report: changedAt(path, { set: value }) }))),
+    ),
+  ];
 
   /** Gespeicherter Text eines Reports, dessen `lockTest` `depth` Ebenen tief verschachtelt ist. */
   const nestedEntry = (id: string, depth: number): string =>
@@ -1711,5 +1731,121 @@ describe('redactText – einzelner Text ohne Report (T24)', () => {
   it('nimmt auch Kandidaten-Geheimnisse mit, nicht nur Adressen', () => {
     expect(redactText(`a=candidate:2999745851 1 udp 2122260223 ${DOC_IPV4} 50001 typ host ufrag Zq7K`))
       .toBe('a=candidate:entfernt 1 udp 2122260223 ipv4/other#1 50001 typ host ufrag entfernt');
+  });
+});
+
+// ───────── M2 Task 4: Report-Felder `pairing` und `qr` ─────────
+
+describe('reportToText – Paarung und QR', () => {
+  const pairing = {
+    offerShownAt: 0, offerScannedMs: 4200, answerShownAt: 5100, answerScannedMs: 8400,
+    connectedMs: 11_000, projectedLobbyFullMs: 30_000,
+  };
+  const qr = { backend: 'worker' as const, offerChars: 704, answerChars: 521, decodeLatencyMs: 24.5, attempts: 7 };
+
+  it('nennt Marken und Hochrechnung in einem eigenen Block', () => {
+    const text = reportToText(sampleReport({ pairing, qr }));
+    expect(text).toContain('Paarung');
+    expect(text).toContain('  Angebot: gezeigt 0 ms · gescannt 4200 ms');
+    expect(text).toContain('  Antwort: gezeigt 5100 ms · gescannt 8400 ms');
+    expect(text).toContain('  Verbunden 11000 ms · Hochrechnung „Lobby voll“ 30000 ms');
+  });
+
+  it('nennt Backend, Zeichenzahlen, Latenz und Versuche in einem eigenen Block', () => {
+    const text = reportToText(sampleReport({ pairing, qr }));
+    expect(text).toContain('QR');
+    expect(text).toContain('  Backend worker · Angebot 704 Zeichen · Antwort 521 Zeichen · Dekodierung 24.5 ms · Versuche 7');
+  });
+
+  it('einzelne Marken ohne Wert erscheinen als Gedankenstrich, nicht als undefined', () => {
+    const text = reportToText(sampleReport({ pairing: { ...pairing, answerScannedMs: null, projectedLobbyFullMs: null } }));
+    expect(text).toContain('  Antwort: gezeigt 5100 ms · gescannt –');
+    expect(text).toContain('Hochrechnung „Lobby voll“ –');
+    expect(text).not.toContain('undefined');
+  });
+
+  it('null und ein FEHLENDES Feld ergeben dieselbe Zeile „keine Messung“', () => {
+    const withNull = reportToText(sampleReport({ pairing: null, qr: null }));
+    const m1Shaped = JSON.parse(JSON.stringify(sampleReport())) as Record<string, unknown>;
+    delete m1Shaped['pairing'];
+    delete m1Shaped['qr'];
+    expect(withNull).toBe(reportToText(m1Shaped as unknown as LabReport));
+    // Zweimal „keine Messung“ – einmal für Paarung, einmal für QR.
+    expect(withNull.split('keine Messung')).toHaveLength(3);
+  });
+});
+
+describe('redactReport – die neuen Felder brauchen keine eigene Regel', () => {
+  const pairing = { offerShownAt: 0, offerScannedMs: 4200, answerShownAt: null, answerScannedMs: null, connectedMs: 9000, projectedLobbyFullMs: 52_200 };
+  const qr = { backend: 'native' as const, offerChars: 704, answerChars: 0, decodeLatencyMs: 18, attempts: 3 };
+
+  it('Zahlen und Aufzählungswerte bleiben unverändert', () => {
+    const redacted = redactReport(sampleReport({ pairing, qr }));
+    expect(redacted.pairing).toEqual(pairing);
+    expect(redacted.qr).toEqual(qr);
+  });
+
+  it('wirft auch dann nicht, wenn die Felder ganz fehlen (M1-Report)', () => {
+    const m1Shaped = JSON.parse(JSON.stringify(sampleReport())) as Record<string, unknown>;
+    delete m1Shaped['pairing'];
+    delete m1Shaped['qr'];
+    delete m1Shaped['lockTest'];
+    const redacted = redactReport(m1Shaped as unknown as LabReport);
+    expect(JSON.stringify(redacted)).not.toContain('undefined');
+    expect(reportToText(redacted)).not.toContain('undefined');
+  });
+});
+
+describe('createReportStore – Aufwaertskompatibilitaet der M1-Reports (R1)', () => {
+  /** Ein gespeicherter Report in M1-Form: OHNE die Schlüssel pairing, qr und lockTest. */
+  function m1Stored(id: string): string {
+    const value = JSON.parse(JSON.stringify(sampleReport({ id }))) as Record<string, unknown>;
+    delete value['pairing'];
+    delete value['qr'];
+    delete value['lockTest'];
+    return JSON.stringify(value);
+  }
+
+  it('die Fixture trägt die drei Schlüssel wirklich nicht', () => {
+    const stored = m1Stored('m1');
+    for (const key of ['pairing', 'qr', 'lockTest']) expect(stored).not.toContain(`"${key}"`);
+  });
+
+  it('kommt durch list(), lässt sich rendern, schwärzen und als JSON schreiben – ohne Datenmüll', () => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, `[${m1Stored('m1')}]`);
+    const listed = createReportStore(storage).list();
+
+    expect(ids(listed)).toEqual(['m1']);
+    const report = listed[0];
+    expect(report).toBeDefined();
+    if (report === undefined) return;
+    for (const text of [reportToText(report), reportToText(redactReport(report)), reportsToJson(listed)]) {
+      for (const garbage of ['undefined', 'NaN', '[object Object]']) expect(text).not.toContain(garbage);
+    }
+  });
+
+  it('ein M1-Report überlebt auch das nächste add() eines M2-Reports', () => {
+    const storage = memoryStorage();
+    storage.data.set(REPORT_STORE_KEY, `[${m1Stored('m1')}]`);
+    const store = createReportStore(storage);
+    store.add(sampleReport({ id: 'm2' }));
+    expect(ids(store.list())).toEqual(['m2', 'm1']);
+  });
+
+  it('null und ein fehlender Schlüssel kommen beide durch, ein falscher Wert nicht', () => {
+    const storage = memoryStorage();
+    const store = createReportStore(storage);
+    const rows: Array<{ id: string; value: unknown; accepted: boolean }> = [
+      { id: 'null', value: sampleReport({ id: 'null', pairing: null, qr: null }), accepted: true },
+      { id: 'voll', value: sampleReport({ id: 'voll' }), accepted: true },
+      { id: 'pairing-text', value: { ...sampleReport({ id: 'pairing-text' }), pairing: 'nope' }, accepted: false },
+      { id: 'qr-liste', value: { ...sampleReport({ id: 'qr-liste' }), qr: [] }, accepted: false },
+      { id: 'qr-leer', value: { ...sampleReport({ id: 'qr-leer' }), qr: {} }, accepted: false },
+    ];
+    for (const row of rows) {
+      storage.data.set(REPORT_STORE_KEY, JSON.stringify([row.value]));
+      expect(store.list().length > 0, row.id).toBe(row.accepted);
+    }
   });
 });

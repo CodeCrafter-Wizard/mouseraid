@@ -4,10 +4,17 @@ import type { FailureCode } from '../net/failureCodes';
 import type { PingStats } from '../net/pingTest';
 import type { PayloadSizes } from '../net/sdpCodec';
 import type { TimelineEvent } from '../net/timeline';
+import type { QrFacts } from './labTypes';
+import type { PairingReport } from './pairing';
 
 // Report-Modell des Testlabors. Alle Texte in dieser Datei sind Report-DATEN für den
 // Entwickler-Rückkanal (wie der Diagnose-Text in src/platform/errorLog.ts), keine Spiel-UI –
 // deshalb stehen sie nicht in src/ui/strings.ts.
+
+// Die Aufzählungstypen wohnen im importfreien Leaf-Modul labTypes.ts (nicht hier): alles, was
+// `labHook.ts` exportiert, hängt an ihnen, und `report.ts` zieht über `net/environment` die
+// Vite-Konstante `__BUILD_ID__` in den Typgraphen. Re-Export, damit Aufrufer aus M1 nichts ändern.
+export type { QrFacts, ScanBackend, TrackState } from './labTypes';
 
 export interface CellLabel {
   role: 'host' | 'client' | 'selbsttest';
@@ -34,7 +41,15 @@ export interface LabReport {
   sctpMaxMessageSize: number | null;
   hello: { remoteProtoV: number; remoteBuildId: string; versionMatch: boolean } | null;
   ping: { state: PingStats | null; events: PingStats | null };
-  /** Platzhalterfeld fürs Format, wird in M2 befüllt (Sperrbildschirm-Test). */
+  /**
+   * QR-Pfad: Marken der Paarung samt Hochrechnung „Zeit bis Lobby voll". null auf jedem anderen Pfad.
+   * SCHREIBER setzen das Feld immer (deshalb kein `?`); LESER müssen mit seinem FEHLEN rechnen –
+   * ein in M1 gespeicherter Report kennt den Schlüssel nicht. Jeder Lesepfad normalisiert mit `?? null`.
+   */
+  pairing: PairingReport | null;
+  /** QR-Pfad: Backend, Codegrößen und Dekodier-Aufwand. Gleiche Regel wie bei `pairing`. */
+  qr: QrFacts | null;
+  /** Platzhalterfeld fürs Format, wird in M2 Task 5 befüllt (Sperrbildschirm-Test). */
   lockTest: null;
   failures: FailureCode[];
   valid: boolean;
@@ -473,6 +488,32 @@ function pingLine(channel: string, stats: PingStats | null): string {
   );
 }
 
+/** Eine Marke ohne Wert ist ein Gedankenstrich – nie `undefined`, nie `NaN`. */
+const msOrDash = (value: number | null): string => (value === null ? '–' : `${num(value)} ms`);
+const NO_MEASUREMENT = '  keine Messung';
+
+/**
+ * Ein FEHLENDES Feld (M1-Report) und `null` ergeben dieselben Zeilen – die Aufrufer normalisieren
+ * dafür mit `?? null`. Zwei verschiedene Ausgaben für „nicht gemessen" wären beim Vergleich zweier
+ * Berichte die unangenehmste Art von Unterschied: einer, der nichts bedeutet.
+ */
+function pairingLines(pairing: PairingReport | null): string[] {
+  if (pairing === null) return [NO_MEASUREMENT];
+  return [
+    `  Angebot: gezeigt ${msOrDash(pairing.offerShownAt)} · gescannt ${msOrDash(pairing.offerScannedMs)}`,
+    `  Antwort: gezeigt ${msOrDash(pairing.answerShownAt)} · gescannt ${msOrDash(pairing.answerScannedMs)}`,
+    `  Verbunden ${msOrDash(pairing.connectedMs)} · Hochrechnung „Lobby voll“ ${msOrDash(pairing.projectedLobbyFullMs)}`,
+  ];
+}
+
+function qrLine(qr: LabReport['qr']): string {
+  if (qr === null) return NO_MEASUREMENT;
+  return (
+    `  Backend ${qr.backend} · Angebot ${num(qr.offerChars)} Zeichen · Antwort ${num(qr.answerChars)} Zeichen · ` +
+    `Dekodierung ${num(qr.decodeLatencyMs)} ms · Versuche ${num(qr.attempts)}`
+  );
+}
+
 function timelineLines(timeline: readonly TimelineEvent[]): string[] {
   if (timeline.length === 0) return ['  (leer)'];
   return timeline.map((event) => `  +${num(event.tMs)} ms ${event.kind}${event.detail === '' ? '' : ` – ${event.detail}`}`);
@@ -515,6 +556,12 @@ export function reportToText(report: LabReport): string {
     'Ping',
     pingLine('state', report.ping.state),
     pingLine('events', report.ping.events),
+    '',
+    'Paarung',
+    ...pairingLines(report.pairing ?? null),
+    '',
+    'QR',
+    qrLine(report.qr ?? null),
     '',
     `Befunde: ${report.failures.length === 0 ? 'keine' : report.failures.join(', ')}`,
     '',
@@ -560,6 +607,18 @@ const listOf =
   (check: Check): Check =>
   (value) =>
     Array.isArray(value) && value.every((entry) => check(entry));
+/**
+ * Wie `nullOr`, lässt aber auch ein FEHLENDES Feld durch – genau für die M2-Felder `pairing`, `qr`
+ * und (ab Task 5) `lockTest`. Ein in M1 gespeicherter Report kennt diese Schlüssel nicht; ohne diese
+ * Nachsicht verlöre beim Update jedes Gerät seinen localStorage-Verlauf, also genau die Geräte,
+ * deren Reports M2 sammeln soll. Preis: die Formprüfung unterscheidet nicht mehr, ob ein Feld fehlt,
+ * weil der Report alt ist, oder weil ein Schreiber es vergessen hat – dagegen hilft nur der Typ
+ * `LabReport`, der alle drei verlangt.
+ */
+const absentOrNullOr =
+  (check: Check): Check =>
+  (value) =>
+    value === undefined || value === null || check(value);
 /** Objekt (kein Array), dessen genannte Felder ALLE ihre Prüfung bestehen; ein fehlendes Feld ist `undefined` und fällt durch. */
 const shape = (fields: Readonly<Record<string, Check>>): Check => {
   const entries = Object.entries(fields);
@@ -634,6 +693,20 @@ const REPORT_SHAPE = shape({
   sctpMaxMessageSize: nullOr(isNumber),
   hello: nullOr(shape({ remoteProtoV: isNumber, remoteBuildId: isString, versionMatch: isBoolean })),
   ping: shape({ state: nullOr(PING_STATS_SHAPE), events: nullOr(PING_STATS_SHAPE) }),
+  // `backend` landet in einem Token/einer RegExp (scrubStrings läuft darüber) → isShortString.
+  pairing: absentOrNullOr(
+    shape({
+      offerShownAt: nullOr(isNumber),
+      offerScannedMs: nullOr(isNumber),
+      answerShownAt: nullOr(isNumber),
+      answerScannedMs: nullOr(isNumber),
+      connectedMs: nullOr(isNumber),
+      projectedLobbyFullMs: nullOr(isNumber),
+    }),
+  ),
+  qr: absentOrNullOr(
+    shape({ backend: isShortString, offerChars: isNumber, answerChars: isNumber, decodeLatencyMs: isNumber, attempts: isNumber }),
+  ),
   failures: listOf(isString),
   valid: isBoolean,
   invalidReason: nullOr(isString),

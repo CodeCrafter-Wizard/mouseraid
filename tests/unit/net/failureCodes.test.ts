@@ -22,6 +22,7 @@ function input(overrides: Partial<FailureInput> = {}): FailureInput {
     wasOpenBefore: true,
     codecError: false,
     cameraError: false,
+    qrError: false,
     ...overrides,
   };
 }
@@ -111,6 +112,22 @@ describe('classifyFailures – F5 und F9', () => {
 
   it('F9: Kamera-Anforderung fehlgeschlagen', () => {
     expect(classifyFailures(input({ cameraError: true }))).toEqual(['F9']);
+  });
+
+  it('F9: ein QR-/Scan-Fehler zählt genauso wie ein Kamera-Fehler', () => {
+    expect(classifyFailures(input({ qrError: true }))).toEqual(['F9']);
+  });
+
+  it('F9 steht genau einmal, auch wenn Kamera UND QR gescheitert sind', () => {
+    expect(classifyFailures(input({ cameraError: true, qrError: true }))).toEqual(['F9']);
+  });
+
+  it('ohne beide Eingaben gibt es kein F9', () => {
+    expect(classifyFailures(input({ cameraError: false, qrError: false }))).toEqual([]);
+  });
+
+  it('F6 verdrängt auch ein F9 aus einem QR-Fehler', () => {
+    expect(classifyFailures(input({ secureContext: false, qrError: true }))).toEqual(['F6']);
   });
 });
 

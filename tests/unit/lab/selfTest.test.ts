@@ -44,7 +44,7 @@ function makeReport(overrides: Partial<LabReport> = {}): LabReport {
       state: { sent: 50, received: 49, lossPct: 2, minMs: 0.2, medianMs: 0.4, p95Ms: 1.1, maxMs: 2, outOfOrder: 0 },
       events: { sent: 50, received: 50, lossPct: 0, minMs: 0.2, medianMs: 0.44, p95Ms: 1.25, maxMs: 2, outOfOrder: 0 },
     },
-    lockTest: null, failures: [], valid: true, invalidReason: null, notes: '',
+    pairing: null, qr: null, lockTest: null, failures: [], valid: true, invalidReason: null, notes: '',
     ...overrides,
   };
 }

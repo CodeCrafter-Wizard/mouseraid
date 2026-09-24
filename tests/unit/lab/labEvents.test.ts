@@ -66,15 +66,45 @@ describe('createRelayTimeline', () => {
     ]);
   });
 
-  it('schreibt danach direkt ins Ziel und nicht mehr in den Puffer', () => {
+  it('schreibt nach dem Andocken ins Ziel – genau einmal', () => {
     const relay = createRelayTimeline(() => 0);
     const target = createTimeline(() => 0);
     relay.drainInto(target);
     relay.timeline.push('qr:shown', 'offer 704 Zeichen, 101 Module, 4 px/Modul');
     expect(target.events().map((event) => event.kind)).toEqual(['qr:shown']);
-    // Ein zweites Andocken darf nichts doppeln: der Puffer ist leer, seit er ausgeschüttet wurde.
+  });
+
+  it('dieselbe Zeitleiste zweimal andocken doppelt nichts', () => {
+    const relay = createRelayTimeline(() => 0);
+    relay.timeline.push('qr:backend', 'worker');
+    const target = createTimeline(() => 0);
+    relay.drainInto(target);
+    relay.timeline.push('qr:shown', 'offer 704 Zeichen, 101 Module, 4 px/Modul');
+    relay.drainInto(target);
+    expect(target.events().map((event) => event.kind)).toEqual(['qr:backend', 'qr:shown']);
+  });
+
+  it('eine zweite Zeitleiste bekommt den GANZEN Verlauf, die erste nichts mehr', () => {
+    const relay = createRelayTimeline(() => 0);
+    relay.timeline.push('qr:backend', 'worker');
+    relay.timeline.push('qr:shown', 'offer 704 Zeichen, 101 Module, 4 px/Modul');
+    const first = createTimeline(() => 0);
+    relay.drainInto(first);
+    expect(first.events()).toHaveLength(2);
+
+    relay.timeline.push('qr:decoded', 'worker 24ms 7');
+    expect(first.events()).toHaveLength(3);
+
+    // Zweiter Versuch, zweite Zeitleiste (ein erneutes `acceptOffer` legt eine neue an): sie bekommt
+    // den ganzen bisherigen Verlauf – sonst fehlten genau die Einträge, die sie belegen soll.
     const second = createTimeline(() => 0);
     relay.drainInto(second);
-    expect(second.events()).toEqual([]);
+    expect(second.events().map((event) => event.kind)).toEqual(['qr:backend', 'qr:shown', 'qr:decoded']);
+    expect(first.events()).toHaveLength(3);
+
+    // Ab jetzt landet jeder Eintrag NUR noch in der neuesten Zeitleiste.
+    relay.timeline.push('qr:fallback-text', 'offer');
+    expect(second.events()).toHaveLength(4);
+    expect(first.events()).toHaveLength(3);
   });
 });

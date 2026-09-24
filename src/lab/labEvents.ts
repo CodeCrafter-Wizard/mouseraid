@@ -44,17 +44,32 @@ export function flushLabEvents(timeline: Timeline): void {
  * genau in dem Report, der sie belegen soll. Zweiter Puffer derselben Art wie oben, deshalb hier und
  * nicht in einem DOM-Modul: `connectPanels.ts` soll keine eigene Ereignis-Mechanik bekommen.
  * Die Zeitstempel entstehen beim Nachtragen; gemessen wird die Paarung ohnehin über `PairingMarks`.
+ *
+ * Der Puffer sammelt JEDEN Eintrag weiter, auch nach dem Andocken – ein zweiter Versuch legt eine
+ * ZWEITE Zeitleiste an (erneutes `acceptOffer` nach „Erneut scannen"), und die soll den ganzen
+ * bisherigen Verlauf bekommen, nicht nur den Teil vor dem ersten Andocken. Wer wie viel davon schon
+ * hat, steht je Zeitleiste in `seen` – dieselbe Buchführung wie `flushedUpTo` oben, damit ein
+ * zweites Andocken derselben Zeitleiste nichts doppelt. Geschrieben wird immer nur in die NEUESTE.
  */
 export function createRelayTimeline(now: () => number): { timeline: Timeline; drainInto(target: Timeline): void } {
   const buffer = createTimeline(now);
+  const seen = new WeakMap<Timeline, number>();
   let target: Timeline | null = null;
   return {
     timeline: {
-      push: (kind, detail) => { (target ?? buffer).push(kind, detail); },
+      push: (kind, detail) => {
+        buffer.push(kind, detail);
+        if (target === null) return;
+        target.push(kind, detail);
+        // Das Ziel hat den Eintrag schon – ohne diese Zeile bekäme es ihn beim nächsten Andocken erneut.
+        seen.set(target, buffer.events().length);
+      },
       events: () => (target ?? buffer).events(),
     },
     drainInto(next) {
-      for (const event of buffer.events()) next.push(event.kind, event.detail);
+      const events = buffer.events();
+      for (const event of events.slice(seen.get(next) ?? 0)) next.push(event.kind, event.detail);
+      seen.set(next, events.length);
       target = next;
     },
   };

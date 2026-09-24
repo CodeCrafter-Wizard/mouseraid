@@ -133,10 +133,15 @@ function storeReport(report: LabReport): boolean {
  * (detail = Fehlername), wenn die Kamera-Anforderung scheiterte → F9, `camera:running`, `permissions:handshake`.
  * Dazu die Seiten-Ereignisse aus `labEvents.ts` (`wakelock:<state>`, `camera:track:<state>`), die dieser
  * Lauf selbst einsammelt.
+ *
+ * M2 (QR-Pfad) ergänzt: `qr:backend`, `qr:shown`, `qr:decoded`, `qr:error`, `qr:fallback-text`,
+ * `camera:track:<state>`. KEIN Detail trägt je den gescannten Text, eine Adresse oder `track.label`.
  */
 export async function finishRun(input: {
   cell: CellLabel; transport: Transport; peer: RtcPeer | null; timeline: Timeline; artifacts: HandshakeArtifacts | null; remoteSdp: string | null;
   gumCalledThisSession: boolean; hooks: LabRunHooks; now: () => number; notes?: string;
+  /** QR-Pfad (M2): Marken der Paarung und QR-Fakten dieses Laufs; Vorgabe null. */
+  pairing?: LabReport['pairing']; qr?: LabReport['qr'];
 }): Promise<LabRunResult> {
   const { cell, transport, peer, timeline, artifacts, hooks } = input;
   const link = linkFor(transport);
@@ -190,6 +195,9 @@ export async function finishRun(input: {
     wasOpenBefore: events.some((event) => event.kind.startsWith('channel-open:') || event.kind === 'transport:open'),
     codecError: hello !== null && !hello.versionMatch,
     cameraError: events.some((event) => event.kind === 'camera-error'),
+    // Eigenes Feld statt einer Umdeutung von cameraError: die Quelle ist eine andere (der QR-Block
+    // schreibt `qr:error`), und ein vergessener Aufrufer fällt so im Typecheck auf.
+    qrError: events.some((event) => event.kind === 'qr:error'),
   });
   const validity = isRunValid(cell, permissions);
 
@@ -211,6 +219,8 @@ export async function finishRun(input: {
     sctpMaxMessageSize: peer === null ? null : sctpMaxMessageSize(peer.pc),
     hello,
     ping,
+    pairing: input.pairing ?? null,
+    qr: input.qr ?? null,
     lockTest: null,
     failures,
     valid: validity.valid,

@@ -72,3 +72,33 @@
 }
 
 .qr-overlay-close { min-height: 48px; }
+
+/* ───────── Task 4: QR-Block eines Platzes, Rückfall-Block und Pass-Chip ───────── */
+
+/* Die Tipp-Fläche um den Code: ein Knopf ohne Knopf-Aussehen, damit „Vergrößern“ auch mit der Tastatur geht. */
+.qr-tap {
+  display: block; width: 100%; max-width: 320px; padding: 8px; border: 0; border-radius: 12px;
+  background: #fff; cursor: pointer; touch-action: manipulation;
+}
+.qr-tap:focus-visible { outline: 2px solid var(--c-amber); outline-offset: 2px; }
+/* `.qr-code` (Task 1) bringt schon `max-width: 100%` und `image-rendering: pixelated` mit – hier
+   zählt nur, dass das Canvas im Knopf ein Block bleibt und keine Grundlinien-Lücke erzeugt. */
+.qr-tap > .qr-code { display: block; }
+
+/* Sucher: fest im Seitenverhältnis, damit das Umschalten zwischen Zeigen und Scannen nicht springt. */
+.qr-video {
+  width: 100%; max-width: 320px; aspect-ratio: 4 / 3; border-radius: 12px;
+  background: rgba(10, 14, 36, 0.55); object-fit: cover;
+}
+
+.qr-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Pass-Chip: grün, wenn der QR-Pfad taugt, sonst bernstein (Chip-Zustände aus labUi.css).
+   `.lab-pass-mount` ist der feste Platz dafür – leer nimmt er keine Höhe ein. */
+.lab-pass-mount { display: contents; }
+.lab-pass { display: grid; gap: 6px; justify-items: start; min-width: 0; }
+.lab-pass .chip[data-state='ready'] { background: rgba(126, 217, 87, 0.18); color: var(--c-ok); }
+
+/* Pfad-Auswahl in der Zellen-Karte: Radios über dem spiegelnden Chip. */
+.lab-path { display: grid; gap: 8px; justify-items: start; min-width: 0; align-self: start; }
+.lab-path > .lab-choices { width: 100%; }

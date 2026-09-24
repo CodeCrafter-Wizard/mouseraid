@@ -241,6 +241,56 @@ describe('labSession', () => {
     expect(result.report.failures).toEqual(['F9']);
   });
 
+  it('ein qr:error in der Zeitleiste ergibt F9 – auch ohne Kamera-Fehler', async () => {
+    const timeline = createTimeline(now);
+    timeline.push('qr:error', 'scan-timeout');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.failures).toEqual(['F9']);
+  });
+
+  it('andere qr-Einträge sind kein Befund', async () => {
+    const timeline = createTimeline(now);
+    timeline.push('qr:backend', 'worker');
+    timeline.push('qr:shown', 'offer 704 Zeichen, 101 Module, 4 px/Modul');
+    timeline.push('qr:decoded', 'worker 24ms 7');
+    timeline.push('qr:fallback-text', 'answer');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.failures).toEqual([]);
+  });
+
+  it('ohne Angabe stehen pairing und qr im Report auf null', async () => {
+    const result = await run(lonely(), 'host');
+    expect(result.report.pairing).toBeNull();
+    expect(result.report.qr).toBeNull();
+    expect(result.report.lockTest).toBeNull();
+  });
+
+  it('übergebene Paarungs- und QR-Fakten landen unverändert im Report', async () => {
+    const pairing = {
+      offerShownAt: 0, offerScannedMs: 4200, answerShownAt: 5100, answerScannedMs: 8400,
+      connectedMs: 11_000, projectedLobbyFullMs: 30_000,
+    };
+    const qr = { backend: 'worker' as const, offerChars: 704, answerChars: 521, decodeLatencyMs: 24.5, attempts: 7 };
+    const result = await finishRun({
+      cell: { ...cell('host'), path: 'qr' }, transport: lonely(), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null,
+      gumCalledThisSession: true, hooks: { onStatus: () => undefined }, now, pairing, qr,
+    });
+    expect(result.report.pairing).toEqual(pairing);
+    expect(result.report.qr).toEqual(qr);
+    expect(result.report.cell.path).toBe('qr');
+    // Ein gespeicherter Report muss die Formprüfung bestehen, sonst wäre er beim Zurücklesen weg.
+    expect(createReportStore(storage).list()[0]?.qr).toEqual(qr);
+  });
+
+  it('ausdrücklich null übergeben ist dasselbe wie nichts übergeben', async () => {
+    const result = await finishRun({
+      cell: cell('host'), transport: lonely(), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null,
+      gumCalledThisSession: false, hooks: { onStatus: () => undefined }, now, pairing: null, qr: null,
+    });
+    expect(result.report.pairing).toBeNull();
+    expect(result.report.qr).toBeNull();
+  });
+
   it('meldet, wenn der Report nicht gespeichert werden kann', async () => {
     vi.stubGlobal('localStorage', { ...storage, setItem: () => { throw new Error('QuotaExceededError'); } });
     const statuses: string[] = [];

@@ -1,18 +1,23 @@
 import { createBroadcastTransport } from '../net/broadcastTransport';
+import { candidatesFromSdp, parseCandidate, qrPassCriterion, type ParsedCandidate } from '../net/candidates';
 import { HandshakeError, createClientJoin, createHostLobby, type ClientJoin, type ConnectorDeps, type HandshakeArtifacts, type HostLobby } from '../net/connector';
 import { queryPermissions } from '../net/environment';
 import { PROTOCOL_VERSION } from '../net/protocol';
-import { CodecError } from '../net/sdpCodec';
+import { CodecError, decodeDesc } from '../net/sdpCodec';
 import type { RtcPeer } from '../net/rtcTransport';
 import { createTimeline, type Timeline } from '../net/timeline';
 import type { Transport, TransportState } from '../net/transport';
 import { S, fmt } from '../ui/strings';
 import { cameraStatus } from './camera';
 import { actionButton, card, codeArea, copyShareRow, h, showFailure, showMessage } from './labDom';
+import { createRelayTimeline } from './labEvents';
 import type { LabQuery } from './labQuery';
 import { attachLabLink, finishRun, type LabRunResult } from './labSession';
+import { createPairingTracker } from './pairing';
+import { createQrExchange, type QrExchange } from './qrPanels';
 import { pingLine } from './reportsPanel';
-import type { CellLabel } from './report';
+import { ScanError } from './scannerAdapter';
+import type { CellLabel, LabReport } from './report';
 
 export interface ConnectContext {
   cell: CellLabel;
@@ -28,10 +33,17 @@ interface Link {
   timeline: Timeline;
   artifacts: HandshakeArtifacts | null;
   remoteSdp: string | null;
+  /**
+   * QR-Pfad: Paarung und QR-Fakten ZUM ZEITPUNKT des Laufs. Eine Funktion statt zweier Felder, weil
+   * der Platz nach dem Anlegen des Links weitermisst (Antwort-Scan, „verbunden"). Auf dem Text-Pfad
+   * ist es `NO_QR_RUN`; ein vergessener Aufrufer fällt im Typecheck auf, weil das Feld PFLICHT ist.
+   */
+  qrRun(): Pick<LabReport, 'pairing' | 'qr'>;
 }
 
 const SLOTS = [1, 2, 3] as const;
 const now = (): number => performance.now();
+const NO_QR_RUN = (): Pick<LabReport, 'pairing' | 'qr'> => ({ pairing: null, qr: null });
 const connectorDeps: ConnectorDeps = {
   protoV: PROTOCOL_VERSION,
   makeTimeline: () => createTimeline(now),
@@ -48,6 +60,42 @@ function showError(target: HTMLElement, error: unknown): void {
   if (error instanceof HandshakeError) showFailure(target, error.failure);
   else if (error instanceof CodecError) showFailure(target, 'F5');
   else showMessage(target, fmt(S.lab.run.unexpected, { message: describeError(error) }));
+}
+
+/** Ein abgebrochener Scan ist kein Befund – der Nutzer hat ihn selbst überholt (Text-Pfad, Platz freigegeben). */
+const isAbortedScan = (error: unknown): boolean => error instanceof ScanError && error.reason === 'aborted';
+
+/** D7: Ein gescannter Code zählt nur, wenn er sich als Mäusebau-Payload lesen lässt. */
+async function looksLikePayload(text: string): Promise<boolean> {
+  try {
+    await decodeDesc(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * D10: „Host-Kandidaten: N echte IP, M mDNS" plus der Chip „QR-tauglich". Nennt nur Art und Anzahl,
+ * nie eine Adresse. Steht am Platz, weil genau dort gesammelt wurde – den Kandidaten kennt sonst
+ * niemand in der Oberfläche.
+ */
+function passChip(artifacts: HandshakeArtifacts): HTMLElement {
+  const list: ParsedCandidate[] = [];
+  for (const raw of candidatesFromSdp(artifacts.localSdp)) {
+    const parsed = parseCandidate(raw);
+    if (parsed !== null) list.push(parsed);
+  }
+  const criterion = qrPassCriterion(list);
+  const wrap = h('div', 'lab-pass');
+  wrap.dataset.testid = 'qr-pass';
+  const chip = h('span', 'chip', criterion.pass ? S.lab.pass.ok : S.lab.pass.warn);
+  chip.dataset.testid = 'qr-pass-chip';
+  chip.dataset.state = criterion.pass ? 'ready' : 'pending';
+  const counts = h('p', 'lab-line', fmt(S.lab.pass.counts, { realIp: String(criterion.realIp), mdns: String(criterion.mdns) }));
+  counts.dataset.testid = 'qr-pass-counts';
+  wrap.append(h('span', 'lab-label', S.lab.pass.title), chip, counts);
+  return wrap;
 }
 
 interface RunBox {
@@ -93,10 +141,12 @@ function createRunBox(ctx: ConnectContext): RunBox {
     const camera = cameraStatus();
     if (camera.error !== null) link.timeline.push('camera-error', camera.error);
     else if (camera.running) link.timeline.push('camera:running');
+    // Erst JETZT abfragen: der Antwort-Scan und „verbunden" fallen nach dem Anlegen des Links an.
+    const { pairing, qr } = link.qrRun();
     try {
       const result = await finishRun({
         cell: ctx.cell, transport: link.transport, peer: link.peer, timeline: link.timeline, artifacts: link.artifacts, remoteSdp: link.remoteSdp,
-        gumCalledThisSession: camera.gumCalled, now,
+        gumCalledThisSession: camera.gumCalled, now, pairing, qr,
         hooks: {
           onStatus: (text) => { status.textContent = text; },
           onPingProgress: (channel, stats) => { pings.append(h('p', 'lab-line', pingLine(channel, stats))); },
@@ -157,6 +207,7 @@ function codeBlock(...children: HTMLElement[]): HTMLElement {
 
 function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRelease: () => void): HTMLElement {
   const broadcast = ctx.query.transport === 'broadcast';
+  const qrPath = ctx.cell.path === 'qr';
   const element = h('article', 'lab-slot');
   element.dataset.testid = `slot-${slot}`;
   const box = createRunBox(ctx);
@@ -172,21 +223,40 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   const release = actionButton(S.lab.host.release, 'release', 'secondary');
   const actions = h('div', 'shell-row');
   actions.append(startPing, release);
+  // Der QR-Block bekommt seinen Platz sofort, seinen Inhalt aber erst mit der Zeitleiste des Platzes.
+  const qrMount = codeBlock();
+  qrMount.hidden = !qrPath;
+  const rescan = actionButton(S.lab.qr.scanRetry, 'qr-retry', 'accent');
+  rescan.hidden = true;
+  const qrActions = h('div', 'qr-actions');
+  qrActions.append(rescan);
+  // Fester Container für den Pass-Chip: GENAU EINER je Platz. Ein zweites Angebot (Task 5,
+  // „Neu verbinden") ersetzt ihn per `replaceChildren`, statt einen weiteren daneben zu hängen.
+  const pass = h('div', 'lab-pass-mount');
   codes.append(
+    qrMount,
     codeBlock(offer.wrap, copyShareRow(() => offer.area.value, 'offer', S.lab.share.codeTitle, () => { offer.area.select(); })),
     codeBlock(answer.wrap, connect),
   );
   codes.hidden = true;
-  element.append(h('h3', 'lab-slot-title', fmt(S.lab.host.slot, { slot: String(slot) })), box.element, codes, alert, actions);
+  element.append(h('h3', 'lab-slot-title', fmt(S.lab.host.slot, { slot: String(slot) })), box.element, pass, codes, alert, actions);
 
   let link: Link | null = null;
+  let qr: QrExchange | null = null;
+  let qrFacts: LabReport['qr'] = null;
+  // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
+  const marks = createPairingTracker(now);
+  const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => (qrPath ? { pairing: marks.report(), qr: qrFacts } : NO_QR_RUN());
   // Der Ping-Test ist schon im Zustand „verbindet …" erreichbar: Eine Verbindung, die nie aufgeht, ist
   // der wertvollste Report (F7/F3). `finishRun` kommt ohne offene Verbindung zurecht und sagt es in der
   // Statuszeile; ohne diesen Weg bliebe die Diagnose in der Zwei-Geräte-Oberfläche unerreichbar.
   const canRun = (state: TransportState | undefined): boolean => state === 'open' || state === 'connecting';
   const syncPing = (state: TransportState): void => {
     startPing.disabled = !canRun(state);
-    if (state === 'open') codes.hidden = true;
+    if (state === 'open') {
+      codes.hidden = true;
+      marks.mark('connectedMs');
+    }
   };
   const watch = (next: Link): void => {
     link = next;
@@ -202,7 +272,8 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   release.onclick = () => {
     const current = link;
     const close = (): void => {
-      // Der Platz verschwindet – sein `pagehide`-Zuhörer darf ihn nicht überleben.
+      // Der Platz verschwindet – sein `pagehide`-Zuhörer und sein Scan dürfen ihn nicht überleben.
+      qr?.dispose();
       box.dispose();
       if (broadcast) current?.transport.close();
       else lobby.closeSlot(slot);
@@ -217,31 +288,21 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
 
   if (broadcast) {
     box.setWaiting(S.lab.state.connecting);
-    watch({ transport: createBroadcastTransport({ room: ctx.query.room, selfId: 'host', peerId: `client-${slot}` }), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null });
+    watch({ transport: createBroadcastTransport({ room: ctx.query.room, selfId: 'host', peerId: `client-${slot}` }), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null, qrRun: NO_QR_RUN });
   } else {
     box.setWaiting(S.lab.host.creating);
     // Das Design verlangt Berechtigungsstatus und „getUserMedia in dieser Sitzung" ZUM ZEITPUNKT von createOffer –
     // nicht erst nach dem Handshake. Beides trägt keine Adresse und landet als Zeitleisten-Eintrag im Report.
     const gumAtOffer = cameraStatus().gumCalled; const permissionsAtOffer = queryPermissions();
-    void lobby.createOffer(slot).then((artifacts) => {
-      const entry = lobby.entries().get(slot);
-      if (entry === undefined) return;
-      // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
-      void permissionsAtOffer.then((p) => { entry.timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
-      offer.area.value = artifacts.payload;
-      codes.hidden = false;
-      box.setWaiting(S.lab.state.offer);
-      watch({ transport: entry.peer.transport, peer: entry.peer, timeline: entry.timeline, artifacts, remoteSdp: null });
-    }, (error: unknown) => { showError(alert, error); });
-    connect.onclick = () => {
+    /** Antwort annehmen – aus dem Text-Feld ODER aus dem Scan; beide Wege laufen durch dasselbe `acceptAnswer`. */
+    const acceptAnswer = (payload: string): void => {
       if (link === null) return;
-      if (answer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
       alert.hidden = true;
       // Ein zweiter Tipp während des Annehmens fände den Platz schon beantwortet vor und stellte ein
       // rotes F5 neben das grüne „verbunden" – wie bei „Antwort erzeugen" sperrt der Knopf sich selbst.
       connect.disabled = true;
       const current = link;
-      void lobby.acceptAnswer(slot, answer.area.value).then(() => {
+      void lobby.acceptAnswer(slot, payload).then(() => {
         current.remoteSdp = lobby.entries().get(slot)?.remoteSdp ?? null;
         if (current.transport.state === 'connecting') box.setWaiting(S.lab.state.connecting);
       }, (error: unknown) => {
@@ -251,6 +312,48 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
         // ein zweiter Tipp fände den Platz beantwortet vor – rotes F5 neben dem grünen „verbunden".
         connect.disabled = false;
       });
+    };
+    const scanAnswer = (): void => {
+      rescan.hidden = true;
+      void qr?.scan('answer').then((text) => {
+        answer.area.value = text;
+        acceptAnswer(text);
+      }, (error: unknown) => {
+        // Text und `qr:error` hat der QR-Block schon geschrieben; hier bleibt nur der zweite Versuch.
+        if (isAbortedScan(error)) return;
+        rescan.hidden = false;
+      });
+    };
+    rescan.onclick = scanAnswer;
+    void lobby.createOffer(slot).then((artifacts) => {
+      const entry = lobby.entries().get(slot);
+      if (entry === undefined) return;
+      // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
+      void permissionsAtOffer.then((p) => { entry.timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
+      offer.area.value = artifacts.payload;
+      codes.hidden = false;
+      box.setWaiting(S.lab.state.offer);
+      // Genau EIN Pass-Chip je Platz: ein zweites Angebot ersetzt ihn, es hängt sich keiner an.
+      pass.replaceChildren(passChip(artifacts));
+      watch({ transport: entry.peer.transport, peer: entry.peer, timeline: entry.timeline, artifacts, remoteSdp: null, qrRun });
+      if (qrPath) {
+        qr = createQrExchange({ timeline: entry.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } });
+        qrMount.append(qr.element, qrActions);
+        qr.show('offer', artifacts.payload);
+        scanAnswer();
+      }
+    }, (error: unknown) => { showError(alert, error); });
+    connect.onclick = () => {
+      if (answer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
+      // Von Hand eingefügt = für DIESEN Schritt auf den Text-Pfad ausgewichen. Das Zellenlabel bleibt
+      // 'qr' (D12, sonst wäre die Zellen-Matrix nicht mehr vergleichbar) – der Ausweg steht als
+      // `qr:fallback-text` in der Zeitleiste und damit im Report.
+      if (qr !== null) {
+        qr.cancel();
+        rescan.hidden = true;
+        link?.timeline.push('qr:fallback-text', 'answer');
+      }
+      acceptAnswer(answer.area.value);
     };
   }
   return element;
@@ -293,10 +396,15 @@ export function buildHostPanel(ctx: ConnectContext): HTMLElement {
 export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   const element = card(S.lab.client.title, 'client-card');
   const box = createRunBox(ctx);
+  const qrPath = ctx.cell.path === 'qr';
+  // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
+  const marks = createPairingTracker(now);
+  let qrFacts: LabReport['qr'] = null;
+  const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => (qrPath ? { pairing: marks.report(), qr: qrFacts } : NO_QR_RUN());
   if (ctx.query.transport === 'broadcast') {
     box.setWaiting(S.lab.state.connecting);
     box.watch(
-      { transport: createBroadcastTransport({ room: ctx.query.room, selfId: `client-${ctx.query.slot}`, peerId: 'host' }), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null },
+      { transport: createBroadcastTransport({ room: ctx.query.room, selfId: `client-${ctx.query.slot}`, peerId: 'host' }), peer: null, timeline: createTimeline(now), artifacts: null, remoteSdp: null, qrRun: NO_QR_RUN },
       { runOnOpen: true },
     );
     element.append(box.element);
@@ -312,13 +420,29 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   const answerBlock = codeBlock(answer.wrap, copyShareRow(() => answer.area.value, 'answer', S.lab.share.codeTitle, () => { answer.area.select(); }), h('p', 'lab-line', S.lab.client.waiting));
   answerBlock.hidden = true;
   const codes = h('div', 'lab-codes');
-  codes.append(codeBlock(offer.wrap, makeAnswer), answerBlock);
+  const qrMount = codeBlock();
+  qrMount.hidden = !qrPath;
+  const rescan = actionButton(S.lab.qr.scanRetry, 'qr-retry', 'accent');
+  rescan.hidden = true;
+  const qrActions = h('div', 'qr-actions');
+  qrActions.append(rescan);
+  // Fester Container für den Pass-Chip (wie am Host): genau einer, auch nach „Neu verbinden" (Task 5).
+  const pass = h('div', 'lab-pass-mount');
+  codes.append(qrMount, codeBlock(offer.wrap, makeAnswer), answerBlock);
   box.element.hidden = true;
-  element.append(codes, alert, box.element);
+  element.append(codes, pass, alert, box.element);
+
+  // Der Angebots-Scan läuft, bevor `acceptOffer` die Zeitleiste anlegt – bis dahin puffert der Relais-Kanal
+  // aus labEvents.ts (T3): derselbe Ort wie die Seiten-Ereignisse, eine Regel statt zweier Mechaniken.
+  const relay = createRelayTimeline(now);
+  const qr: QrExchange | null = qrPath
+    ? createQrExchange({ timeline: relay.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } })
+    : null;
+  if (qr !== null) qrMount.append(qr.element, qrActions);
 
   let join: ClientJoin | null = null;
-  makeAnswer.onclick = () => {
-    if (offer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
+  /** Angebot annehmen – aus dem Text-Feld ODER aus dem Scan; beide Wege laufen hier zusammen. */
+  const acceptOffer = (payload: string): void => {
     alert.hidden = true;
     makeAnswer.disabled = true;
     makeAnswer.textContent = S.lab.client.creating;
@@ -327,20 +451,25 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     join = current;
     // Wie auf der Host-Seite: Kamera-Status und Berechtigungen zum Zeitpunkt des Handshakes festhalten.
     const gumAtOffer = cameraStatus().gumCalled; const permissionsAtOffer = queryPermissions();
-    void current.acceptOffer(offer.area.value).then((artifacts) => {
+    void current.acceptOffer(payload).then((artifacts) => {
       const { peer, timeline } = current;
       if (peer === null || timeline === null) return;
+      // Jetzt erst gibt es die Zeitleiste des Laufs: die gepufferten QR-Einträge wandern hinein.
+      relay.drainInto(timeline);
       // Zeitleisten-Detail = Report-DATEN für den Entwickler-Rückkanal (wie in src/lab/report.ts), keine Spiel-UI.
       void permissionsAtOffer.then((p) => { timeline.push('permissions:handshake', `camera=${p.camera} gum=${gumAtOffer ? 'ja' : 'nein'} lna=${p.localNetwork}`); });
       answer.area.value = artifacts.payload;
       answerBlock.hidden = false;
       box.element.hidden = false;
       box.setWaiting(S.lab.state.connecting);
-      box.watch({ transport: peer.transport, peer, timeline, artifacts, remoteSdp: current.remoteSdp }, {
+      pass.replaceChildren(passChip(artifacts));
+      qr?.show('answer', artifacts.payload);
+      box.watch({ transport: peer.transport, peer, timeline, artifacts, remoteSdp: current.remoteSdp, qrRun }, {
         runOnOpen: true,
         // Verbunden: Codes ausblenden. Fehlgeschlagen/getrennt: das Angebotsfeld für einen neuen Versuch wieder zeigen.
         onState: (state) => {
           codes.hidden = state === 'open';
+          if (state === 'open') marks.mark('connectedMs');
           if (state !== 'connecting') answerBlock.hidden = true;
         },
       });
@@ -349,5 +478,29 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
       makeAnswer.textContent = S.lab.client.makeAnswer;
     });
   };
+  makeAnswer.onclick = () => {
+    if (offer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
+    // Von Hand eingefügt = für DIESEN Schritt auf den Text-Pfad ausgewichen (D12: cell.path bleibt 'qr').
+    if (qr !== null) {
+      qr.cancel();
+      rescan.hidden = true;
+      relay.timeline.push('qr:fallback-text', 'offer');
+    }
+    acceptOffer(offer.area.value);
+  };
+  if (qr !== null) {
+    const scanOffer = (): void => {
+      rescan.hidden = true;
+      void qr.scan('offer').then((text) => {
+        offer.area.value = text;
+        acceptOffer(text);
+      }, (error: unknown) => {
+        if (isAbortedScan(error)) return;
+        rescan.hidden = false;
+      });
+    };
+    rescan.onclick = scanOffer;
+    scanOffer();
+  }
   return element;
 }

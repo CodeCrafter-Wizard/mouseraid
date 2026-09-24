@@ -722,3 +722,129 @@ test('Selbsttest: Lauf A ungültig (Berechtigung erteilt), Lauf B gültig mit ec
   // Beide Läufe stehen auch im Verlauf des Labors (finishRun speichert, `onResult` aktualisiert die Liste).
   await expect(page.locator('[data-testid="report-item"][data-role="selbsttest"]')).toHaveCount(2);
 });
+
+// ───────── M2 Task 4: QR-Pfad in der Oberfläche (@local) ─────────
+// Ein echter QR-HANDSHAKE bräuchte zwei Kameras mit je einem eigenen Bild – die Datei-Fake-Kamera
+// liefert je Browser-Start genau EINEN Code (Abweichung 10 des M2-Plans). Geprüft wird deshalb die
+// Hälfte, die ohne Scan entscheidbar ist: Der Host zeigt sein Angebot als QR (Canvas, Overlay), und
+// der Handshake läuft über den Text-Rückfall – genau den Weg, den ein Nutzer nimmt, wenn der Scan
+// nicht klappt. Der Payload verlässt die Seite nie; nach außen gehen nur Zahlen und Wahrheitswerte.
+
+interface QrStoredReport {
+  cell: { path: string };
+  valid: boolean;
+  timeline: { kind: string; detail: string }[];
+  pairing: { offerShownAt: number | null; offerScannedMs: number | null; connectedMs: number | null; projectedLobbyFullMs: number | null } | null;
+  qr: { backend: string; offerChars: number; answerChars: number; decodeLatencyMs: number; attempts: number } | null;
+}
+
+async function qrReportFacts(page: Page) {
+  return page.evaluate((key) => {
+    const report = (JSON.parse(localStorage.getItem(key) ?? '[]') as QrStoredReport[])[0];
+    if (report === undefined) return null;
+    return {
+      path: report.cell.path,
+      valid: report.valid,
+      // Nur die ARTEN der Einträge und die Rolle beim Rückfall – nie ein Detail mit Codeinhalt.
+      kinds: [...new Set(report.timeline.map((event) => event.kind))].sort(),
+      fallbackRoles: report.timeline.filter((event) => event.kind === 'qr:fallback-text').map((event) => event.detail),
+      backend: report.qr?.backend ?? null,
+      offerChars: report.qr?.offerChars ?? -1,
+      answerChars: report.qr?.answerChars ?? -1,
+      pairingOfferShownAt: report.pairing?.offerShownAt ?? -1,
+      pairingOfferScanned: report.pairing?.offerScannedMs ?? null,
+      pairingConnected: typeof report.pairing?.connectedMs === 'number',
+      pairingProjection: report.pairing?.projectedLobbyFullMs ?? null,
+    };
+  }, UI_REPORTS_KEY);
+}
+
+test('Labor-UI auf dem QR-Pfad: Angebot als QR, Handshake über den Text-Rückfall', { tag: '@local' }, async ({ context }) => {
+  await context.grantPermissions(['local-network-access']);
+  const host = await context.newPage();
+  const client = await context.newPage();
+  await host.goto('lab.html?quick=1');
+  await client.goto('lab.html?quick=1');
+
+  // Host auf dem QR-Pfad …
+  await host.getByTestId('cell-device').fill('QR-Host');
+  await host.getByTestId('cell-role-host').check();
+  await host.getByTestId('cell-camera-an').check();
+  await host.getByTestId('cell-path-choice-qr').check();
+  await expect(host.getByTestId('cell-path')).toHaveText(S.lab.cell.pathQr);
+  await host.getByTestId('cell-confirm').click();
+  // Kamera-zuerst (D5/C3): auf dem QR-Pfad öffnet die Karte den Stream SELBST – „Kamera einschalten"
+  // bleibt gesperrt, solange er läuft. Ein Klick darauf liefe hier in die Zeitüberschreitung.
+  await expect(host.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+  await expect(host.getByTestId('camera-start'), 'der Selbststart macht den Knopf überflüssig').toBeDisabled();
+  // … der Client bleibt auf dem Text-Pfad: seine Seite des Austauschs ist hier nicht der Prüfgegenstand.
+  await uiLabelCell(client, 'client', 'QR-Client');
+
+  // Der QR-Block steht unterhalb des Sichtfensters; ihn anzutippen verlangt Scrollen, und Chromium
+  // hält `requestAnimationFrame` in einem HINTERGRUND-Tab an – Playwrights Stabilitätsprüfung liefe
+  // sonst in die Zeitüberschreitung. Deshalb vor jeder Tipp-Handlung die Seite nach vorn holen.
+  await host.bringToFront();
+  await host.getByTestId('add-player').click();
+  const slot = host.getByTestId('slot-1');
+  const offerOut = slot.getByTestId('offer-out');
+  await expect.poll(async () => (await offerOut.inputValue()).startsWith('MB1.'), { timeout: 10_000 }).toBe(true);
+
+  // Der Code steht als QR auf dem Canvas. Nach außen geht nur die Kantenlänge in Gerätepixeln –
+  // nie der Payload. Ein Canvas ohne Module wäre 0 px breit.
+  const canvasPx = await slot.getByTestId('qr-canvas').evaluate((node) => (node as HTMLCanvasElement).width);
+  expect(canvasPx, 'QR-Canvas hat Module').toBeGreaterThan(0);
+  const dark = await slot.getByTestId('qr-canvas').evaluate((node) => {
+    const canvas = node as HTMLCanvasElement;
+    const data = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height).data;
+    let count = 0;
+    for (let i = 0; data !== undefined && i < data.length; i += 4) if ((data[i] ?? 255) < 128) count += 1;
+    return count;
+  });
+  expect(dark, 'der Code ist wirklich gezeichnet, nicht nur eine weiße Fläche').toBeGreaterThan(0);
+
+  // Vollbild-Overlay auf und wieder zu.
+  await slot.getByTestId('qr-enlarge').click();
+  await expect(host.getByTestId('qr-overlay')).toBeVisible();
+  await host.keyboard.press('Escape');
+  await expect(host.getByTestId('qr-overlay')).toBeHidden();
+
+  // Pass-Chip: nennt Anzahlen, nie Adressen.
+  await expect(slot.getByTestId('qr-pass-chip')).toBeVisible();
+  await expect(slot.getByTestId('qr-pass-counts')).toContainText('Host-Kandidaten:');
+
+  // Handshake über den Text-Rückfall: Angebot kopieren, Antwort erzeugen, Antwort einfügen.
+  const offerPayload = await offerOut.inputValue();
+  await client.bringToFront();
+  await client.getByTestId('offer-in').fill(offerPayload);
+  await client.getByTestId('make-answer').click();
+  const answerOut = client.getByTestId('answer-out');
+  await expect.poll(async () => (await answerOut.inputValue()).startsWith('MB1.'), { timeout: 10_000 }).toBe(true);
+  const answerPayload = await answerOut.inputValue();
+  await host.bringToFront();
+  await slot.getByTestId('answer-in').fill(answerPayload);
+  await slot.getByTestId('connect').click();
+  await expect(slot.getByTestId('conn-state')).toHaveAttribute('data-state', 'ready', { timeout: 15_000 });
+
+  await slot.getByTestId('start-ping').click();
+  await expect(slot.getByTestId('run-status')).toHaveText(S.lab.run.saved, { timeout: 20_000 });
+
+  const facts = await qrReportFacts(host);
+  expect(facts).not.toBeNull();
+  // D12: Der Ausweg auf den Text-Pfad ändert das Zellenlabel NICHT – er steht in der Zeitleiste.
+  expect(facts?.path).toBe('qr');
+  expect(facts?.valid).toBe(true);
+  expect(facts?.kinds).toContain('qr:backend');
+  expect(facts?.kinds).toContain('qr:shown');
+  expect(facts?.kinds).toContain('qr:fallback-text');
+  expect(facts?.fallbackRoles).toEqual(['answer']);
+  expect(['native', 'worker']).toContain(facts?.backend);
+  expect(facts?.offerChars).toBeGreaterThan(0);
+  // Die Antwort kam als Text – es gibt also keinen gescannten Antwort-Code.
+  expect(facts?.answerChars).toBe(0);
+  // Paarung: der eigene Code wurde gezeigt (Nullpunkt) und die Verbindung kam zustande; ohne Scan
+  // gibt es keine Scan-Dauer und damit auch keine Hochrechnung.
+  expect(facts?.pairingOfferShownAt).toBe(0);
+  expect(facts?.pairingConnected).toBe(true);
+  expect(facts?.pairingOfferScanned).toBeNull();
+  expect(facts?.pairingProjection).toBeNull();
+});

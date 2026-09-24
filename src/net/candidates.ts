@@ -109,6 +109,23 @@ export function parseCandidate(raw: string): ParsedCandidate | null {
   };
 }
 
+export interface QrPassCriterion {
+  pass: boolean;
+  realIp: number;
+  mdns: number;
+}
+
+/**
+ * Spec-Kriterium für den QR-Pfad: mindestens ein Host-Kandidat mit echter IP und kein einziger
+ * verschleierter mDNS-Name. Rein – der Chip in der Oberfläche zeigt nur an, was hier herauskommt.
+ * Ein mDNS-Name zählt über ALLE Kandidaten, nicht nur über die Host-Kandidaten: auch ein
+ * verschleierter Reflexiv-Kandidat verrät, dass der Browser noch verschleiert.
+ */
+export function qrPassCriterion(list: readonly ParsedCandidate[]): QrPassCriterion {
+  const summary = summariseCandidates(list);
+  return { pass: summary.hostRealIp > 0 && summary.mdns === 0, realIp: summary.hostRealIp, mdns: summary.mdns };
+}
+
 export function summariseCandidates(list: readonly ParsedCandidate[]): CandidateSummary {
   const hosts = list.filter((candidate) => candidate.type === 'host');
   return {
