@@ -1,8 +1,10 @@
 # Runbook: Verbindungstests mit zwei Geräten
 
 Für **Sitzung A** (PC mit Webcam + Android-Handy, Meilenstein M2) und für die **Zwei-Handy-Matrix F**
-(Host-Handy + Leihhandy + PC). Dieses Blatt ist zum Ausdrucken gedacht und steht für sich: alles, was
-während der Sitzung gebraucht wird, steht hier. Nachschlagen im Repo ist nicht nötig.
+(Host-Handy + Leihhandy + PC). Dieses Blatt ist zum Ausdrucken gedacht: alles, was **während** der
+Sitzung am Gerät gebraucht wird, steht hier. Nachschlagen im Repo ist nur für die Nacharbeit nötig
+(Eintragen der Ergebnisse nach `docs/connectivity-tests.md`, Bedeutung der Fehlercodes F1–F9 in
+`docs/decisions.md`).
 
 ---
 
@@ -21,9 +23,14 @@ Phase 2 (Mehrspieler). Ohne diese Messungen wird der Netzcode des Spiels nicht g
 2. **Nie** weitergegeben werden „Roh-SDP kopieren" und „Einzel-Report als JSON mit echten Adressen
    kopieren (nie öffentlich posten)". Beide enthalten echte Adressen, `ufrag`, `pwd` und Fingerprint.
    Sie bleiben auf dem Gerät und dienen nur der Fehlersuche vor Ort.
-3. Das Feld **„Gerät (Spitzname)"** ist ein frei gewählter Spitzname (1–24 Zeichen, z. B. „Android-Handy",
+3. **Kein Foto und kein Screenshot des QR-Codes** (oder des Bildschirms, der ihn zeigt) wird
+   weitergegeben: der Code enthält dieselben Daten wie „Roh-SDP kopieren" – echte Adressen, `ufrag`,
+   `pwd` und Fingerprint. Ein Bild davon ist eine maschinenlesbare Kopie des Payloads, kein Beleg.
+   Wer eine Anzeige zeigen will, fotografiert den Zustands-Chip oder die Report-Karte, nie die
+   QR-Fläche und nie die Vollbild-Lupe.
+4. Das Feld **„Gerät (Spitzname)"** ist ein frei gewählter Spitzname (1–24 Zeichen, z. B. „Android-Handy",
    „PC-Webcam", „Leihhandy") – kein Klarname, keine Seriennummer, kein Gerätename des Herstellers.
-4. Auch in den handschriftlichen Notizen unten stehen **keine** IP-Adressen und keine WLAN-Namen –
+5. Auch in den handschriftlichen Notizen unten stehen **keine** IP-Adressen und keine WLAN-Namen –
    nur „ja/nein", Anzahlen und Uhrzeiten.
 
 ---
@@ -86,9 +93,11 @@ Phase 2 (Mehrspieler). Ohne diese Messungen wird der Netzcode des Spiels nicht g
 
 ## 3. Zellen: feste Reihenfolge, Priorität und Zeitbudget
 
-Abgearbeitet wird **von oben nach unten**. Reicht die Zeit nicht, bleiben die P3-Zellen liegen – nie eine
-P1-Zelle. Die Zeitangabe ist das Budget inklusive Aufbau; wer deutlich darüber liegt, notiert das (das ist
-selbst ein Messwert: „so lange dauert eine Paarung in der Praxis").
+Abgearbeitet wird **von oben nach unten**. **Bei Zeitdruck wird nach Priorität gestrichen, nicht nach
+Reihenfolge:** zuerst fällt A8 (P3) weg, dann A3 und A5 (P2) – **nie A6 oder A7** (P1), obwohl sie weiter
+unten stehen. In der Matrix F entsprechend: erst Z6/Z7 (P3), dann Z4/Z5 (P2), nie Z1–Z3 (P1). Die
+Zeitangabe ist das Budget inklusive Aufbau; wer deutlich darüber liegt, notiert das (das ist selbst ein
+Messwert: „so lange dauert eine Paarung in der Praxis").
 
 ### 3.1 Sitzung A – PC mit Webcam + Android-Handy (netto ≈ 74 min, mit Rüstzeit ≈ 90 min)
 
@@ -237,6 +246,8 @@ läuft dann von selbst.
 Nur an einer **offenen** Verbindung; am Platz erscheint dafür der Block **„Sperrbildschirm-Test"**. Der
 Test misst, ob eine Verbindung das Ausschalten des Bildschirms übersteht – die Frage, an der im Spiel
 später eine Runde hängt. **Am PC ist er nicht aussagekräftig**: gemessen werden soll ein Handy-Bildschirm.
+Der Knopf **„Neu verbinden"** steht in diesem Block von Anfang an bereit – **sein Erscheinen ist kein
+Signal**. Ob neu verbunden werden muss, sagt allein die Ergebniszeile (Schritt 6).
 
 Je Durchgang (10 s, dann 30 s, dann 60 s):
 
@@ -252,10 +263,18 @@ Je Durchgang (10 s, dann 30 s, dann 60 s):
    „Ping-Test starten" gesperrt.
 5. Notieren: Stand die Verbindung noch? Meldete die Kamerakarte einen Spurverlust? Wie war der Ping
    danach?
-6. Erscheint **„Neu verbinden"**, ist die Verbindung endgültig zu. Dann am **Host** „Neu verbinden"
-   tippen – derselbe Platz legt ein frisches Angebot an und zeigt es sofort als QR-Code – und am Client
-   den neuen QR-Code scannen (der Client-Block scannt dafür von selbst wieder los).
-   **Die Zeit bis „verbunden" notieren.**
+6. **Das Signal steht in der Ergebniszeile**, nicht am Knopf: endet sie auf
+   „Verbindung oder Kamera ist weg." (statt „Verbindung steht weiterhin ✓"), ist die Verbindung
+   endgültig zu; darunter erscheint dann der Hinweis „Der Host legt für denselben Platz einen frischen
+   Code an; der Mitspieler scannt oder fügt ihn erneut ein."
+   Dann **„Neu verbinden" auf BEIDEN Geräten tippen** – es gibt keinen Kanal, über den das eine Gerät
+   das andere benachrichtigen könnte:
+   - am **Host** legt der Tipp auf demselben Platz ein frisches Angebot an und zeigt es sofort als
+     QR-Code;
+   - am **Client** räumt der Tipp den veralteten Antwort-Code weg und nimmt den Scan wieder auf.
+
+   Wird nur auf einer Seite getippt, passiert nichts Sichtbares – der Client scannt dann einen toten
+   Code bzw. der Host zeigt ein Angebot, das niemand scannt. **Die Zeit bis „verbunden" notieren.**
 
 Zeitbedarf: ein 60-s-Durchgang samt Ping-Serie und eventuellem Neuverbinden kostet bis zu ~90 s. Drei
 Durchgänge plus Notizen passen in das Budget von 12 min.
@@ -359,7 +378,7 @@ Nach der Sitzung ausfüllen. Phase 2 (Koop-Netzcode im Spiel) startet nur bei **
 | 2 | Der Block **„QR-Tauglichkeit"** meldete auf mindestens einem Handy „QR-tauglich ✓" (echte Host-Adressen, keine `.local`). | ja / nein | ____ |
 | 3 | Die Regel **„Hotspot-Besitzer = Host"** stimmt: die Zelle mit Hotspot-Besitzer als Host klappt, die Gegenprobe scheitert nachvollziehbar. | ja / nein | ____ |
 | 4 | Die Hochrechnung **„Zeit bis Lobby voll"** (drei Clients) liegt unter 3 Minuten. | ja / nein | ____ |
-| 5 | Nach dem **30-s-Sperrtest** steht die Verbindung noch, oder „Neu verbinden" führt in unter 60 s zurück. | ja / nein | ____ |
+| 5 | Nach dem **30-s-Sperrtest** steht die Verbindung noch („Verbindung steht weiterhin ✓"), oder „Neu verbinden" auf beiden Geräten führt in unter 60 s zurück. | ja / nein | ____ |
 | 6 | **Kein** Lauf scheiterte an F6 (Umgebung ungeeignet). | ja / nein | ____ |
 
 **Entscheidung:** ☐ Go  ☐ Go mit Auflagen: ______________________  ☐ No-Go

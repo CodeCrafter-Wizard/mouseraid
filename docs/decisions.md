@@ -135,7 +135,7 @@ Nur für Entwicklung und Playwright; die Oberfläche verlinkt sie nirgends.
 |---|---|
 | `?transport=bc&room=<name>&role=host\|client&slot=<1–3>` | `BroadcastChannel` statt WebRTC (`src/net/broadcastTransport.ts`, Kanal `maeusebau-lab-<name>`): zwei Tabs desselben Browsers verbinden sich ohne Netz und ohne Codes. Grundlage von `tests/e2e/lab-broadcast.spec.ts`. |
 | `?quick=1` | 20 statt 200 Pings je Kanal (der Selbsttest misst ohne den Parameter 50 je Kanal, der BroadcastChannel-Modus immer 20) – für schnelle Testläufe. Reports aus solchen Läufen zählen nicht für `docs/connectivity-tests.md`. |
-| `?hook=1` | hängt `window.__mbLab` ein (`src/lab/labHook.ts`): die Netz-Schicht ohne UI (`createHostLobby`, `createClientJoin`, `createMessageRouter`, `createTimeline`, `runPingSeries`, `attachPongResponder`, `PROTOCOL_VERSION`) für `tests/e2e/lab-rtc.spec.ts`. Ohne den Parameter existiert der Haken nicht. |
+| `?hook=1` | hängt `window.__mbLab` ein (`src/lab/labHook.ts`) – seit M2 **20 Mitglieder**: die 7 der Netz-Schicht aus M1 (`createHostLobby`, `createClientJoin`, `createMessageRouter`, `createTimeline`, `runPingSeries`, `attachPongResponder`, `PROTOCOL_VERSION`) und 13 aus M2 – QR-Anzeige (`renderQr`, `qrModuleCount`, `MAX_QR_PAYLOAD_CHARS`), Scanner (`detectScanBackend`, `scanImage`, `scanVideo`), Kamera (`openLobbyCamera`, `cameraStream`, `attachCamera`, `restartCamera`), Austausch (`createQrExchange`, `createPairingTracker`) und der Zähler `liveExchangeCount`. Verbindlich ist die Liste in `src/lab/labHook.ts`. Ohne den Parameter existiert der Haken nicht. |
 
 ### Gemessene Befunde (nur Art und Anzahl)
 - **Chromium meldet einen nie verbundenen ICE-Lauf nicht als `ice:failed`:** nach ≈ 15 s steht `iceConnectionState` auf `disconnected`, nur `connectionState` wird `failed`. `rtcTransport` setzt `failed` deshalb bei beiden Signalen, `labSession` speist F3 aus beiden.
@@ -369,11 +369,16 @@ Worker-Engine: 13–20 ms je Code für 57 bis 125 Module, erster Aufruf je Seite
   `src/platform` die Schicht `src/lab` nicht kennen darf.
 - **Kein Weg zurück nach `pagehide`** (Zurück-Taste, iOS-Seitencache): die Sperre wird dann nicht erneut
   angefordert. Am Gerät hilft nur ein Neuladen; im Runbook steht der Hinweis.
+- Ebenso hat der **Lobby-Kamera-Stream keinen ausdrücklichen Stopp bei `pagehide`**: `src/lab/camera.ts`
+  beendet Spuren nur in `restartCamera`. Das ist Absicht – ein `stop()` beim Wegschalten würde genau die
+  Unterbrechung erzeugen, die der Sperrtest messen soll; ein verworfenes Dokument gibt der Browser
+  ohnehin frei. Sichtbare Folge auf dem Handy: die Kamera-Anzeige kann nach dem Wegschalten noch kurz
+  stehen bleiben.
 
 ### Fake-Kamera in Playwright (Fakten und Fallen)
 - `--use-file-for-fake-video-capture=<absoluter Pfad>` funktioniert mit `.y4m` und ersetzt das
   synthetische Bild. Chromium **wiederholt die Datei in Schleife** – ein einziges Bild genügt
-  (640×480 = 460 850 B, 1280×720 = 1 382 452 B). Die Dateien entstehen zur Testlaufzeit in
+  (640×480 = 460 850 B, 1280×720 = 1 382 451 B). Die Dateien entstehen zur Testlaufzeit in
   `test-results/fakecam/` und werden **nie** committet.
 - **Reihenfolge-Falle:** Playwright löscht `test-results/` **vor** `globalSetup`
   (`createRemoveOutputDirsTask` läuft davor). Die Dateien dürfen deshalb nur aus `globalSetup` heraus
@@ -453,10 +458,10 @@ zusätzlich den QR-Fall. Die Tabelle oben („Fehlercodes F1–F9") ist entsprec
 und Bedeutung der übrigen Codes sind unverändert.
 
 ### Budget nach M2
-Lab-Bundle: **61.3 kB** gzip (Budget 150 kB, `npm run check-dist`) – gegenüber 29.3 kB nach M1. Davon
+Lab-Bundle: **61.4 kB** gzip (Budget 150 kB, `npm run check-dist`) – gegenüber 29.3 kB nach M1. Davon
 entfällt der Worker-Chunk des Scanners allein auf 10,2 kB gzip (43 951 B roh); der Rest sind die beiden
 Bibliotheken und die neuen Lab-Module. Das Spiel-Bundle wächst von 9,2 auf **10.1 kB** gzip, weil
-`src/ui/strings.ts` geteilt ist (Budget 900 kB). Precache: 16 Dateien, 252,7 kB. `check-dist` prüft seit
+`src/ui/strings.ts` geteilt ist (Budget 900 kB). Precache: 16 Dateien, 253,1 kB. `check-dist` prüft seit
 M2 zusätzlich, dass der Worker-Chunk des Scanners (1) im Build liegt, (2) zum JS-Graph von `lab.html`
 gehört, (3) **nicht** zum Graph von `index.html` und (4) im Precache-Manifest von `sw.js` steht.
 
@@ -508,8 +513,11 @@ deshalb entfernt; `openTemporaryCamera` (Selbsttest) bleibt unverändert. Aus de
   nichts.
 - Der Fake-Kamera-Smoke ist nach drei stabilen lokalen Läufen: im Tor (kein Tag, drei stabile Läufe) –
   beide Specs. **Restrisiko:** der fremde Smoke baut eine echte `RTCPeerConnection` auf (nur das
-  Angebot); fällt er auf dem Linux-CI-Runner um, bekommt er dort `{ tag: '@local' }` und der Grund kommt
-  hierher – der Test wird nicht abgeschwächt (C7).
+  Angebot). Der realistische Fehlschlag ist deshalb nicht die Verbindung, sondern die **Größe**: ein
+  Runner mit vielen Netzwerkschnittstellen sammelt viele Kandidaten, und ab 1100 Zeichen Payload lehnt
+  `renderQr` mit `too-large` ab. Gemessen sind 704 Zeichen als größter echter Payload – rund 56 %
+  Luft, aber keine Garantie. Fällt einer der beiden Smokes auf dem Linux-CI-Runner um, bekommt er dort
+  `{ tag: '@local' }` und der Grund kommt hierher – der Test wird nicht abgeschwächt (C7).
 
 ## Offene Punkte
 
@@ -520,7 +528,7 @@ deshalb entfernt; `openTemporaryCamera` (Selbsttest) bleibt unverändert. Aus de
 - **`isRunValid` kalibrieren:** nach dem ersten iPhone-Selbsttest (siehe „Gemessene Befunde", WebKit/iOS).
 - **Wortlaut des F4-Hinweises** wird nach der Zwei-Handy-Matrix F nachgeschärft.
 - **Zwischenablage auf dem Linux-CI-Runner ungeprüft:** die Lese-Pfade der Kopier-Knöpfe sind nur lokal auf Windows-Chromium gemessen – `tests/e2e/lab-broadcast.spec.ts` liest die Zwischenablage aber im Deploy-Tor (`e2e:smoke`), also auch auf dem Linux-Runner. Schlägt sie dort fehl, ist der Ausweg die Prüfung über den abgefangenen `navigator.clipboard.writeText` (wie im Selbsttest-Block von `lab-rtc.spec.ts`), nicht das Abschwächen der Schwärzungs-Prüfung.
-- **Aufgeschobener Feinschliff** (nach dem Feinschliff-Commit verbleibend): eine stumme, aber offene Gegenstelle kostet ≈ 20 s (eigener Punkt oben); `?transport=bc` sendet ohne Gegenstelle für immer `syn` (nur Entwicklung und Tests); `redactReport` ist in Schicht 2 quadratisch in der Kandidatenzahl (bei ≤ 20 belanglos); `trace: 'retain-on-failure'` (playwright.config.ts) legt bei einem gescheiterten `@local`-Selbsttest ungeschwärzte Reports in das git-ignorierte `test-results/` – nur lokal, nie im Repo.
+- **Aufgeschobener Feinschliff** (nach dem Feinschliff-Commit verbleibend): eine stumme, aber offene Gegenstelle kostet ≈ 20 s (eigener Punkt oben); `?transport=bc` sendet ohne Gegenstelle für immer `syn` (nur Entwicklung und Tests); `redactReport` ist in Schicht 2 quadratisch in der Kandidatenzahl (bei ≤ 20 belanglos); `trace: 'retain-on-failure'` (playwright.config.ts) legt bei einem gescheiterten `@local`-Selbsttest ungeschwärzte Reports in das git-ignorierte `test-results/` – nie im Repo, aber **nicht nur lokal**: `.github/workflows/deploy.yml` lädt `test-results` bei `if: failure()` als Artefakt `playwright-test-results` hoch (7 Tage Aufbewahrung), und Artefakte eines öffentlichen Repos kann jeder herunterladen. Betroffen wären ausschließlich die Kandidaten des kurzlebigen CI-Runners – nie ein Gerät des Nutzers –, und die `@local`-Specs laufen in der CI gar nicht; ein gescheiterter Tor-Spec kann aber Traces mit Runner-Adressen mitnehmen. Vor dem Herunterladen eines solchen Artefakts das im Kopf behalten.
 - **Sitzung A steht aus (M2-Abnahme durch den Nutzer):** die Zellen A1–A8 aus `docs/runbook-zwei-handys.md` sind geplant, aber noch nicht gefahren (dem Nutzer fehlt gerade ein zweites Gerät für die Matrix F). Erst daraus kommen die ersten echten Werte für `qr.backend`, die Paarungsdauer je Richtung und die Hochrechnung „Zeit bis Lobby voll" – bis dahin stehen in `docs/connectivity-tests.md` nur die Vorlagen.
 - **iOS in M2 ungemessen:** Wake Lock wirkt in installierten Web-Apps erst ab iOS 18.4 (WebKit-Bug 254545), `BarcodeDetector` steht in Safari nur hinter einem Feature-Flag und ist auf iOS defekt (WebKit-Bug 281848). Auf dem iPhone ist der QR-Pfad also der Worker-Pfad ohne Wake Lock; ob das reicht, entscheidet erst ein Report.
 - **Häufigkeit des Rückfalls „Code zu groß für QR" beobachten:** der Deckel `MAX_QR_PAYLOAD_CHARS = 1100` ist aus der Lesbarkeit auf einem Telefon abgeleitet, nicht aus gemessenen Payloads (größter gemessener M1-Payload: 704 Zeichen). Schlägt er in Sitzung A oder in der Matrix F regelmäßig zu, ist die Antwort nicht ein höherer Deckel, sondern weniger Kandidaten im Payload – Kandidaten-Filterung liegt bewusst außerhalb von M2.
