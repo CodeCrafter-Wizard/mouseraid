@@ -21,6 +21,8 @@
     "e2e": "playwright test",
     "e2e:smoke": "playwright test --grep-invert @local",
     "e2e:local": "playwright test --grep @local",
+    "e2e:fakecam": "playwright test --project chromium-fakecam",
+    "e2e:fakecam-foreign": "playwright test --project chromium-fakecam-foreign",
     "icons": "node scripts/make-icons.mjs",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build:pages && npm run check-dist && npm run e2e:smoke"
   },
