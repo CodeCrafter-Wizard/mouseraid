@@ -156,6 +156,41 @@ describe('scanImage', () => {
     }
   });
 
+  it('ein im Betrieb werfendes detect() stuft die Seite EINMAL herab – kein neuer Detektor je Bild', async () => {
+    let constructions = 0;
+    let calls = 0;
+    class FlakyDetector {
+      constructor() {
+        constructions += 1;
+      }
+
+      detect(): Promise<{ rawValue: string }[]> {
+        // Die Probe gelingt, jeder echte Aufruf wirft – der macOS-Ventura-Fall.
+        return ++calls === 1 ? Promise.resolve([]) : Promise.reject(new Error('NotSupportedError'));
+      }
+    }
+    (FlakyDetector as unknown as { getSupportedFormats: () => Promise<string[]> }).getSupportedFormats = () => Promise.resolve(['qr_code']);
+    stubBrowser(FlakyDetector as unknown as BarcodeDetectorCtor);
+    try {
+      qrScanner.scanImage.mockResolvedValue({ data: 'MB1.p.WORKER', cornerPoints: [] });
+      await expect(adapter.scanImage(canvasLike)).resolves.toMatchObject({ backend: 'worker' });
+      const afterFirst = constructions;
+      await expect(adapter.scanImage(canvasLike)).resolves.toMatchObject({ backend: 'worker' });
+      // Ohne die Merkung baute JEDES Videobild einen neuen BarcodeDetector und liefe in denselben
+      // Fehler – bei 10 Bildern/s zehnmal je Sekunde.
+      expect(constructions).toBe(afterFirst);
+      expect(calls).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('lässt sich die Engine nicht erzeugen, ist das ein ScanError „camera-error" – kein roher Fehler', async () => {
+    qrScanner.createQrEngine.mockRejectedValue(new Error('kein Worker'));
+    // Die Oberfläche verzweigt über `reason`, nie über Fehlertexte der Bibliothek.
+    await expect(adapter.scanImage(canvasLike)).rejects.toMatchObject({ name: 'ScanError', reason: 'camera-error' });
+  });
+
   it('zeichnet ImageData zuerst auf ein Canvas (die Bibliothek lehnt ImageData ab)', async () => {
     const putImageData = vi.fn();
     const canvas = { width: 0, height: 0, getContext: () => ({ putImageData }) };
@@ -186,10 +221,10 @@ describe('scanVideo', () => {
   const FRAME_MS = 16;
   function fakeVideo(): HTMLVideoElement {
     return {
-      requestVideoFrameCallback: (callback: () => void) => {
-        setTimeout(callback, FRAME_MS);
-        return 1;
-      },
+      requestVideoFrameCallback: (callback: () => void) => setTimeout(callback, FRAME_MS) as unknown as number,
+      // Echte Videoelemente können ein angefordertes Bild wieder abbestellen – die Attrappe auch,
+      // sonst bliebe genau der Rückruf ungeprüft, den `stop()` abräumen muss.
+      cancelVideoFrameCallback: (handle: number) => clearTimeout(handle as unknown as ReturnType<typeof setTimeout>),
     } as unknown as HTMLVideoElement;
   }
 
@@ -214,6 +249,29 @@ describe('scanVideo', () => {
     expect(attempts).toEqual([1, 2, 3]);
     // 3 Bilder à 16 ms plus zwei Drosselpausen à 100 ms.
     await expect(promise).resolves.toMatchObject({ latencyMs: 248 });
+    // Nach dem Treffer ist die Schleife wirklich aus: keine Frist-Uhr, keine Drosselpause, kein Bild.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('Abbruch räumt das schon angeforderte Bild ab (sonst feuert es ins Leere)', async () => {
+    qrScanner.scanImage.mockRejectedValue(new Error(NO_CODE));
+    const controller = new AbortController();
+    const promise = adapter.scanVideo(fakeVideo(), { signal: controller.signal, timeoutMs: 5_000 });
+    // 120 ms: die Drosselpause ist abgelaufen, das nächste Bild ist ANGEFORDERT, aber noch nicht da.
+    await vi.advanceTimersByTimeAsync(120);
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({ reason: 'aborted' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('Zeitüberschreitung räumt die laufende Drosselpause ab', async () => {
+    qrScanner.scanImage.mockRejectedValue(new Error(NO_CODE));
+    const promise = adapter.scanVideo(fakeVideo(), { signal: new AbortController().signal, timeoutMs: 500 });
+    const rejected = expect(promise).rejects.toMatchObject({ reason: 'scan-timeout' });
+    // Die Frist fällt mitten in eine Drosselpause (Versuche bei 16/132/248/364/480 ms, Pause bis 580).
+    await vi.advanceTimersByTimeAsync(500);
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('drosselt auf maxPerSecond: in einer Sekunde höchstens so viele Versuche', async () => {

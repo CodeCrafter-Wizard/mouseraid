@@ -10,6 +10,11 @@ const SIGNATURES = [
   { pattern: /basis_transcoder/i, reason: 'Basis-Transcoder (käme vom CDN → Offline-Bruch)' },
   { pattern: /@babylonjs\/core\/Legacy|\/Legacy\/legacy/, reason: 'Babylon-Legacy-Barrel im Bundle' },
   { pattern: /["'`](?:stuns?|turns?):/i, reason: 'STUN/TURN-Server (Offline-Modus verlangt iceServers: [])' },
+  // Node-Reste einer Bibliothek, die ihren Server-Build mitliefert: im Browser ein ReferenceError –
+  // also ein Startfehler genau auf dem Gerät des Nutzers. Die Wortgrenze hält `audioBuffer.from`
+  // und `this.processEnv` heraus.
+  { pattern: /\bprocess\.(env|version|platform)\b/, reason: 'Node-Polyfill (process)' },
+  { pattern: /\bBuffer\.(from|alloc)\b/, reason: 'Node-Polyfill (Buffer)' },
 ];
 
 /**

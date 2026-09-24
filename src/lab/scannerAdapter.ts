@@ -14,6 +14,12 @@ export interface ScanResult {
   attempts: number;
 }
 
+/**
+ * `'decode-failed'` erzeugt dieser Adapter bewusst NICHT: hier ist ein misslungener Lesevorgang
+ * immer `null` („kein Code im Bild"), sonst bräche eine Scanschleife beim ersten unscharfen Bild ab.
+ * Der Grund gehört dem Aufrufer (qrPanels, T4): er setzt ihn für alles, was beim Zeigen oder
+ * Auswerten eines Codes schiefgeht und KEIN `ScanError` ist. Deshalb bleibt er im Typ.
+ */
 export type ScanErrorReason = 'scan-timeout' | 'decode-failed' | 'camera-error' | 'aborted';
 
 /** `message` ist Diagnose-Text; die Oberfläche zeigt Texte aus strings.ts anhand von `reason`. */
@@ -105,9 +111,16 @@ function engineFor(): Promise<QrEngine> {
 }
 
 let nativeDetector: BarcodeDetectorLike | null = null;
+/**
+ * Einmal-Schalter für den Seitenaufruf: wirft `detect()` im Betrieb (Plattformfehler wie der
+ * macOS-Ventura-Fall), ist der native Weg erledigt. Ohne diese Merkung baute JEDES Videobild einen
+ * neuen `BarcodeDetector` und liefe in denselben Fehler – bei 10 Bildern/s zehnmal je Sekunde.
+ */
+let nativeBroken = false;
 
 /** `null` = der native Weg hat GEWORFEN; `{ text: null }` = er lief, fand aber keinen Code. */
 async function detectNative(source: unknown): Promise<{ text: string | null } | null> {
+  if (nativeBroken) return null;
   const ctor = nativeCtor();
   if (ctor === undefined) return null;
   try {
@@ -115,6 +128,7 @@ async function detectNative(source: unknown): Promise<{ text: string | null } | 
     const found = await nativeDetector.detect(source);
     return { text: found[0]?.rawValue ?? null };
   } catch {
+    nativeBroken = true;
     nativeDetector = null;
     return null;
   }
@@ -156,7 +170,14 @@ export async function scanImage(source: HTMLCanvasElement | HTMLVideoElement | I
     // je Videobild doppelte Arbeit. Nur ein geworfenes detect() (null) gibt an den Worker ab.
     if (native !== null) return native.text === null ? null : { text: native.text, backend: 'native', latencyMs: since(), attempts: 1 };
   }
-  const qrEngine = await engineFor();
+  let qrEngine: QrEngine;
+  try {
+    qrEngine = await engineFor();
+  } catch (error) {
+    // Ein misslungener Worker-Start ist ein Scannerfehler der Oberfläche, kein roher Error: Aufrufer
+    // verzweigen über `reason`, nie über die Fehlertexte der Bibliothek.
+    throw new ScanError('camera-error', error instanceof Error ? error.message : String(error));
+  }
   try {
     const found = await QrScanner.scanImage(scannable, { qrEngine, returnDetailedScanResult: true });
     return { text: found.data, backend: 'worker', latencyMs: since(), attempts: 1 };
@@ -177,15 +198,25 @@ const DEFAULT_MAX_PER_SECOND = 10;
 /** D7: 60 s Scan-Frist, danach bietet die Oberfläche „Erneut scannen" oder den Text-Pfad an. */
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-/** Eigene Bildschleife statt der Instanz-Schleife der Bibliothek – so gehören Stream und Abbruch uns. */
-function nextFrame(video: HTMLVideoElement, run: () => void): void {
-  const host = video as unknown as { requestVideoFrameCallback?: (callback: () => void) => number };
+interface FrameHost {
+  requestVideoFrameCallback?: (callback: () => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+}
+
+/**
+ * Eigene Bildschleife statt der Instanz-Schleife der Bibliothek – so gehören Stream und Abbruch uns.
+ * Gibt die Abbestellung zurück: ein angefordertes Bild, das nach dem Ende noch feuert, würde einen
+ * weiteren Scan auf einem längst freigegebenen Platz auslösen.
+ */
+function nextFrame(video: HTMLVideoElement, run: () => void): () => void {
+  const host = video as unknown as FrameHost;
   if (typeof host.requestVideoFrameCallback === 'function') {
-    host.requestVideoFrameCallback(run);
-    return;
+    const handle = host.requestVideoFrameCallback(run);
+    return () => host.cancelVideoFrameCallback?.(handle);
   }
   // Firefox und ältere Safari-Versionen kennen requestVideoFrameCallback nicht.
-  requestAnimationFrame(run);
+  const handle = requestAnimationFrame(run);
+  return () => cancelAnimationFrame(handle);
 }
 
 /**
@@ -201,10 +232,17 @@ export function scanVideo(video: HTMLVideoElement, options: ScanVideoOptions): P
     let attempts = 0;
     let done = false;
     let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+    let gapTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+    let cancelFrame: (() => void) | null = null;
 
     const stop = (): void => {
       done = true;
       if (timer !== undefined) clearTimeout(timer);
+      // Drosselpause und angefordertes Bild gehören genauso abgeräumt wie die Frist-Uhr – sonst hält
+      // ein beendeter Scan den Zeitgeber der Seite am Leben und scannt einmal ins Leere.
+      if (gapTimer !== undefined) clearTimeout(gapTimer);
+      cancelFrame?.();
+      cancelFrame = null;
       signal.removeEventListener('abort', onAbort);
     };
     const fail = (reason: ScanErrorReason, message: string): void => {
@@ -244,11 +282,11 @@ export function scanVideo(video: HTMLVideoElement, options: ScanVideoOptions): P
       }
       // Drosseln: erst nach der Mindestpause das nächste Bild anfordern. Das hält die Schleife auch
       // dann bei maxPerSecond, wenn die Kamera mit 60 Bildern/s liefert.
-      setTimeout(() => {
-        if (!done) nextFrame(video, () => void attempt());
+      gapTimer = setTimeout(() => {
+        if (!done) cancelFrame = nextFrame(video, () => void attempt());
       }, gapMs);
     };
 
-    nextFrame(video, () => void attempt());
+    cancelFrame = nextFrame(video, () => void attempt());
   });
 }

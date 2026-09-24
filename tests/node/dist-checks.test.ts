@@ -33,6 +33,22 @@ describe('findForbiddenSignatures', () => {
   it('löst bei harmlosem Code keinen Fehlalarm aus', () => {
     expect(findForbiddenSignatures('a.js', 'const it={next:f,return:g};function turn(){return 1}')).toEqual([]);
   });
+
+  it('meldet Node-Polyfills: im Browser-Bundle gibt es weder process noch Buffer', () => {
+    // Beides käme aus einer Bibliothek, die ihren Node-Build mitliefert – zur Laufzeit ein
+    // ReferenceError, also ein Offline-/Startfehler genau auf dem Gerät des Nutzers.
+    expect(findForbiddenSignatures('a.js', 'if(process.env.NODE_ENV==="production"){}')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'if(process.platform==="win32"){}')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'const v=process.version')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'Buffer.from(bytes)')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'Buffer.alloc(8)')).toHaveLength(1);
+  });
+
+  it('löst bei ähnlich benannten Browser-Bezeichnern keinen Fehlalarm aus', () => {
+    // `audioBuffer.from` und `this.processEnv` sind gewöhnlicher Browser-Code – die Wortgrenze trennt.
+    expect(findForbiddenSignatures('a.js', 'audioBuffer.from(x);frameBuffer.alloc')).toEqual([]);
+    expect(findForbiddenSignatures('a.js', 'this.processEnv;worker.process.tick()')).toEqual([]);
+  });
 });
 
 describe('findLabSignatures', () => {
