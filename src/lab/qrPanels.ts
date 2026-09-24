@@ -30,9 +30,60 @@ export interface QrExchange {
 export interface QrExchangeDeps {
   timeline: Timeline;
   marks: PairingTracker;
-  /** Prüft den gescannten Text, bevor er zählt: decodeDesc-Erfolg; false → qr:error/not-a-payload, weiterscannen. */
+  /** Prüft den gescannten Text, bevor er zählt: decodeDesc-Erfolg; false → qr:skipped/not-a-payload, weiterscannen. */
   looksLikePayload(text: string): Promise<boolean>;
   onQrFacts(facts: QrFacts): void;
+}
+
+/**
+ * „Genau ein Scan zur Zeit" über alle QR-Blöcke eines Seitenaufrufs. Der Host hat drei Plätze, die
+ * sich EINE Kamera teilen: liefen zwei Schleifen nebeneinander, entschiede der Zufall, welcher Platz
+ * die Antwort des anderen dekodiert – der falsche bekäme ein Nonce-F5 und käme nicht mehr weiter.
+ * Rein und DOM-frei gehalten, damit genau diese Regel ohne Browser prüfbar bleibt.
+ */
+export interface ScanCoordinator<T> {
+  /** Meldet ein Mitglied an; die Rückgabe meldet es wieder ab (Platz freigegeben, `dispose`). */
+  add(member: T): () => void;
+  /** Macht `member` zum einzigen Aktiven: jedes ANDERE angemeldete Mitglied wird abgebrochen. */
+  activate(member: T, stop: (other: T) => void): void;
+  /** Für jedes angemeldete Mitglied, in der Reihenfolge der Anmeldung. */
+  forEach(act: (member: T) => void): void;
+}
+
+export function createScanCoordinator<T>(): ScanCoordinator<T> {
+  const members = new Set<T>();
+  return {
+    add(member) {
+      members.add(member);
+      return () => { members.delete(member); };
+    },
+    activate(member, stop) {
+      // Kopie: `stop` bricht einen Scan ab, und ein Abbruch darf sich abmelden dürfen.
+      for (const other of [...members]) if (other !== member) stop(other);
+    },
+    forEach(act) {
+      for (const member of [...members]) act(member);
+    },
+  };
+}
+
+/** Ein lebender QR-Block aus Sicht des Koordinators – mehr braucht er von ihm nicht zu wissen. */
+interface LiveExchange {
+  /** Bricht eine laufende Scan-Schleife ab. */
+  stop(): void;
+  /** Hängt den (neuen) Kamera-Stream wieder in den eigenen Sucher. */
+  reattach(): void;
+}
+
+const liveExchanges = createScanCoordinator<LiveExchange>();
+
+/**
+ * Nach einem Kamera-Neustart: jeder lebende Sucher braucht den NEUEN Stream. Ohne das zeigte ein
+ * anderer Platz weiter das eingefrorene Bild des alten und scannte ins Leere. Ruft die Kamera-Karte
+ * (labUi) genauso auf wie der Neustart-Knopf im QR-Block.
+ */
+export function reattachLiveExchanges(): void {
+  liveExchanges.forEach((exchange) => { exchange.reattach(); });
 }
 
 /** D7: nach einer Minute ohne Treffer ist der Scan vorbei – auch wenn dauernd FREMDE Codes im Bild sind. */
@@ -85,6 +136,23 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
   let shownText = '';
   let running: AbortController | null = null;
 
+  const live: LiveExchange = {
+    stop: () => { cancel(); },
+    // Nur ein Block, der gerade scannt, zeigt überhaupt ein Video – die anderen haben nichts anzuhängen.
+    reattach: () => { if (!video.hidden) attachCamera(video); },
+  };
+  const unregister = liveExchanges.add(live);
+
+  /**
+   * Seitenwechsel und Sperrbildschirm: eine Scan-Schleife im Hintergrund bekommt keine Bilder mehr
+   * (Chromium hält `requestVideoFrameCallback` in einem verborgenen Tab an) und liefe nur stumm in
+   * die 60-s-Frist. Abbrechen – der Aufrufer bietet danach „Erneut scannen" an.
+   */
+  const onVisibility = (): void => { if (document.visibilityState === 'hidden') cancel(); };
+  const onPagehide = (): void => { cancel(); };
+  document.addEventListener('visibilitychange', onVisibility);
+  addEventListener('pagehide', onPagehide);
+
   /**
    * Meldet den Stand nach jedem Ereignis neu; der Aufrufer behält die letzte Meldung. So steht das
    * Backend auch dann im Report, wenn der Nutzer für einen Schritt auf den Text-Pfad ausgewichen ist.
@@ -110,6 +178,9 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
       restart.disabled = false;
       restart.hidden = camera.running;
       status.textContent = camera.running ? S.lab.camera.lobbyRunning : fmt(S.lab.camera.lobbyFailed, { reason: camera.error ?? '?' });
+      // Der Neustart liefert einen NEUEN Stream: jeder lebende Sucher braucht ihn, auch der eines
+      // anderen Platzes – sonst hinge der am toten alten.
+      if (camera.running) reattachLiveExchanges();
     });
   };
 
@@ -152,6 +223,8 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
   }
 
   async function scan(role: 'offer' | 'answer'): Promise<string> {
+    // Genau EIN Scan je Seitenaufruf: alle Plätze teilen sich eine Kamera (siehe createScanCoordinator).
+    liveExchanges.activate(live, (other) => { other.stop(); });
     cancel(); // ein zweiter Scan überholt den ersten – sonst liefen zwei Schleifen auf demselben Video
     const controller = new AbortController();
     running = controller;
@@ -172,9 +245,11 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
           onAttempt: () => { attempts += 1; },
         });
         // Fremde QR-Codes im Bild (Plakat, Verpackung) sind kein Fehlschlag: weiterscannen, aber
-        // nur bis zur gemeinsamen Frist – sonst hinge der Scan an einem Plakat für immer.
+        // nur bis zur gemeinsamen Frist – sonst hinge der Scan an einem Plakat für immer. Der
+        // Eintrag heißt deshalb `qr:skipped` und NIE `qr:error` (D7): sonst trüge jeder Lauf in
+        // einem Raum mit Werbeplakat ein F9, das über das Labor gar nichts aussagt.
         if (!(await deps.looksLikePayload(result.text))) {
-          deps.timeline.push('qr:error', 'not-a-payload');
+          deps.timeline.push('qr:skipped', 'not-a-payload');
           status.textContent = S.lab.qr.notAPayload;
           continue;
         }
@@ -208,6 +283,9 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
     scan,
     cancel,
     dispose() {
+      document.removeEventListener('visibilitychange', onVisibility);
+      removeEventListener('pagehide', onPagehide);
+      unregister();
       cancel();
       overlay.dispose();
       element.remove();

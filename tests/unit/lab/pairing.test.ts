@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   createPairingTracker,
   EMPTY_PAIRING_MARKS,
+  measuredPairing,
   projectLobbyFull,
   type PairingMarks,
+  type PairingReport,
 } from '../../../src/lab/pairing';
 
 /** Verstellbare Uhr: `at(ms)` setzt den nächsten Rückgabewert. */
@@ -123,5 +125,29 @@ describe('projectLobbyFull', () => {
 
   it('das Ergebnis ist ganzzahlig gerundet', () => {
     expect(projectLobbyFull(marks({ offerShownAt: 0, offerScannedMs: 100.5, connectedMs: 200.5 }))).toBe(Math.round(6 * 100.5 + 3 * 100));
+  });
+});
+
+describe('measuredPairing', () => {
+  const report = (overrides: Partial<PairingReport> = {}): PairingReport => ({
+    ...EMPTY_PAIRING_MARKS,
+    projectedLobbyFullMs: null,
+    ...overrides,
+  });
+
+  it('ohne einen einzigen gezeigten Code gab es keine Paarung – null statt lauter Nullen', () => {
+    expect(measuredPairing(report())).toBeNull();
+    // Auch „verbunden" allein ist keine Paarung: gezeigt wurde nie etwas (Text-Pfad von Anfang an).
+    expect(measuredPairing(report({ connectedMs: 9000 }))).toBeNull();
+  });
+
+  it('ein gezeigtes Angebot genügt – der Bericht kommt unverändert zurück', () => {
+    const shown = report({ offerShownAt: 0, connectedMs: 9000 });
+    expect(measuredPairing(shown)).toBe(shown);
+  });
+
+  it('auch eine nur gezeigte Antwort zählt (der Client zeigt zuerst die Antwort)', () => {
+    const shown = report({ answerShownAt: 0 });
+    expect(measuredPairing(shown)).toBe(shown);
   });
 });

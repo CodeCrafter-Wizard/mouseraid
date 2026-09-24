@@ -8,12 +8,12 @@ import type { RtcPeer } from '../net/rtcTransport';
 import { createTimeline, type Timeline } from '../net/timeline';
 import type { Transport, TransportState } from '../net/transport';
 import { S, fmt } from '../ui/strings';
-import { cameraStatus } from './camera';
+import { cameraStatus, openLobbyCamera } from './camera';
 import { actionButton, card, codeArea, copyShareRow, h, showFailure, showMessage } from './labDom';
 import { createRelayTimeline } from './labEvents';
 import type { LabQuery } from './labQuery';
 import { attachLabLink, finishRun, type LabRunResult } from './labSession';
-import { createPairingTracker } from './pairing';
+import { createPairingTracker, measuredPairing, type PairingTracker } from './pairing';
 import { createQrExchange, type QrExchange } from './qrPanels';
 import { pingLine } from './reportsPanel';
 import { ScanError } from './scannerAdapter';
@@ -62,8 +62,16 @@ function showError(target: HTMLElement, error: unknown): void {
   else showMessage(target, fmt(S.lab.run.unexpected, { message: describeError(error) }));
 }
 
-/** Ein abgebrochener Scan ist kein Befund – der Nutzer hat ihn selbst überholt (Text-Pfad, Platz freigegeben). */
+/** Ein abgebrochener Scan ist kein Befund – jemand hat ihn überholt (Text-Pfad, anderer Platz, Seitenwechsel). */
 const isAbortedScan = (error: unknown): boolean => error instanceof ScanError && error.reason === 'aborted';
+
+/**
+ * Paarung und QR-Fakten für einen Lauf. Ohne einen einzigen gezeigten Code gibt es KEINE Paarung:
+ * ein Bericht aus lauter Nullen behauptete sonst eine Messung, die nie stattgefunden hat.
+ */
+function qrRunOf(qrPath: boolean, marks: PairingTracker, facts: LabReport['qr']): Pick<LabReport, 'pairing' | 'qr'> {
+  return qrPath ? { pairing: measuredPairing(marks.report()), qr: facts } : NO_QR_RUN();
+}
 
 /** D7: Ein gescannter Code zählt nur, wenn er sich als Mäusebau-Payload lesen lässt. */
 async function looksLikePayload(text: string): Promise<boolean> {
@@ -228,8 +236,11 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   qrMount.hidden = !qrPath;
   const rescan = actionButton(S.lab.qr.scanRetry, 'qr-retry', 'accent');
   rescan.hidden = true;
+  // Der Text-Code bleibt der Rückfallweg (D7): ein Knopf dafür, statt nur ein Hinweis – wer den Scan
+  // aufgibt, soll ihn beenden können, ohne zu raten, wohin er tippen muss.
+  const toText = actionButton(S.lab.qr.fallbackText, 'qr-to-text', 'secondary');
   const qrActions = h('div', 'qr-actions');
-  qrActions.append(rescan);
+  qrActions.append(rescan, toText);
   // Fester Container für den Pass-Chip: GENAU EINER je Platz. Ein zweites Angebot (Task 5,
   // „Neu verbinden") ersetzt ihn per `replaceChildren`, statt einen weiteren daneben zu hängen.
   const pass = h('div', 'lab-pass-mount');
@@ -244,9 +255,13 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   let link: Link | null = null;
   let qr: QrExchange | null = null;
   let qrFacts: LabReport['qr'] = null;
+  /** Der Nutzer hat den Scan SELBST beendet (Text-Pfad) – nur dann bleibt „Erneut scannen" verborgen. */
+  let userLeftScan = false;
+  /** Genau EIN `qr:fallback-text` je Platz, über welchen der beiden Wege auch ausgewichen wurde. */
+  let fellBackToText = false;
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
   const marks = createPairingTracker(now);
-  const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => (qrPath ? { pairing: marks.report(), qr: qrFacts } : NO_QR_RUN());
+  const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => qrRunOf(qrPath, marks, qrFacts);
   // Der Ping-Test ist schon im Zustand „verbindet …" erreichbar: Eine Verbindung, die nie aufgeht, ist
   // der wertvollste Report (F7/F3). `finishRun` kommt ohne offene Verbindung zurecht und sagt es in der
   // Statuszeile; ohne diesen Weg bliebe die Diagnose in der Zwei-Geräte-Oberfläche unerreichbar.
@@ -311,20 +326,39 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
         // Antwort gibt es nichts mehr zu verbinden: bei 'open' verschwindet das Code-Feld ohnehin, und
         // ein zweiter Tipp fände den Platz beantwortet vor – rotes F5 neben dem grünen „verbunden".
         connect.disabled = false;
+        // Eine abgelehnte Antwort nach einem gelungenen Scan (fremder Code, falscher Platz) darf keine
+        // Sackgasse sein: der Scan ist vorbei, also muss der zweite Versuch wieder angeboten werden.
+        if (qr !== null) rescan.hidden = false;
       });
     };
     const scanAnswer = (): void => {
       rescan.hidden = true;
+      userLeftScan = false;
       void qr?.scan('answer').then((text) => {
         answer.area.value = text;
         acceptAnswer(text);
       }, (error: unknown) => {
         // Text und `qr:error` hat der QR-Block schon geschrieben; hier bleibt nur der zweite Versuch.
-        if (isAbortedScan(error)) return;
+        // Auch ein ÜBERHOLTER Scan (anderer Platz, Seitenwechsel) endet als Abbruch – nur wer selbst
+        // auf den Text-Pfad gewechselt ist, braucht keinen Knopf mehr: er ist ja schon dort.
+        if (isAbortedScan(error) && userLeftScan) return;
         rescan.hidden = false;
       });
     };
     rescan.onclick = scanAnswer;
+    /** Auf den Text-Pfad ausweichen: Scan beenden und EINMAL vermerken (D12: `cell.path` bleibt 'qr'). */
+    const fallBackToText = (focusArea: boolean): void => {
+      if (qr === null) return;
+      userLeftScan = true;
+      qr.cancel();
+      rescan.hidden = true;
+      if (!fellBackToText) {
+        fellBackToText = true;
+        link?.timeline.push('qr:fallback-text', 'answer');
+      }
+      if (focusArea) answer.area.focus();
+    };
+    toText.onclick = () => { fallBackToText(true); };
     void lobby.createOffer(slot).then((artifacts) => {
       const entry = lobby.entries().get(slot);
       if (entry === undefined) return;
@@ -340,7 +374,15 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
         qr = createQrExchange({ timeline: entry.timeline, marks, looksLikePayload, onQrFacts: (facts) => { qrFacts = facts; } });
         qrMount.append(qr.element, qrActions);
         qr.show('offer', artifacts.payload);
-        scanAnswer();
+        // C4: der Scan startet von selbst – aber ERST mit laufender Kamera. Die Karte öffnet den Stream
+        // im selben Tick; ohne dieses Warten fände `attachCamera` keinen, der Block meldete einen
+        // Kamera-Fehler und der Lauf trüge ein falsches F9. `openLobbyCamera` ist dabei kein zweiter
+        // Zugriff: es liefert den laufenden Stream bzw. die schon laufende Anforderung.
+        void openLobbyCamera().then((camera) => {
+          // Ohne Kamera gibt es nichts zu scannen: den Grund nennt die Kamera-Karte, hier bleibt der zweite Versuch.
+          if (camera.running) scanAnswer();
+          else rescan.hidden = false;
+        });
       }
     }, (error: unknown) => { showError(alert, error); });
     connect.onclick = () => {
@@ -348,11 +390,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       // Von Hand eingefügt = für DIESEN Schritt auf den Text-Pfad ausgewichen. Das Zellenlabel bleibt
       // 'qr' (D12, sonst wäre die Zellen-Matrix nicht mehr vergleichbar) – der Ausweg steht als
       // `qr:fallback-text` in der Zeitleiste und damit im Report.
-      if (qr !== null) {
-        qr.cancel();
-        rescan.hidden = true;
-        link?.timeline.push('qr:fallback-text', 'answer');
-      }
+      fallBackToText(false);
       acceptAnswer(answer.area.value);
     };
   }
@@ -400,7 +438,11 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
   const marks = createPairingTracker(now);
   let qrFacts: LabReport['qr'] = null;
-  const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => (qrPath ? { pairing: marks.report(), qr: qrFacts } : NO_QR_RUN());
+  /** Der Nutzer hat den Scan SELBST beendet (Text-Pfad) – nur dann bleibt „Erneut scannen" verborgen. */
+  let userLeftScan = false;
+  /** Genau EIN `qr:fallback-text`, über welchen der beiden Wege auch ausgewichen wurde. */
+  let fellBackToText = false;
+  const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => qrRunOf(qrPath, marks, qrFacts);
   if (ctx.query.transport === 'broadcast') {
     box.setWaiting(S.lab.state.connecting);
     box.watch(
@@ -424,8 +466,10 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   qrMount.hidden = !qrPath;
   const rescan = actionButton(S.lab.qr.scanRetry, 'qr-retry', 'accent');
   rescan.hidden = true;
+  // Wie am Host: der Text-Code bleibt der Rückfallweg und bekommt dafür einen eigenen Knopf (D7).
+  const toText = actionButton(S.lab.qr.fallbackText, 'qr-to-text', 'secondary');
   const qrActions = h('div', 'qr-actions');
-  qrActions.append(rescan);
+  qrActions.append(rescan, toText);
   // Fester Container für den Pass-Chip (wie am Host): genau einer, auch nach „Neu verbinden" (Task 5).
   const pass = h('div', 'lab-pass-mount');
   codes.append(qrMount, codeBlock(offer.wrap, makeAnswer), answerBlock);
@@ -473,34 +517,55 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
           if (state !== 'connecting') answerBlock.hidden = true;
         },
       });
-    }, (error: unknown) => { showError(alert, error); }).finally(() => {
+    }, (error: unknown) => {
+      showError(alert, error);
+      // Ein abgelehntes Angebot nach einem gelungenen Scan (fremder Code, abgelaufenes Angebot) darf
+      // keine Sackgasse sein: der Scan ist vorbei, also den zweiten Versuch wieder anbieten.
+      if (qr !== null) rescan.hidden = false;
+    }).finally(() => {
       makeAnswer.disabled = false;
       makeAnswer.textContent = S.lab.client.makeAnswer;
     });
   };
+  /** Auf den Text-Pfad ausweichen: Scan beenden und EINMAL vermerken (D12: `cell.path` bleibt 'qr'). */
+  const fallBackToText = (focusArea: boolean): void => {
+    if (qr === null) return;
+    userLeftScan = true;
+    qr.cancel();
+    rescan.hidden = true;
+    if (!fellBackToText) {
+      fellBackToText = true;
+      relay.timeline.push('qr:fallback-text', 'offer');
+    }
+    if (focusArea) offer.area.focus();
+  };
+  toText.onclick = () => { fallBackToText(true); };
   makeAnswer.onclick = () => {
     if (offer.area.value.trim() === '') { showMessage(alert, S.lab.run.emptyCode); return; }
     // Von Hand eingefügt = für DIESEN Schritt auf den Text-Pfad ausgewichen (D12: cell.path bleibt 'qr').
-    if (qr !== null) {
-      qr.cancel();
-      rescan.hidden = true;
-      relay.timeline.push('qr:fallback-text', 'offer');
-    }
+    fallBackToText(false);
     acceptOffer(offer.area.value);
   };
   if (qr !== null) {
     const scanOffer = (): void => {
       rescan.hidden = true;
+      userLeftScan = false;
       void qr.scan('offer').then((text) => {
         offer.area.value = text;
         acceptOffer(text);
       }, (error: unknown) => {
-        if (isAbortedScan(error)) return;
+        // Nur der selbst gewählte Weg auf den Text-Pfad kommt ohne „Erneut scannen" aus; ein von einem
+        // anderen Platz oder vom Seitenwechsel überholter Scan braucht den Knopf.
+        if (isAbortedScan(error) && userLeftScan) return;
         rescan.hidden = false;
       });
     };
     rescan.onclick = scanOffer;
-    scanOffer();
+    // C4: der Scan startet von selbst – aber ERST mit laufender Kamera (siehe Host-Seite).
+    void openLobbyCamera().then((camera) => {
+      if (camera.running) scanOffer();
+      else rescan.hidden = false;
+    });
   }
   return element;
 }

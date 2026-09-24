@@ -259,6 +259,14 @@ describe('labSession', () => {
     expect(result.report.failures).toEqual([]);
   });
 
+  it('ein übersprungener FREMDER Code ist kein Befund – er steht als qr:skipped, nicht als qr:error (D7)', async () => {
+    const timeline = createTimeline(now);
+    // Ein Plakat oder eine Verpackung im Bild ist kein Fehlschlag des Labors: es wird weitergescannt.
+    timeline.push('qr:skipped', 'not-a-payload');
+    const result = await run(lonely(), 'host', timeline);
+    expect(result.report.failures).toEqual([]);
+  });
+
   it('ohne Angabe stehen pairing und qr im Report auf null', async () => {
     const result = await run(lonely(), 'host');
     expect(result.report.pairing).toBeNull();

@@ -5,6 +5,7 @@ import { buildClientPanel, buildHostPanel } from './connectPanels';
 import { actionButton, card, h } from './labDom';
 import { recordLabEvent } from './labEvents';
 import { parseLabQuery, type LabQuery } from './labQuery';
+import { reattachLiveExchanges } from './qrPanels';
 import type { LabRunResult } from './labSession';
 import { createReportsPanel } from './reportsPanel';
 import type { CellLabel } from './report';
@@ -140,6 +141,8 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
       restart.disabled = false;
       show(status);
       observe();
+      // Der Neustart liefert einen NEUEN Stream: die Sucher der QR-Blöcke hängen sonst am toten alten.
+      if (status.running) reattachLiveExchanges();
     });
   };
   // Kamera-zuerst (D5, Spec-Absatz M2): auf dem QR-Pfad öffnet die Seite den Dauer-Stream beim Eintritt

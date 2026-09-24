@@ -69,6 +69,15 @@ export function projectLobbyFull(marks: PairingMarks): number | null {
 }
 
 /**
+ * Eine Paarung, die nie einen Code gezeigt hat, ist keine Messung: Der Nutzer war von Anfang an auf
+ * dem Text-Pfad, und ein Bericht aus lauter Nullen behauptete eine Paarungsdauer, die es nie gab.
+ * @returns den Bericht unverändert, sobald mindestens ein Code gezeigt wurde – sonst null.
+ */
+export function measuredPairing(report: PairingReport): PairingReport | null {
+  return report.offerShownAt === null && report.answerShownAt === null ? null : report;
+}
+
+/**
  * Sammelt die Marken einer Paarung. Der ERSTE `mark()` setzt den Nullpunkt (= erster gezeigter
  * QR-Code) und trägt deshalb 0. Je Name gilt die ERSTE Marke: ein zweites Anzeigen desselben Codes
  * (Overlay, Neuzeichnen) darf die gemessene Dauer nicht nachträglich verkürzen.

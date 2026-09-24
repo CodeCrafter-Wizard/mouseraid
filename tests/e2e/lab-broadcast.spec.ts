@@ -344,6 +344,31 @@ test('QR-Pfad: die Auswahl spiegelt sich im Zellen-Chip, der Text-Code bleibt al
   await expect(page.getByTestId('offer-in')).toBeVisible();
   await expect(page.getByTestId('make-answer')).toBeVisible();
   await expect(page.getByText(S.lab.qr.fallbackHint)).toBeVisible();
+
+  // Der Scan startet von selbst (C4), aber ERST mit laufender Kamera: startete er im selben Tick wie
+  // der Selbststart der Karte, fände `attachCamera` keinen Stream – die Statuszeile zeigte den
+  // Kamera-Fehler, „Kamera neu starten" stünde da und der Lauf trüge ein falsches F9.
+  await expect(page.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 10_000 });
+  await expect(page.getByTestId('qr-restart-camera')).toBeHidden();
+  await expect(page.getByTestId('qr-retry')).toBeHidden();
+
+  // Seitenwechsel (Sperrbildschirm): der Scan hält an und bietet den zweiten Versuch an. Playwright kann
+  // die Sichtbarkeit nicht echt umschalten – gefälscht wird nur `visibilityState`, das Ereignis ist echt.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(page.getByTestId('qr-retry'), 'ein Scan im Hintergrund läuft nicht weiter').toBeVisible();
+
+  // „Erneut scannen" nimmt die Schleife wieder auf …
+  await page.getByTestId('qr-retry').click();
+  await expect(page.getByTestId('qr-retry')).toBeHidden();
+  await expect(page.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning);
+
+  // … und „Auf Text-Pfad wechseln" beendet sie und setzt den Fokus ins Textfeld.
+  await page.getByTestId('qr-to-text').click();
+  await expect(page.getByTestId('qr-retry')).toBeHidden();
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('offer-in');
 });
 
 test('QR-Pfad: ein zu großer Code wird nicht gezeigt, sondern als qr:error „too-large" gemeldet', async ({ page }) => {

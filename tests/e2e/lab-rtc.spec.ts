@@ -733,6 +733,7 @@ test('Selbsttest: Lauf A ungültig (Berechtigung erteilt), Lauf B gültig mit ec
 interface QrStoredReport {
   cell: { path: string };
   valid: boolean;
+  failures: string[];
   timeline: { kind: string; detail: string }[];
   pairing: { offerShownAt: number | null; offerScannedMs: number | null; connectedMs: number | null; projectedLobbyFullMs: number | null } | null;
   qr: { backend: string; offerChars: number; answerChars: number; decodeLatencyMs: number; attempts: number } | null;
@@ -745,6 +746,7 @@ async function qrReportFacts(page: Page) {
     return {
       path: report.cell.path,
       valid: report.valid,
+      failures: report.failures,
       // Nur die ARTEN der Einträge und die Rolle beim Rückfall – nie ein Detail mit Codeinhalt.
       kinds: [...new Set(report.timeline.map((event) => event.kind))].sort(),
       fallbackRoles: report.timeline.filter((event) => event.kind === 'qr:fallback-text').map((event) => event.detail),
@@ -833,6 +835,9 @@ test('Labor-UI auf dem QR-Pfad: Angebot als QR, Handshake über den Text-Rückfa
   // D12: Der Ausweg auf den Text-Pfad ändert das Zellenlabel NICHT – er steht in der Zeitleiste.
   expect(facts?.path).toBe('qr');
   expect(facts?.valid).toBe(true);
+  // Der Scan lief mit laufender Kamera los: kein `qr:error` und damit kein falsches F9.
+  expect(facts?.kinds).not.toContain('qr:error');
+  expect(facts?.failures).not.toContain('F9');
   expect(facts?.kinds).toContain('qr:backend');
   expect(facts?.kinds).toContain('qr:shown');
   expect(facts?.kinds).toContain('qr:fallback-text');
@@ -847,4 +852,34 @@ test('Labor-UI auf dem QR-Pfad: Angebot als QR, Handshake über den Text-Rückfa
   expect(facts?.pairingConnected).toBe(true);
   expect(facts?.pairingOfferScanned).toBeNull();
   expect(facts?.pairingProjection).toBeNull();
+});
+
+test('QR-Pfad am Host: ein zweiter Platz übernimmt die Kamera, der erste bietet „Erneut scannen"', { tag: '@local' }, async ({ context }) => {
+  await context.grantPermissions(['local-network-access']);
+  const host = await context.newPage();
+  await host.goto('lab.html?quick=1');
+  await host.getByTestId('cell-device').fill('QR-Zwei-Plaetze');
+  await host.getByTestId('cell-role-host').check();
+  await host.getByTestId('cell-camera-an').check();
+  await host.getByTestId('cell-path-choice-qr').check();
+  await host.getByTestId('cell-confirm').click();
+  await expect(host.getByTestId('camera-state')).toHaveAttribute('data-state', 'ready', { timeout: 10_000 });
+
+  await host.bringToFront();
+  await host.getByTestId('add-player').click();
+  const slot1 = host.getByTestId('slot-1');
+  await expect(slot1.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 10_000 });
+  await expect(slot1.getByTestId('qr-retry')).toBeHidden();
+
+  // Drei Plätze teilen sich EINE Kamera: liefen zwei Schleifen, entschiede der Zufall, welcher Platz
+  // die Antwort des anderen dekodiert – der falsche bekäme ein Nonce-F5 und käme nicht mehr weiter.
+  await host.getByTestId('add-player').click();
+  const slot2 = host.getByTestId('slot-2');
+  await expect(slot2.getByTestId('qr-status')).toHaveText(S.lab.qr.scanning, { timeout: 10_000 });
+  await expect(slot1.getByTestId('qr-retry'), 'der überholte Platz bietet den zweiten Versuch an').toBeVisible();
+
+  // Und zurück: „Erneut scannen" auf Platz 1 überholt nun Platz 2.
+  await slot1.getByTestId('qr-retry').click();
+  await expect(slot1.getByTestId('qr-retry')).toBeHidden();
+  await expect(slot2.getByTestId('qr-retry')).toBeVisible();
 });

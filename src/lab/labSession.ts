@@ -145,8 +145,10 @@ function storeReport(report: LabReport): boolean {
  * Dazu die Seiten-Ereignisse aus `labEvents.ts` (`wakelock:<state>`, `camera:track:<state>`), die dieser
  * Lauf selbst einsammelt.
  *
- * M2 (QR-Pfad) ergänzt: `qr:backend`, `qr:shown`, `qr:decoded`, `qr:error`, `qr:fallback-text`,
- * `camera:track:<state>`. KEIN Detail trägt je den gescannten Text, eine Adresse oder `track.label`.
+ * M2 (QR-Pfad) ergänzt: `qr:backend`, `qr:shown`, `qr:decoded`, `qr:error`, `qr:skipped`,
+ * `qr:fallback-text`, `camera:track:<state>`. KEIN Detail trägt je den gescannten Text, eine Adresse
+ * oder `track.label`. Nur `qr:error` zählt für F9 – ein übersprungener FREMDER Code (`qr:skipped`,
+ * D7) sagt über das Labor nichts aus, sonst trüge jeder Lauf neben einem Plakat einen Befund.
  */
 export async function finishRun(input: {
   cell: CellLabel; transport: Transport; peer: RtcPeer | null; timeline: Timeline; artifacts: HandshakeArtifacts | null; remoteSdp: string | null;
