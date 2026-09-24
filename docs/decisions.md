@@ -103,7 +103,7 @@ Netzwerkadressen aus Test-Annotationen/Reports werden nie ins Repo übernommen (
 | F6 | Umgebung ungeeignet (kein sicherer Kontext, kein WebRTC, Local-Network verweigert) |
 | F7 | ICE verbunden, Kanäle nach 10 s nicht offen |
 | F8 | Verbindung verloren (war offen) |
-| F9 | Kamera-/QR-Problem (in M1 nur: Kamera-Anforderung im Selbsttest fehlgeschlagen) |
+| F9 | Kamera-/QR-Problem (M1: Kamera-Anforderung fehlgeschlagen; ab M2 zusätzlich jeder Zeitleisten-Eintrag `qr:error`. **Nicht** F9: `qr:skipped` – ein übersprungener fremder QR-Code) |
 
 Diese Tabelle ist ab M1 **die** Definition des Projekts. Im Code: `classifyFailures` in `src/net/failureCodes.ts` (stabile Reihenfolge F1…F9, leere Liste = kein Befund); die Texte für Nutzer stehen unter `S.failures` in `src/ui/strings.ts`. Die Spec nennt nur „F1–F9 (F1 mit Safari-Variante)" ohne Einzelbedeutungen, und die beiden Entwurfslisten aus der Recherche- und der Design-Runde wichen in Nummerierung und Zuschnitt voneinander ab – Reports, UI-Texte und `docs/connectivity-tests.md` beziehen sich deshalb ausschließlich auf diese Tabelle, nicht auf die Entwürfe.
 
@@ -189,6 +189,328 @@ Entscheidung zu Punkt 16 der „Abweichungen vom M0-Plan": Mit `tests/e2e/lab-br
 - In PowerShell das Tag in Anführungszeichen setzen (`npx playwright test --grep '@local'`), sonst deutet die Shell `@local` als Splatting und der Filter fehlt.
 - `check-dist` prüft seit dem M1-Feinschliff auch, dass der JS-Graph der **Spielseite** frei von Labor-/Netz-Signaturen bleibt (`maeusebau-lab-`, `RTCPeerConnection`, `CompressionStream`; `scripts/lib/distChecks.mjs` → `findLabSignatures`). Das gilt für Phase 0+1, in der die Spielseite kein Netz hat. **Phase 2 (Koop-Netzcode auf `index.html`) muss diese Liste auf reine Labor-Marker (`maeusebau-lab-`) verengen**, sonst schlägt das Tor beim ersten `src/net`-Import der Spielseite an.
 
+## M2 – Testlabor II (Kamera + QR) (2026-09-25)
+
+### Bibliotheken, Lizenzen und Audit
+Genau drei neue Abhängigkeiten, alle mit exaktem Pin (ohne `^`) und alle **MIT**:
+
+| Paket | Version | Rolle | Lizenz |
+|---|---|---|---|
+| `qrcode` | 1.5.4 | Laufzeit (QR-Erzeugung) | MIT, „Copyright (c) 2012 Ryan Day" |
+| `qr-scanner` | 1.4.2 | Laufzeit (QR-Dekodierung) | MIT, „Copyright (c) 2017 Nimiq, danimoh" |
+| `@types/qrcode` | 1.5.6 | nur Typen (dev) | MIT (DefinitelyTyped) |
+
+Der von der Spec verlangte **`qrcode`-Lib-Audit ist damit erledigt**: im gebauten Lab-Chunk steht kein
+`Buffer`, kein `process.`, kein `require(` und kein `fs`; es gibt keine Fremd-Hosts. Die einzige URL im
+Bundle ist `http://www.w3.org/2000/svg` – der XML-Namensraum des SVG-Renderers, der nie geladen wird.
+(Am 2026-09-25 gegen `dist/` nachgemessen; `check-dist` prüft die Signaturen `process.(env|version|platform)`
+und `Buffer.(from|alloc)` seitdem bei jedem Lauf.) Der Worker von `qr-scanner` enthält weder WASM noch
+eine URL; er entsteht aus einer **Blob-URL** (`new Worker(URL.createObjectURL(...))`). Kein Fremd-Host –
+aber eine später ergänzte CSP bräuchte `worker-src blob:`.
+
+Import-Form: `import QRCode from 'qrcode'` (Vite löst das `browser`-Feld auf). **Nie** der tiefe Pfad
+`qrcode/lib/browser.js` (byte-identisch dasselbe) und **nie** `QRCode.toFile`/`toBuffer`: die Typen
+kennen beide, der Browser-Build hat sie nicht – zur Laufzeit wäre es `undefined`.
+
+### Abweichungen vom Spec-Absatz M2
+Der Spec-Absatz (Zeilen 100–103 des Designs) ist älter als die Messungen. Diese vierzehn Punkte weichen
+bewusst ab; maßgeblich ist jeweils die gemessene Wirklichkeit.
+
+1. **Keine `QrScanner`-Instanz.** `stop()`/`destroy()`/`pause()` der Instanz beenden **unseren**
+   Kamera-Stream (`track.stop()` **und** `stream.removeTrack`), und der Konstruktor hängt einen
+   `visibilitychange`-Zuhörer ein, der beim Sperrbildschirm-Test genau das tötet, was gemessen werden
+   soll. Benutzt werden nur `QrScanner.createQrEngine()` (einmal je Seitenaufruf) und
+   `QrScanner.scanImage(source, { qrEngine, returnDetailedScanResult: true })` mit eigener
+   `requestVideoFrameCallback`-Schleife.
+2. **Natives `BarcodeDetector` ist hier nicht end-to-end testbar.** In Playwright-Chromium auf Windows
+   ist es `undefined` – headless **und** headful. Playwright prüft deshalb immer nur den Worker-Pfad;
+   die native Verzweigung sichert ein Unit-Test mit Attrappe (`chooseScanBackend`). Die Spec-Forderung
+   „Fallback auch bei leerem `getSupportedFormats()` oder `detect()`-Fehler" bleibt und wird von
+   **unserem** Adapter erfüllt – die Bibliothek fängt ein erst zur Laufzeit werfendes `detect()` nicht ab.
+3. **Eigener Payload-Deckel auf dem QR-Pfad: `MAX_QR_PAYLOAD_CHARS = 1100`.** Die Codec-Grenze von
+   4096 Zeichen passt bei ECC M in **keinen** QR-Code. Längere Payloads werden nicht gerendert: Hinweis
+   „Code zu groß für QR – Text-Pfad benutzen." und Zeitleisten-Eintrag `qr:error` = `too-large`. Für den
+   Text-Pfad bleibt 4096 unverändert.
+4. **Kein Scan-Bereich.** Die Vorgabe der Bibliothek (zentriertes Quadrat von ⅔ · min(Breite, Höhe),
+   heruntergerechnet auf 400×400) verfehlte den 1100-Zeichen-Code (125 Module) reproduzierbar, während
+   `scanImage` **ohne** `scanRegion` ihn traf.
+5. **`scanImage` nimmt kein `ImageData`** (`Unsupported image type.`). Die Spec-Zusage „akzeptiert auch
+   `ImageData`" erfüllt unser Adapter, indem er es zuerst per `putImageData` auf ein Canvas zeichnet
+   (gemessen 9–12 ms, gleiches Ergebnis).
+6. **Sperrbildschirm-Test ist Messung + frisches Angebot.** „Neu verbinden" belebt nichts wieder: eine
+   geschlossene `RTCPeerConnection` und eine Spur mit `readyState === 'ended'` sind endgültig. Der Host
+   legt auf **demselben Platz** ein neues Angebot an, der Client scannt erneut. Die vorübergehende
+   Unterbrechung am Sperrbildschirm ist `mute`/`unmute`, nicht `ended` – beides wird aufgezeichnet.
+7. **Wake Lock hat zwei bekannte Löcher** (siehe unten). Headless Chromium lehnt mit `NotAllowedError`
+   ab, headful erteilt ihn – E2E prüft deshalb nur, dass der Fehlschlag geschluckt wird.
+8. **Eigene Playwright-Projekte für die Fake-Kamera.** `--use-file-for-fake-video-capture` gilt je
+   **Browser-Start**, und `test.use({ launchOptions })` **ersetzt** die Projekt-Argumente komplett (die
+   vier bestehenden Flags fielen weg). Die Fake-Kamera-Projekte tragen deshalb die volle Liste; das
+   Projekt `chromium` schließt beide Specs per `testIgnore` aus.
+9. **`facingMode: { ideal: 'environment' }`** statt `exact` – `exact` scheitert ohne Rückkamera mit
+   `OverconstrainedError`.
+10. **Kein QR-Handshake-E2E mit Fake-Kamera** (so schon in der Spec, hier der Grund): die Datei liefert
+    je Browser-Start genau **einen** Code, ein Handshake bräuchte zwei. Der Handshake-E2E bleibt auf dem
+    Text-Pfad.
+11. **Pass-Kriterium als reine Funktion** `qrPassCriterion` in `src/net/candidates.ts` statt als
+    UI-Logik; der Chip „QR-tauglich ✓" zeigt nur ihr Ergebnis.
+12. **`cell.path` bleibt `'qr'`**, auch wenn für einen Schritt auf Kopieren/Einfügen ausgewichen wurde –
+    das hält die Zellen-Matrix vergleichbar. Der Ausweg steht als `qr:fallback-text` in der Zeitleiste.
+13. **Der „`qrcode`-Lib-Audit" der Spec ist erledigt** (siehe oben) – es gab deshalb keinen eigenen
+    Audit-Schritt, das Ergebnis steht hier.
+14. **`renderQr` ist synchron** (eigene Zeichnung aus `QRCode.create(...).modules`) statt
+    `QRCode.toCanvas`: nur so lässt sich die Canvas-Breite als ganzzahliges Vielfaches der Modulzahl
+    wählen (sonst verwischen halbe Module beim Hochskalieren), und die Unit-Tests kommen ohne Promise aus.
+
+### Abweichungen während der Umsetzung (aus den Task-Reviews)
+Die Reviews der Tasks 1–6 haben den Plantext an diesen Stellen überholt. **Maßgeblich ist der Code.**
+
+- **QR-Lupe (T1).** Der Schließen-Knopf ist ein normaler `btn` mit eigenem `click`-Zuhörer (auf weißem
+  Grund war die Variante `secondary` unsichtbar); die Lupe scrollt im Querformat (`overflow: auto`,
+  `justify-content: safe center`, Safe-Area-Polsterung). `renderQr` setzt zusätzlich `canvas.style.width/height`
+  in CSS-Pixeln (Backing-Store 1:1 in Gerätepixeln); die Lupe gibt diese Maßangabe wieder frei, damit
+  dort `90vmin` gewinnt.
+- **Scanner (T2).** Ein `detect()`, das erst zur Laufzeit wirft, stuft die Seite **einmalig** auf den
+  Worker zurück (`nativeBroken`); ein Fehlschlag der Engine wird zu `ScanError('camera-error')`;
+  `stop()` bricht Frame-Anforderung **und** Lücken-Timer ab. Ein **leeres** `detect()`-Ergebnis heißt
+  „kein Code im Bild" und gibt **nicht** an den Worker ab.
+- **Kamera und Wake Lock (T3).** `openLobbyCamera()` hat einen Riegel: eine laufende Anforderung wird
+  zurückgegeben statt eine zweite zu starten (sonst `NotReadableError`/verwaister Stream); `restartCamera`
+  wartet darauf. Der Wake Lock wird neu angefordert, wenn der Browser ihn **bei sichtbarer Seite** entzieht
+  (Energiesparmodus) – begrenzt auf `MAX_REACQUIRES = 5`; ein Wechsel auf „sichtbar" setzt Zähler und
+  `denied`-Riegel zurück. „Kamera neu starten" erscheint erst, wenn die Kamera je lief, und bleibt nach
+  einem gescheiterten Neustart stehen.
+- **F9-Regel (T3/T4, Endstand).** Lauf-Zeitleiste und Seiten-Puffer werden **getrennt** nach ihrem
+  jeweils **letzten** Kamera-Eintrag beurteilt; F9 gilt, wenn einer von beiden auf `camera-error` endet.
+  Folge: eine reparierte Kamera löscht F9 für spätere Läufe, ein von der Seite gemeldeter Spurverlust
+  ergibt weiterhin F9.
+- **QR-Ablauf (T4).** Die Scans starten automatisch **erst**, wenn `openLobbyCamera()` mit laufendem
+  Stream aufgelöst hat, der Nutzer den Scan nicht verlassen hat (`userLeftScan`) und der Platz nicht
+  freigegeben ist; „Erneut scannen" bleibt immer von Hand verfügbar. Am Host scannt **höchstens ein**
+  Platz (`createScanCoordinator`): ein neu scannender Platz überholt die anderen, die `S.lab.qr.overtaken`
+  zeigen. Ein abgelehntes `acceptOffer`/`acceptAnswer` gibt „Erneut scannen" wieder frei (keine Sackgasse).
+  Neu ist der Knopf **„Auf Text-Pfad wechseln"** (`qr-to-text`): er bricht den Scan ab, schreibt genau ein
+  `qr:fallback-text` je Austausch und lässt „Erneut scannen" stehen. Ohne Kamera erscheint die Zeile
+  `S.lab.qr.noCamera`. Nach „Neu verbinden" setzen beide Seiten `userLeftScan`/`fellBackToText` zurück,
+  der Client verwirft seinen veralteten Antwort-Code und scannt erneut, der Host zeigt sofort ein frisches
+  Angebot. `QrExchange.clear()` und `liveExchangeCount` (Test-Haken) sind Erweiterungen des Vertrags.
+- **Fremde QR-Codes (T4, D7 nachgeschärft).** Ein Code, der kein `MB1.`-Payload ist, wird **übersprungen**
+  und als `qr:skipped` (Detail `not-a-payload`) notiert – **nie** als `qr:error`, also nie als F9. Sonst
+  trüge jeder Lauf in einem Raum mit Werbeplakat ein F9, das über das Labor nichts aussagt. Bewiesen vom
+  Fake-Kamera-Smoke mit einem fremden Code.
+- **Sperrtest (T5).** `pingAfter` ist `null`, wenn der Transport beim Entsperren nicht offen war. Der
+  Spur-Beobachter wird je scharfgestelltem Lauf neu angemeldet (sonst bliebe `trackAfter` nach einem
+  Kamera-Neustart für immer `ended`); ein scharfgestellter Lauf lässt sich vor dem Dunkelwerden noch
+  ändern; `lock:start` wird genau einmal je gemessenem Lauf geschrieben; „Ping-Test starten" ist während
+  der Sperrtest-Ping-Serie gesperrt.
+- **Ereignisse (T3–T5).** Genau **ein** Seiten-Puffer (`src/lab/labEvents.ts`, 200 Einträge plus Zähler
+  `dropped`) wird in jede Lauf-Zeitleiste kopiert. `createRelayTimeline` gibt jeder **neuen** Zeitleiste
+  die volle noch ungesehene Vorgeschichte (ein Wiederholungsversuch behält sie, D7); `reset()` beginnt bei
+  „Neu verbinden" einen frischen Puffer, damit der neue Lauf nicht die `qr:error`s des toten erbt.
+- **Fake-Kamera (T6).** Zwei Smokes, zwei Projekte (siehe „E2E-Tor in M2").
+
+### Verfügbarkeit von `BarcodeDetector` (Stand der Recherche)
+
+| Browser | Verfügbar? |
+|---|---|
+| Chrome Desktop 88+ | nur auf ChromeOS und macOS – **nicht** Windows, **nicht** Linux |
+| Edge 83+ / Opera 69+ | „macOS only" (vor Chrome 113 auf macOS Ventura still fehlschlagend) |
+| **Chrome Android 83+** | ja (WebView und Samsung Internet spiegeln das) |
+| Firefox | nein |
+| Safari 17+ | nur hinter dem Feature-Flag „Shape Detection API"; auf iOS zusätzlich defekt (WebKit-Bug 281848) |
+
+**Praktisch:** Android-Chrome nativ, iOS-Safari nie, Windows-PC nie. Gemessen ist es in
+Playwright-Chromium auf Windows `undefined` (headless und headful) – die erste echte Messung des nativen
+Pfads kommt aus Sitzung A vom Android-Gerät.
+
+Unser Report-Feld `qr.backend` ist eine Aussage über **unseren** Pfad: `'native'` steht dort nur, wenn
+unser eigener `BarcodeDetector`-Pfad dekodiert hat. Welche Engine `qr-scanner` intern wählt, ist seine
+Sache und bleibt bei uns `'worker'`.
+
+### QR-Kapazität bei ECC M und der Payload-Deckel
+Gemessen mit `qrcode` 1.5.4 an **base64url**-Payloads der Form `MB1.<d|p>.…`. Wichtig: `qrcode`
+kodiert base64url als **ein Byte-Segment** (8 Bit je Zeichen). Die ältere Tabelle im Faktenblatt
+wurde mit Groß-/Ziffernfolgen gemessen, die in den **Alphanumerik**-Modus fallen (5,5 Bit) – sie
+unterschätzt jede Größe um rund vier Versionen.
+
+| Zeichen | Version | Module | mit Ruhezone | CSS px/Modul @ 390 px |
+|---|---|---|---|---|
+| 374 (kleinster M1-Payload) | 15 | 77 | 85 | 4,59 |
+| 704 (größter M1-Payload) | 21 | 101 | 109 | 3,58 |
+| 800 (Spec-Zielwert) | 23 | 109 | 117 | 3,33 |
+| 900 | 24 | 113 | 121 | 3,22 |
+| 1000 | 26 | 121 | 129 | 3,02 |
+| **1100 (Scan-Reserve der Spec)** | **27** | **125** | **133** | **2,93** |
+
+Obergrenzen bei ECC M: reiner Byte-Modus 2331 Byte, mit Auto-Segmentierung auf base64url
+3371 Zeichen. Die Codec-Grenze 4096 passt damit **nicht** mehr in einen QR-Code – daher der eigene
+Deckel 1100. Bei 1100 Zeichen liegt die Anzeige auf einem 390-CSS-px-Telefon bei 2,93 px je Modul,
+also knapp unter dem 3-px-Ziel; `renderQr` rechnet deshalb mit ganzzahligen **Geräte**pixeln
+(Untergrenze 2) und die Vollbild-Lupe („Tippen zum Vergrößern", ≥ 90 % der kürzeren Bildschirmkante)
+ist der vorgesehene Weg zum Scannen großer Codes. Ob 125 Module am Gerät zuverlässig scannen,
+entscheidet Sitzung A – der Rückfallweg ist ein kleinerer Deckel (~700 Zeichen = 101 Module), nicht ein
+Absenken von `minModulePx`. (Der Deckel zählt UTF-16-Einheiten; für `MB1.`-Payloads, die nur aus
+ASCII bestehen, ist das gleichbedeutend mit Zeichen.)
+
+Renderzeiten (Headless-Chromium, Canvas): 2–7 ms je Code. Dekodier-Latenz mit wiederverwendeter
+Worker-Engine: 13–20 ms je Code für 57 bis 125 Module, erster Aufruf je Seitenaufruf 36 ms
+(Worker-Start).
+
+### Wake Lock – zwei bekannte Löcher
+- **Installierte iOS-Web-Apps unter iOS 18.4:** wirkungslos (WebKit-Bug 254545). Vollständig erst ab
+  iOS 18.4. Genau das Szenario dieses Projekts – der Zustand gehört deshalb in die Zeitleiste und ins
+  Runbook.
+- **Headless Chromium** lehnt `navigator.wakeLock.request('screen')` mit `NotAllowedError` ab; headful
+  erteilt ihn (`type: 'screen'`). Ein E2E darf deshalb nur prüfen, dass der Fehlschlag geschluckt wird
+  und `wakelock:denied` in der Zeitleiste steht – nie, dass die Sperre gehalten wird.
+- Die Sperre wird automatisch freigegeben, sobald das Dokument unsichtbar wird; wieder angefordert wird
+  sie bei `visibilitychange` → sichtbar sowie nach einem Entzug bei sichtbarer Seite (höchstens fünfmal
+  je Seitenaufruf). `src/platform/wakeLock.ts` meldet jeden Zustand über einen Rückruf, weil
+  `src/platform` die Schicht `src/lab` nicht kennen darf.
+- **Kein Weg zurück nach `pagehide`** (Zurück-Taste, iOS-Seitencache): die Sperre wird dann nicht erneut
+  angefordert. Am Gerät hilft nur ein Neuladen; im Runbook steht der Hinweis.
+
+### Fake-Kamera in Playwright (Fakten und Fallen)
+- `--use-file-for-fake-video-capture=<absoluter Pfad>` funktioniert mit `.y4m` und ersetzt das
+  synthetische Bild. Chromium **wiederholt die Datei in Schleife** – ein einziges Bild genügt
+  (640×480 = 460 850 B, 1280×720 = 1 382 452 B). Die Dateien entstehen zur Testlaufzeit in
+  `test-results/fakecam/` und werden **nie** committet.
+- **Reihenfolge-Falle:** Playwright löscht `test-results/` **vor** `globalSetup`
+  (`createRemoveOutputDirsTask` läuft davor). Die Dateien dürfen deshalb nur aus `globalSetup` heraus
+  geschrieben werden – aus `playwright.config.ts` heraus wären sie beim ersten Browser-Start wieder weg.
+- **Maßfalle:** verlangt man eine Auflösung, die nicht zum Seitenverhältnis der Datei passt, beschneidet
+  und **dreht** Chromium (aus 960×960 wurde bei `{ width: 640, height: 480 }` ein 480×640-Video, in dem
+  der Code nicht mehr dekodierbar war). Deshalb: **Dateimaße = angeforderte Maße**. Der Smoke mit
+  `{ video: true }` bekommt 640×480; der Smoke, der die echte Lobby-Kamera fährt
+  (`width/height: { ideal: 1280/720 }`), bekommt eine 1280×720-Datei.
+- Gespiegelt wird nichts – die Bilder kommen unverändert an.
+- **Datenschutz-Falle:** mit diesem Flag ist `track.label` der **vollständige Dateipfad samt
+  Benutzername**. Er wird nie geloggt, annotiert oder in einen Report geschrieben.
+
+### Kamera-zuerst und Sperrbildschirm
+- Auf dem QR-Pfad öffnen **beide** Seiten beim Eintritt in die Lobby **einen** Stream
+  (`facingMode: { ideal: 'environment' }`, 1280×720 als Wunsch) und halten ihn für die Sitzung offen.
+  Der Selbsttest aus M1 bleibt unberührt (`openTemporaryCamera`).
+- `track.readyState` kennt nur `'live'` und `'ended'`; **`'ended'` ist endgültig**. Die vorübergehende
+  Unterbrechung am Sperrbildschirm ist `track.muted` mit den Ereignissen `mute`/`unmute`. Chrome für
+  Android feuert beide beim Aus- und Wiedereinschalten des Bildschirms – der Stream bleibt dieselbe Spur.
+  „Neu verbinden" ist deshalb nur bei `'ended'` bzw. nicht mehr offenem Transport nötig.
+- Ein offener `getUserMedia`-Stream und eine gleichzeitig sammelnde `RTCPeerConnection` stören sich nicht.
+
+### Report-Felder `pairing`, `qr` und `lockTest`
+- `pairing`: `offerShownAt`, `offerScannedMs`, `answerShownAt`, `answerScannedMs`, `connectedMs` (alle in
+  ms **relativ zum ersten gezeigten QR-Code**) und `projectedLobbyFullMs`. Die Hochrechnung „Zeit bis
+  Lobby voll" rechnet mit 3 Clients × 2 Scans = 6 Scans: `6 × Median der gemessenen Scan-Dauern +
+  3 × Rest`, wobei der Rest alles ist, was nicht Scannen war (Sammeln, ICE, Tippen). `pairing` ist
+  `null`, wenn in diesem Lauf nie ein Code gezeigt wurde.
+- `qr`: `backend`, `offerChars`, `answerChars`, `decodeLatencyMs`, `attempts`. **`decodeLatencyMs` ist
+  nicht die Paarungsdauer**, sondern die Dauer des **letzten** `scanVideo`-Aufrufs (also im Wesentlichen
+  die Dekodierzeit des Treffers); `attempts` zählt dagegen alle Einzelbilder seit Scan-Beginn. Ein
+  Report, der **während** eines laufenden Scans entsteht, zeigt `attempts` = 0.
+- `lockTest`: `runs[]` mit `plannedSeconds` (10 | 30 | 60), `hiddenMs`, `transportBefore`/`transportAfter`,
+  `trackBefore`/`trackAfter`, `pingAfter` und `reconnected`. In M1 war das Feld ein Platzhalter (`null`).
+  **`pingAfter` ist ein Paar** `{ state, events }` – je Kanal eine `PingStats` oder `null` (D9 verlangt
+  „20 Pings je Kanal"; eine einzelne Statistik könnte nur einen der beiden tragen). Dieselbe Form hat
+  `LabReport['ping']` schon. `pingAfter` ist **ganz** `null`, wenn der Transport beim Entsperren nicht
+  offen war. Dazu der neue Export `measureLockPings(transport, now)` in `labSession.ts` (der
+  Message-Router liegt dort modul-privat je Transport) und `RunBox.setReconnect(handler)` in
+  `connectPanels.ts`.
+- **Alte Reports bleiben gültig.** `looksLikeReport` nimmt einen gespeicherten M1-Report **ohne** diese
+  drei Schlüssel an – ein fehlender Schlüssel zählt wie `null`. Sonst verlöre beim Update genau das Gerät
+  seinen Verlauf, dessen Reports M2 sammeln soll. Preis: die Formprüfung kann nicht mehr unterscheiden,
+  ob ein Feld fehlt, weil der Report alt ist, oder weil ein Schreiber es vergessen hat – dagegen hilft
+  nur der Typ (`LabReport` verlangt alle drei).
+- Der Zustand des Wake Lock hat **kein** eigenes Report-Feld; er steht als Zeitleisten-Eintrag
+  `wakelock:<acquired|released|denied|unsupported>` im Report und wird von dort abgelesen.
+
+### Zeitleisten-Einträge in M2
+Neu neben den M1-Einträgen (`transport:<state>`, `camera-error`, `camera:running`,
+`permissions:handshake`):
+
+| Eintrag | Detail |
+|---|---|
+| `qr:backend` | `native` \| `worker` |
+| `qr:shown` | `<offer\|answer> <Zeichen> Zeichen, <Module> Module, <px> px/Modul` |
+| `qr:decoded` | `<backend> <latencyMs>ms <attempts>` |
+| `qr:error` | `too-large` \| `scan-timeout` \| `decode-failed` \| `camera-error` |
+| `qr:skipped` | `not-a-payload` (fremder Code übersprungen – **kein** F9) |
+| `qr:fallback-text` | `offer` \| `answer` |
+| `camera:track:<state>` | `live` \| `muted` \| `unmuted` \| `ended` |
+| `wakelock:<state>` | `acquired` \| `released` \| `denied` \| `unsupported` |
+| `lock:start` / `lock:hidden` / `lock:visible` / `lock:reconnect` | `<Sekunden>s` / – / `<hiddenMs>ms` / `slot <n>` |
+
+**Kein Detail trägt je den gescannten Text, eine Adresse oder `track.label`.**
+`lock:reconnect` landet in der Zeitleiste der **alten** Verbindung, die in diesem Moment geschlossen wird –
+in einem gespeicherten Report taucht der Eintrag deshalb praktisch nie auf. Ob neu verbunden wurde, steht
+statt dessen in `lockTest.runs[].reconnected`.
+
+### F9 ist erweitert
+F9 heißt weiterhin „Kamera-/QR-Problem"; ab M2 speist `classifyFailures` den Code aus **zwei** Feldern:
+`cameraError || qrError`, wobei `qrError` aus den Zeitleisten-Einträgen `qr:error` kommt. Bewusst ein
+eigenes Feld statt einer Umdeutung von `cameraError` – so fällt ein vergessener Aufrufer im Typecheck
+auf. `qr:skipped` zählt **nicht** mit. Der Titel bleibt „Kamera nicht verfügbar"; der Hinweistext nennt
+zusätzlich den QR-Fall. Die Tabelle oben („Fehlercodes F1–F9") ist entsprechend nachgeführt; Reihenfolge
+und Bedeutung der übrigen Codes sind unverändert.
+
+### Budget nach M2
+Lab-Bundle: **61.3 kB** gzip (Budget 150 kB, `npm run check-dist`) – gegenüber 29.3 kB nach M1. Davon
+entfällt der Worker-Chunk des Scanners allein auf 10,2 kB gzip (43 951 B roh); der Rest sind die beiden
+Bibliotheken und die neuen Lab-Module. Das Spiel-Bundle wächst von 9,2 auf **10.1 kB** gzip, weil
+`src/ui/strings.ts` geteilt ist (Budget 900 kB). Precache: 16 Dateien, 252,7 kB. `check-dist` prüft seit
+M2 zusätzlich, dass der Worker-Chunk des Scanners (1) im Build liegt, (2) zum JS-Graph von `lab.html`
+gehört, (3) **nicht** zum Graph von `index.html` und (4) im Precache-Manifest von `sw.js` steht.
+
+### Schichtregel für den Test-Haken (neu in M2)
+`tests/e2e/lab-rtc.spec.ts` importiert seit M1 `type { LabHook }`. TypeScript prüft dabei den GANZEN
+Typgraphen – erreicht er `src/platform/buildInfo.ts`, fehlt dem Node-Projekt die Vite-Konstante
+`__BUILD_ID__` und `npm run typecheck` bricht ab; erreicht er eine `.css`-Datei, bricht er mit TS2882.
+Reparatur ist **nie** ein Eintrag in `tsconfig.node.json`, sondern die Modulstruktur:
+- neues Leaf-Modul `src/lab/labTypes.ts` **ohne jeden Import** für `ScanBackend`, `TrackState`, `QrFacts`;
+  `report.ts` reicht sie per `export type … from './labTypes'` durch;
+- `qrRender.ts`, `scannerAdapter.ts`, `camera.ts`, `pairing.ts`, `qrPanels.ts` importieren weder
+  `report.ts` noch `labSession.ts` noch `net/environment.ts`;
+- CSS wird ausschließlich aus `src/lab/labMain.ts` importiert (`selfTestUi.ts` ist die dokumentierte
+  M1-Ausnahme und liegt außerhalb des Haken-Graphen);
+- `tests/node/labHook-graph.test.ts` läuft den statischen Importgraphen ab (inklusive dynamischer
+  `import()`) und bewacht beides, mit `labMain.ts` als Gegenprobe.
+
+### Abweichung vom Interface Contract: `pingAfter` ist ein Paar
+Der Vertrag sah `pingAfter: PingStats | null` vor, D9 verlangt „20 Pings **je Kanal**". Beides zusammen
+geht nicht – umgesetzt ist `LockPings = { state: PingStats | null; events: PingStats | null }`, also
+dieselbe Form, die `LabReport['ping']` schon hat. Dazu der neue Export
+`measureLockPings(transport, now)` in `labSession.ts` (der Message-Router liegt dort modul-privat je
+Transport) und `RunBox.setReconnect(handler)` in `connectPanels.ts`.
+
+### Seiten-Ereignisse vor der Zeitleiste
+Wake Lock und Kamera-Spuren gehören zum **Seitenaufruf**, nicht zu einer Verbindung; der Client scannt
+das Angebot, **bevor** `acceptOffer` seine Zeitleiste anlegt. Beides löst EIN Modul, `src/lab/labEvents.ts`:
+`recordLabEvent`/`flushLabEvents` (Seiten-Puffer, den `finishRun` in jede Zeitleiste kopiert) und
+`createRelayTimeline` (puffert, bis die echte Zeitleiste existiert, und trägt dann nach). Dokumentierter
+Preis: die nachgetragenen Einträge tragen die Uhr des **Laufs**, nicht die des Ereignisses – gemessen
+wird die Paarung ohnehin über `PairingMarks`.
+
+### `startCamera` entfällt
+Auf dem QR-Pfad öffnet die Kamera-Karte selbst den Lobby-Stream (Rückkamera). Bliebe das nackte
+`getUserMedia({ video: true })` aus M1 als Knopf, öffnete es die **Front**kamera und machte
+`openLobbyCamera()` danach zum No-op – der Scan liefe auf die falsche Kamera. Die Funktion wurde
+deshalb entfernt; `openTemporaryCamera` (Selbsttest) bleibt unverändert. Aus demselben Grund gibt es
+**keinen** Knopf „Scan starten": beide Scans starten von selbst, steuerbar über „Erneut scannen" und
+„Auf Text-Pfad wechseln".
+
+### E2E-Tor in M2
+- `tests/e2e/lab-qr-roundtrip.spec.ts` (Größen-Sweep Payload → QR → Scanner) gehört **zum Tor** – kein
+  `@local`.
+- **Drei** Playwright-Projekte: `chromium` (alles außer den beiden Fake-Kamera-Specs, per `testIgnore`),
+  `chromium-fakecam` (`tests/e2e/lab-fakecam.spec.ts`, 640×480, 1100-Zeichen-Payload) und
+  `chromium-fakecam-foreign` (`tests/e2e/lab-fakecam-foreign.spec.ts`, 1280×720 wie die Lobby-Kamera, ein
+  **fremder** Code). Der zweite beweist die schreibende Seite von `qr:skipped`. Die `.y4m`-Dateien
+  entstehen in `tests/e2e/globalSetup.ts` einmal je Testlauf; `playwright.config.ts` selbst schreibt
+  nichts.
+- Der Fake-Kamera-Smoke ist nach drei stabilen lokalen Läufen: im Tor (kein Tag, drei stabile Läufe) –
+  beide Specs. **Restrisiko:** der fremde Smoke baut eine echte `RTCPeerConnection` auf (nur das
+  Angebot); fällt er auf dem Linux-CI-Runner um, bekommt er dort `{ tag: '@local' }` und der Grund kommt
+  hierher – der Test wird nicht abgeschwächt (C7).
+
 ## Offene Punkte
 
 - **Update-Suche offline:** Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).
@@ -199,8 +521,17 @@ Entscheidung zu Punkt 16 der „Abweichungen vom M0-Plan": Mit `tests/e2e/lab-br
 - **Wortlaut des F4-Hinweises** wird nach der Zwei-Handy-Matrix F nachgeschärft.
 - **Zwischenablage auf dem Linux-CI-Runner ungeprüft:** die Lese-Pfade der Kopier-Knöpfe sind nur lokal auf Windows-Chromium gemessen – `tests/e2e/lab-broadcast.spec.ts` liest die Zwischenablage aber im Deploy-Tor (`e2e:smoke`), also auch auf dem Linux-Runner. Schlägt sie dort fehl, ist der Ausweg die Prüfung über den abgefangenen `navigator.clipboard.writeText` (wie im Selbsttest-Block von `lab-rtc.spec.ts`), nicht das Abschwächen der Schwärzungs-Prüfung.
 - **Aufgeschobener Feinschliff** (nach dem Feinschliff-Commit verbleibend): eine stumme, aber offene Gegenstelle kostet ≈ 20 s (eigener Punkt oben); `?transport=bc` sendet ohne Gegenstelle für immer `syn` (nur Entwicklung und Tests); `redactReport` ist in Schicht 2 quadratisch in der Kandidatenzahl (bei ≤ 20 belanglos); `trace: 'retain-on-failure'` (playwright.config.ts) legt bei einem gescheiterten `@local`-Selbsttest ungeschwärzte Reports in das git-ignorierte `test-results/` – nur lokal, nie im Repo.
+- **Sitzung A steht aus (M2-Abnahme durch den Nutzer):** die Zellen A1–A8 aus `docs/runbook-zwei-handys.md` sind geplant, aber noch nicht gefahren (dem Nutzer fehlt gerade ein zweites Gerät für die Matrix F). Erst daraus kommen die ersten echten Werte für `qr.backend`, die Paarungsdauer je Richtung und die Hochrechnung „Zeit bis Lobby voll" – bis dahin stehen in `docs/connectivity-tests.md` nur die Vorlagen.
+- **iOS in M2 ungemessen:** Wake Lock wirkt in installierten Web-Apps erst ab iOS 18.4 (WebKit-Bug 254545), `BarcodeDetector` steht in Safari nur hinter einem Feature-Flag und ist auf iOS defekt (WebKit-Bug 281848). Auf dem iPhone ist der QR-Pfad also der Worker-Pfad ohne Wake Lock; ob das reicht, entscheidet erst ein Report.
+- **Häufigkeit des Rückfalls „Code zu groß für QR" beobachten:** der Deckel `MAX_QR_PAYLOAD_CHARS = 1100` ist aus der Lesbarkeit auf einem Telefon abgeleitet, nicht aus gemessenen Payloads (größter gemessener M1-Payload: 704 Zeichen). Schlägt er in Sitzung A oder in der Matrix F regelmäßig zu, ist die Antwort nicht ein höherer Deckel, sondern weniger Kandidaten im Payload – Kandidaten-Filterung liegt bewusst außerhalb von M2.
+- **Sperrbildschirm-Test nur am Handy messbar:** am PC gibt es kein Sperrverhalten, das dem eines Telefons entspricht, und headless lässt sich nur `visibilitychange` auslösen. Die Zahlen in `lockTest.runs[]` sind deshalb erst nach Sitzung A bzw. der Matrix F aussagekräftig.
+- **Modulzahl 125 statt 105 bei 1100 Zeichen:** `research.md` §1 und D3/D4 rechneten mit einer Tabelle, die für Groß-/Ziffernfolgen gilt (Alphanumerik-Modus). Ein echter base64url-Payload ist ein Byte-Segment. Der Deckel bleibt bei 1100 (2,93 CSS px je Modul auf 390 px); scannt Sitzung A ihn nicht zuverlässig, sinkt er auf ~700 Zeichen (101 Module) – nicht die Untergrenze `minModulePx`.
+- **Wake Lock nach `pagehide` ungeklärt:** wird die Seite weggeschaltet (Zurück-Taste, iOS-Seitencache), fordert `src/platform/wakeLock.ts` die Sperre nicht erneut an – am Gerät hilft nur ein Neuladen. Ob das auf dem iPhone in der Praxis stört, zeigt erst ein echter Sperrtest.
+- **`lock:reconnect` erreicht praktisch keinen gespeicherten Report:** der Eintrag landet in der Zeitleiste der gerade geschlossenen Verbindung. Wer auswerten will, ob neu verbunden wurde, liest `lockTest.runs[].reconnected`. Ob der Eintrag überhaupt bleiben soll, wird nach Sitzung A entschieden.
+- **Fake-Kamera-Smokes auf dem Linux-CI-Runner ungemessen:** beide Specs laufen bisher nur lokal auf Windows-Chromium (je 3× stabil). Der fremde Smoke baut dabei eine echte `RTCPeerConnection` auf. Fällt einer in der CI um, bekommt er dort `{ tag: '@local' }` und der Grund kommt hierher (C7) – der Test wird nicht abgeschwächt.
 
 ## Beobachten (vor jedem Release prüfen)
-- Chrome „Local Network Access" für WebRTC: chromestatus.com/feature/5065884686876672 und /5068298146414592
-- Firefox: bugzilla.mozilla.org/show_bug.cgi?id=1969916
+- Chrome „Local Network Access Restrictions for WebRTC" (WebRTC ins lokale Netz nur noch nach Berechtigungsabfrage): chromestatus.com/feature/5065884686876672
+- Chrome „Local Network Access split permissions" (Aufteilung in `local-network` und `loopback-network`, die alte Berechtigung bleibt Alias): chromestatus.com/feature/5068298146414592
+- Firefox „Local network access restrictions for webrtc" (Core :: WebRTC: Networking): bugzilla.mozilla.org/show_bug.cgi?id=1969916
 - WebKit-Bug 301994 (Statusleisten-Balken in installierten iOS-Web-Apps)
