@@ -15,7 +15,7 @@ import type { LabQuery } from './labQuery';
 import { attachLabLink, finishRun, measureLockPings, type LabRunResult } from './labSession';
 import type { TrackState } from './labTypes';
 import { LOCK_SECONDS, armedTrackState, beginLockRun, finishLockRun, measuredLockPings, needsReconnect, type LockPings, type LockSeconds, type LockTestPlan, type LockTestRun } from './lockTest';
-import { createPairingTracker, measuredPairing, type PairingTracker } from './pairing';
+import { createExchangeMarks, measuredPairing, type PairingTracker } from './pairing';
 import { createQrExchange, type QrExchange } from './qrPanels';
 import { pingLine } from './reportsPanel';
 import { ScanError } from './scannerAdapter';
@@ -453,7 +453,7 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
   /** Genau EIN `qr:fallback-text` je AUSTAUSCH, über welchen der beiden Wege auch ausgewichen wurde (ein frisches Angebot beginnt einen neuen). */
   let fellBackToText = false;
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
-  const marks = createPairingTracker(now);
+  const marks = createExchangeMarks(now);
   const qrRun = (): Pick<LabReport, 'pairing' | 'qr'> => qrRunOf(qrPath, marks, qrFacts);
   // Der Ping-Test ist schon im Zustand „verbindet …" erreichbar: Eine Verbindung, die nie aufgeht, ist
   // der wertvollste Report (F7/F3). `finishRun` kommt ohne offene Verbindung zurecht und sagt es in der
@@ -585,6 +585,10 @@ function buildHostSlot(ctx: ConnectContext, slot: number, lobby: HostLobby, onRe
       // vermerken. Wer danach erneut auf Text wechselt, setzt beides ohnehin wieder.
       userLeftScan = false;
       fellBackToText = false;
+      // … und er misst seine Paarung selbst: Marken rasten je Name ein, und die QR-Fakten gehören dem
+      // alten Block. Ohne beides trüge der Report der frischen Verbindung die Zeiten des toten Peers.
+      marks.renew();
+      qrFacts = null;
       box.setWaiting(S.lab.host.creating);
       // Das Design verlangt Berechtigungsstatus und „getUserMedia in dieser Sitzung" ZUM ZEITPUNKT von createOffer –
       // nicht erst nach dem Handshake. Beides trägt keine Adresse und landet als Zeitleisten-Eintrag im Report.
@@ -680,7 +684,7 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
   const box = createRunBox(ctx);
   const qrPath = ctx.cell.path === 'qr';
   // Immer angelegt, nur auf dem QR-Pfad gelesen: so braucht keine Stelle eine Nicht-null-Behauptung.
-  const marks = createPairingTracker(now);
+  const marks = createExchangeMarks(now);
   let qrFacts: LabReport['qr'] = null;
   /** Der Nutzer hat den Scan SELBST beendet (Text-Pfad) – nur dann bleibt „Erneut scannen" verborgen. */
   let userLeftScan = false;
@@ -850,6 +854,10 @@ export function buildClientPanel(ctx: ConnectContext): HTMLElement {
     // Ohne dieses Zurücksetzen bliebe der QR-Pfad für den Rest der Sitzung stumm.
     userLeftScan = false;
     fellBackToText = false;
+    // … der seine Paarung selbst misst: Marken rasten je Name ein, die QR-Fakten gehören dem alten
+    // Austausch. Der QR-Block bleibt derselbe – er schreibt in die JEWEILS aktuelle Buchführung.
+    marks.renew();
+    qrFacts = null;
     // … und sein Report zeigt, wie ER gelaufen ist: die `qr:error`s des toten Austauschs wandern nicht
     // in die Zeitleiste der frischen Verbindung (ein F9 von einem Peer, den es nicht mehr gibt).
     relay.reset();

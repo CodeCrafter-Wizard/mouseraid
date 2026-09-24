@@ -55,8 +55,14 @@ test('Fake-Kamera: ein FREMDER Code wird übersprungen – qr:skipped, kein qr:e
   // Code liegt formatfüllend im Bild und ist gelesen, bevor eine Zusicherung ihn abfragen kann
   // (gemessen: schon der erste Versuch fand hier die Meldung unten vor). Geprüft wird das Ergebnis.
   // Sie sagt genau das, was dieser Test beweisen soll: gelesen, verworfen, weitergescannt.
-  await expect(slot.getByTestId('qr-status'), 'der fremde Code wird erkannt und übersprungen').toHaveText(S.lab.qr.notAPayload, { timeout: 30_000 });
-  // Ein Übersprungener beendet den Scan NICHT: der Knopf „Erneut scannen" bleibt weg.
+  // 20 s statt 30: die drei Fristen dieses Tests (Kamera 15 s, Angebot 15 s, hier) müssen zusammen
+  // unter der 60-s-Grenze des Projekts bleiben – sonst bräche der Test ab, bevor eine Zusicherung
+  // den Grund nennen kann. Gemessen wird der Treffer in Bruchteilen einer Sekunde.
+  await expect(slot.getByTestId('qr-status'), 'der fremde Code wird erkannt und übersprungen').toHaveText(S.lab.qr.notAPayload, { timeout: 20_000 });
+  // Ein Übersprungener beendet den Scan NICHT: der Knopf „Erneut scannen" bleibt weg. Erst prüfen,
+  // dass es ihn überhaupt GIBT: ein nicht vorhandener Knopf ist ebenfalls „hidden" – die Zusicherung
+  // wäre dann auch grün, wenn der ganze QR-Block fehlte.
+  await expect(slot.getByTestId('qr-retry')).toHaveCount(1);
   await expect(slot.getByTestId('qr-retry')).toBeHidden();
 
   // „Platz freigeben" speichert die Diagnose, bevor der Platz schließt – der Weg zum Report ohne Gegenstelle.

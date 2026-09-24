@@ -1,6 +1,6 @@
 import { requestWakeLock } from '../platform/wakeLock';
 import { S, fmt } from '../ui/strings';
-import { attachCamera, observeTracks, openLobbyCamera, restartCamera, type CameraStatus } from './camera';
+import { attachCamera, observeTracks, onCameraRestarted, openLobbyCamera, restartCamera, type CameraStatus } from './camera';
 import { buildClientPanel, buildHostPanel } from './connectPanels';
 import { actionButton, card, h } from './labDom';
 import { recordLabEvent } from './labEvents';
@@ -134,6 +134,13 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
     });
   }
 
+  // JEDER geglückte Neustart heilt die Karte – auch der aus dem QR-Block (dessen eigener Knopf ruft
+  // dasselbe `restartCamera`). Die frische Beobachtung gehört dazu: ohne sie meldete die geheilte
+  // Kamera nie wieder `camera:track:live`, jeder weitere Lauf trüge ein F9, das es nicht mehr gibt,
+  // und ein späterer Spur-Verlust bliebe unbemerkt. Die Karte lebt so lange wie die Seite, deshalb
+  // wird der Zuhörer nie abgemeldet.
+  onCameraRestarted((status) => { show(status); observe(); });
+
   start.onclick = () => {
     start.disabled = true;
     state.textContent = S.lab.camera.starting;
@@ -144,10 +151,10 @@ function buildCameraCard(autoStart: boolean): HTMLElement {
     state.textContent = S.lab.camera.starting;
     void restartCamera().then((status) => {
       restart.disabled = false;
-      show(status);
-      observe();
+      // Den Erfolg hat der Zuhörer oben schon angezeigt; hier bleibt der Fehlschlag, den er nie sieht.
+      if (!status.running) show(status);
       // Der Neustart liefert einen NEUEN Stream: die Sucher der QR-Blöcke hängen sonst am toten alten.
-      if (status.running) reattachLiveExchanges();
+      else reattachLiveExchanges();
     });
   };
   // Kamera-zuerst (D5, Spec-Absatz M2): auf dem QR-Pfad öffnet die Seite den Dauer-Stream beim Eintritt

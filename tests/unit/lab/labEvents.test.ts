@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRelayTimeline, flushLabEvents, recordLabEvent } from '../../../src/lab/labEvents';
+import { createRelayTimeline, flushLabEvents, recordLabEvent, resetLabEvents } from '../../../src/lab/labEvents';
 import { createTimeline } from '../../../src/net/timeline';
 
 // Der Puffer ist Seiten-Zustand (ein Modul je Seitenaufruf). Die Tests messen deshalb RELATIV:
@@ -41,6 +41,21 @@ describe('labEvents', () => {
 
     expect(second.events().map((event) => event.kind)).toEqual(first.events().map((event) => event.kind));
     expect(second.events().map((event) => event.kind)).toContain('wakelock:acquired');
+  });
+
+  // Die Naht für Tests (im Browser gibt es diesen Zustand genau einmal je Seitenaufruf): ohne sie
+  // entschiede über das F9 eines Kamera-Tests, welcher Test vor ihm lief.
+  it('resetLabEvents() leert Puffer UND Buchführung', () => {
+    recordLabEvent('camera-error', 'track-ended');
+    resetLabEvents();
+    const timeline = createTimeline(() => 0);
+    flushLabEvents(timeline);
+    expect(timeline.events()).toEqual([]);
+
+    // Die Merker sind ebenfalls frisch: was danach kommt, kommt vollständig an.
+    recordLabEvent('camera:track:live');
+    flushLabEvents(timeline);
+    expect(timeline.events().map((event) => event.kind)).toEqual(['camera:track:live']);
   });
 });
 

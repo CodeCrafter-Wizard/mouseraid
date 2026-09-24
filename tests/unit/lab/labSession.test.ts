@@ -6,7 +6,7 @@ import { attachPongResponder } from '../../../src/net/pingTest';
 import { PROTOCOL_VERSION, encodeMessage } from '../../../src/net/protocol';
 import { createTimeline, type Timeline } from '../../../src/net/timeline';
 import type { Transport } from '../../../src/net/transport';
-import { recordLabEvent } from '../../../src/lab/labEvents';
+import { recordLabEvent, resetLabEvents } from '../../../src/lab/labEvents';
 import { attachLabLink, finishRun, makeReportId, measureLockPings } from '../../../src/lab/labSession';
 import type { LockTestRun } from '../../../src/lab/lockTest';
 import { createReportStore, type CellLabel } from '../../../src/lab/report';
@@ -73,6 +73,9 @@ describe('labSession', () => {
     probe.camera = 'prompt';
     storage = memoryStorage();
     vi.stubGlobal('localStorage', storage);
+    // Der Ereignis-Puffer ist Modul-Zustand: ohne dieses Leeren entschiede über das F9 eines
+    // Kamera-Tests, welcher Test vor ihm lief (mit `--sequence.shuffle.tests` rot).
+    resetLabEvents();
   });
 
   afterEach(() => {
@@ -337,7 +340,7 @@ describe('labSession', () => {
   // F9 aus der Kamera hängt am LETZTEN Kamera-Eintrag, nicht an irgendeinem: die Seiten-Ereignisse
   // gelten für den ganzen Seitenaufruf, also auch für Läufe NACH einem erfolgreichen „Kamera neu
   // starten". Ein Befund, der nicht mehr besteht, gehörte sonst für immer in jeden weiteren Report.
-  // (Diese beiden Tests stehen am Ende: der Ereignis-Puffer ist Seiten-Zustand und wirkt vorwärts.)
+  // (Jeder dieser Tests beginnt mit leerem Puffer – `resetLabEvents()` im beforeEach oben.)
   it('ein Kamera-Fehler, auf den ein erfolgreicher Neustart folgt, ist kein F9 mehr', async () => {
     recordLabEvent('camera:track:ended');
     recordLabEvent('camera-error', 'track-ended');

@@ -106,14 +106,22 @@ describe('writeQrY4m', () => {
     const originY = Math.floor((FAKECAM_SIZE.height - codePx) / 2);
     const yPlane = bytes.subarray(HEADER.length + 1 + FRAME_TAG.length);
     const at = (x: number, y: number): number => yPlane[y * FAKECAM_SIZE.width + x] ?? -1;
+    /** Mitte des Moduls (mx|my) im Bild – die Ruhezone liegt zwischen Bildrand und Code. */
+    const centreX = (mx: number): number => originX + (QUIET_MODULES + mx) * moduleSize + Math.floor(moduleSize / 2);
+    const centreY = (my: number): number => originY + (QUIET_MODULES + my) * moduleSize + Math.floor(moduleSize / 2);
+
+    // Polarität, absolut verankert: die Ecke des Sucher-Musters oben links ist in JEDEM QR-Code
+    // dunkel. Die Schleife unten vergleicht nur mit der Konvention des Generators – ein invertiertes
+    // Bild (dunkel und hell vertauscht) bestünde sie unverändert, diese Zeile nicht.
+    expect(at(centreX(0), centreY(0)), 'Ecke des Sucher-Musters oben links ist dunkel').toBe(16);
 
     let dark = 0;
     for (let my = 0; my < size; my += 1) {
       for (let mx = 0; mx < size; mx += 1) {
         const expected = qr.modules.data[my * size + mx] === 1 ? 16 : 235;
         if (expected === 16) dark += 1;
-        const px = originX + (QUIET_MODULES + mx) * moduleSize + Math.floor(moduleSize / 2);
-        const py = originY + (QUIET_MODULES + my) * moduleSize + Math.floor(moduleSize / 2);
+        const px = centreX(mx);
+        const py = centreY(my);
         // Ein einzelnes expect je Modul wäre bei 15 000 Modulen nur Lärm – die Zahl unten zählt.
         if (at(px, py) !== expected) throw new Error(`Modul ${mx}/${my}: ${at(px, py)} statt ${expected}`);
       }

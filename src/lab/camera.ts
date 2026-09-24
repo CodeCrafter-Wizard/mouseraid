@@ -140,6 +140,24 @@ export function observeTracks(onChange: (state: TrackState, trackId: string) => 
   return stream === null ? () => undefined : observeStreamTracks(stream, onChange);
 }
 
+/**
+ * Zuhörer eines GEGLÜCKTEN Neustarts. „Kamera neu starten" gibt es an zwei Stellen (Kamera-Karte und
+ * QR-Block), die Heilung gehört aber immer der Karte: sie zeigt den Zustand UND beobachtet die Spuren
+ * des Streams. Ohne diese Meldung bliebe nach einem Neustart aus dem QR-Block die alte, tote
+ * Beobachtung hängen – die geheilte Kamera meldete nie wieder `camera:track:live` (falsches F9 für den
+ * Rest des Seitenaufrufs) und ein späterer Spur-Verlust fiele überhaupt nicht mehr auf.
+ */
+const restartListeners: ((status: CameraStatus) => void)[] = [];
+
+/** Meldet einen Zuhörer an; die Rückgabe meldet ihn wieder ab. */
+export function onCameraRestarted(listener: (status: CameraStatus) => void): () => void {
+  restartListeners.push(listener);
+  return () => {
+    const index = restartListeners.indexOf(listener);
+    if (index >= 0) restartListeners.splice(index, 1);
+  };
+}
+
 /** „Kamera neu starten" nach einer beendeten Spur: eigene Tracks beenden, dann neu öffnen. */
 export async function restartCamera(): Promise<CameraStatus> {
   // Eine laufende Anforderung zuerst abwarten: sonst fände der Neustart `stream === null` vor, und
@@ -149,5 +167,10 @@ export async function restartCamera(): Promise<CameraStatus> {
     for (const track of stream.getTracks()) track.stop();
     stream = null;
   }
-  return openLobbyCamera();
+  const status = await openLobbyCamera();
+  // Nur der Erfolg wird gemeldet: ein Fehlschlag gehört dem Knopf, der ihn ausgelöst hat (er zeigt
+  // den Grund), und eine „Heilung" ohne Kamera hätte nichts zu beobachten. Kopie der Liste: ein
+  // Zuhörer darf sich beim Melden abmelden.
+  if (status.running) for (const listener of [...restartListeners]) listener(status);
+  return status;
 }

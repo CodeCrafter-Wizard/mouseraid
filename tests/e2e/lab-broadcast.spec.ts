@@ -240,7 +240,10 @@ test('Verlorene Kamera-Spur: Hinweis, „Kamera neu starten" und F9 im Report', 
   await context.grantPermissions(['local-network-access']);
   const page = await context.newPage();
   const room = `e2e-spur-${testInfo.workerIndex}-${Date.now().toString(36)}`;
-  await page.goto(`lab.html?transport=bc&room=${room}&role=host&slot=1&quick=1`);
+  // `hook=1`: weiter unten wird die Kamera von AUSSERHALB der Karte neu gestartet – denselben Weg
+  // nimmt der Knopf im QR-Block, der hier (Text-Pfad) gar nicht steht.
+  await page.goto(`lab.html?transport=bc&room=${room}&role=host&slot=1&quick=1&hook=1`);
+  await page.waitForFunction(() => '__mbLab' in window, undefined, { timeout: 10_000 });
   await labelCell(page, 'E2E-Spur');
   await page.getByTestId('camera-start').click();
   await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.running);
@@ -269,6 +272,37 @@ test('Verlorene Kamera-Spur: Hinweis, „Kamera neu starten" und F9 im Report', 
   await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.running);
   await expect(page.getByTestId('camera-video')).toBeVisible();
   await expect(page.getByTestId('camera-restart')).toBeHidden();
+
+  // ── Ein Neustart, der NICHT von diesem Knopf kommt (der QR-Block hat seinen eigenen) ──
+  // Beide rufen dasselbe `restartCamera`; die Heilung – Karte aktualisieren UND die Spuren neu
+  // beobachten – gehört deshalb dem Kamera-Modul, nicht dem Aufrufer.
+  await page.evaluate(() => {
+    const video = document.querySelector<HTMLVideoElement>('[data-testid="camera-video"]');
+    (video?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.dispatchEvent(new Event('ended'));
+  });
+  await expect(page.getByTestId('camera-state')).toHaveText(S.lab.camera.trackLost);
+  await page.evaluate(() => (window as unknown as { __mbLab: LabHook }).__mbLab.restartCamera());
+  await expect(page.getByTestId('camera-state'), 'auch ein Neustart von außen heilt die Karte').toHaveText(S.lab.camera.running);
+  await expect(page.getByTestId('camera-video')).toBeVisible();
+  await expect(page.getByTestId('camera-restart')).toBeHidden();
+
+  // Und die Beobachtung läuft wieder: ein NEUER Platz bringt eine frische Zeitleiste, in die allein
+  // die Seiten-Ereignisse fließen – die enden jetzt auf „Spur läuft", also ist das F9 vom Tisch.
+  // Ohne die frische Beobachtung fehlte `camera:track:live` und JEDER weitere Lauf dieses
+  // Seitenaufrufs trüge den behobenen Kamera-Fehler weiter mit sich.
+  await page.getByTestId('add-player').click();
+  const slot2 = page.getByTestId('slot-2');
+  await slot2.getByTestId('start-ping').click();
+  await expect(slot2.getByTestId('run-status')).toHaveText(S.lab.run.saved, { timeout: 20_000 });
+  const healed = await page.evaluate((key) => {
+    const stored = (JSON.parse(localStorage.getItem(key) ?? '[]') as StoredReport[])[0];
+    if (stored === undefined) return null;
+    const kinds = stored.timeline.map((event) => event.kind);
+    return { f9: stored.failures.includes('F9'), live: kinds.includes('camera:track:live'), lastCamera: kinds.filter((kind) => kind.startsWith('camera')).pop() ?? '' };
+  }, REPORTS_KEY);
+  expect(healed?.live, 'die geheilte Kamera meldet wieder eine laufende Spur').toBe(true);
+  expect(healed?.lastCamera, 'der letzte Kamera-Eintrag ist die laufende Spur').toBe('camera:track:live');
+  expect(healed?.f9, 'ein behobener Kamera-Fehler ist kein Befund mehr').toBe(false);
 
   // Scheitert der Neustart (Kamera inzwischen von einer anderen App belegt oder entzogen), MUSS der
   // Knopf stehen bleiben – sonst gäbe es am Handy keinen zweiten Versuch mehr.
@@ -464,9 +498,12 @@ test('QR-Pfad: wer während der Kamera-Abfrage auf den Text-Pfad wechselt, bekom
 
 test('QR-Pfad ohne Kamera: der Block nennt den Grund, der Neustart-Knopf bleibt weg', async ({ page }) => {
   await page.goto('lab.html');
-  // Eine Kamera, die ablehnt (Erlaubnis entzogen, Gerät belegt) – der häufigste Fall am Handy.
+  // Eine Kamera, die ablehnt (Erlaubnis entzogen, Gerät belegt) – der häufigste Fall am Handy. Das
+  // echte `getUserMedia` wird beiseitegelegt: weiter unten darf der Neustart glücken.
   await page.evaluate(() => {
-    navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('abgelehnt', 'NotAllowedError'));
+    const media = navigator.mediaDevices;
+    (window as unknown as { __realGum?: MediaDevices['getUserMedia'] }).__realGum = media.getUserMedia.bind(media);
+    media.getUserMedia = () => Promise.reject(new DOMException('abgelehnt', 'NotAllowedError'));
   });
   await confirmQrClient(page, 'QR-Ohne-Kamera');
 
@@ -477,4 +514,23 @@ test('QR-Pfad ohne Kamera: der Block nennt den Grund, der Neustart-Knopf bleibt 
   // Der QR-Block sagt selbst, warum nichts passiert, statt stumm zu bleiben.
   await expect(page.getByTestId('qr-no-camera')).toHaveText(S.lab.qr.noCamera);
   await expect(page.getByTestId('qr-status')).not.toHaveText(S.lab.qr.scanning);
+
+  // Der QR-Block hat seinen EIGENEN Neustart-Knopf: er erscheint, sobald ein Scan an der fehlenden
+  // Kamera scheitert. Von Hand angestoßen, weil das Tor den automatischen Start ohne Kamera gar nicht
+  // erst versucht.
+  await page.getByTestId('qr-retry').click();
+  await expect(page.getByTestId('qr-status')).toHaveText(S.lab.qr.cameraError);
+  await expect(page.getByTestId('qr-restart-camera')).toBeVisible();
+
+  // Jetzt darf die Kamera wieder – und der Neustart AUS DEM QR-BLOCK muss die Kamera-Karte genauso
+  // heilen wie ihr eigener Knopf. Ohne das behauptete sie für den Rest des Seitenaufrufs einen
+  // Kamera-Fehler, den es nicht mehr gibt, und beobachtete die frischen Spuren nie.
+  await page.evaluate(() => {
+    const real = (window as unknown as { __realGum?: MediaDevices['getUserMedia'] }).__realGum;
+    if (real !== undefined) navigator.mediaDevices.getUserMedia = real;
+  });
+  await page.getByTestId('qr-restart-camera').click();
+  await expect(page.getByTestId('camera-state'), 'der Neustart aus dem QR-Block heilt die Karte').toHaveText(S.lab.camera.lobbyRunning, { timeout: 10_000 });
+  await expect(page.getByTestId('camera-video')).toBeVisible();
+  await expect(page.getByTestId('qr-restart-camera')).toBeHidden();
 });

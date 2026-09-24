@@ -131,12 +131,7 @@ async function selectedPairOf(peer: RtcPeer | null): Promise<SelectedPair | null
   }
 }
 
-/**
- * F9 aus der Kamera: es zählt der LETZTE Kamera-Eintrag der Zeitleiste, nicht irgendeiner. Die
- * Seiten-Ereignisse gelten für den ganzen Seitenaufruf – ohne diese Regel trüge jeder weitere Lauf
- * einen Befund mit sich, den „Kamera neu starten" längst behoben hat (`camera:track:live` danach).
- * Bleibt der Fehler der letzte Kamera-Eintrag, bleibt F9.
- */
+/** Alle Kamera-Aussagen einer Reihe, in ihrer Reihenfolge – die Regel dazu steht an `cameraStillBroken`. */
 const cameraEntries = (events: readonly TimelineEvent[]): TimelineEvent[] =>
   events.filter((event) => event.kind === 'camera-error' || event.kind.startsWith('camera:'));
 

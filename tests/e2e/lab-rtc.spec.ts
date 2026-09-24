@@ -699,6 +699,18 @@ async function lockFacts(page: Page) {
   }, UI_REPORTS_KEY);
 }
 
+/**
+ * Die gemessene Paarungsdauer des NEUESTEN Host-Reports (nur diese Seite speichert Host-Reports) –
+ * eine Zahl, keine Adresse. Marken rasten je Name ein: teilten sich zwei Austausche eine Buchführung,
+ * stünde nach „Neu verbinden" wieder exakt der Wert des toten Peers im Report.
+ */
+function hostPairingConnectedMs(page: Page): Promise<number | null> {
+  return page.evaluate((key) => {
+    const reports = JSON.parse(localStorage.getItem(key) ?? '[]') as { cell: { role: string }; pairing: { connectedMs: number | null } | null }[];
+    return reports.find((report) => report.cell.role === 'host')?.pairing?.connectedMs ?? null;
+  }, UI_REPORTS_KEY);
+}
+
 test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, „Neu verbinden" legt ein frisches Angebot an', { tag: '@local' }, async ({ context }) => {
   // Zwei vollständige Handshakes, zwei Läufe mit je 20 Pings auf zwei Kanälen und eine Ping-Serie des
   // Sperrtests – 60 s des Projekt-Standards sind dafür zu knapp.
@@ -766,6 +778,9 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
     // nicht zwei Startmarken: `lock:start` gehört zur Messung, nicht zum Knopfdruck.
     runs: 1, plannedSeconds: 30, hiddenMsIsNumber: true, transportAfter: 'open', reconnected: false, eventsSent: 20, stateSent: 20, lockStarts: 1,
   });
+  // Dieser Austausch hat seine Paarung gemessen; unten wird sie mit der des frischen verglichen.
+  const firstPairingMs = await hostPairingConnectedMs(host);
+  expect(firstPairingMs, 'der erste Austausch hat seine Paarungsdauer gemessen').not.toBeNull();
 
   // ── „Neu verbinden": frisches Angebot auf DEMSELBEN Platz ──
   await slot.getByTestId('lock-reconnect').click();
@@ -797,6 +812,9 @@ test('Sperrbildschirm-Test: ein gefälschtes visibilitychange misst einen Lauf, 
   await expect.poll(async () => (await lockFacts(host)).length, { timeout: 40_000 }).toBe(2);
   // Der neueste Report trägt denselben Lauf – jetzt mit „neu verbunden".
   expect((await lockFacts(host))[0]).toMatchObject({ runs: 1, plannedSeconds: 30, reconnected: true });
+  // … und eine EIGENE Paarung: ein frischer Austausch misst neu. Ohne frische Marken stünde hier
+  // wieder die Zahl des toten Peers (sie rasten je Name ein und ließen sich nie überschreiben).
+  expect(await hostPairingConnectedMs(host), 'der frische Austausch misst seine Paarung neu').not.toBe(firstPairingMs);
 });
 
 // ───────── Selbsttest (Task 9) ─────────

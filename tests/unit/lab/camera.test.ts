@@ -121,6 +121,52 @@ describe('openLobbyCamera und restartCamera', () => {
     expect(gum.count()).toBe(1);
   });
 
+  // Ein Neustart kommt aus ZWEI Knöpfen (Kamera-Karte und QR-Block). Damit beide dieselbe Heilung
+  // auslösen – Karte aktualisieren UND die Spuren neu beobachten –, meldet das Modul den Neustart,
+  // statt sich auf den einen Aufrufer zu verlassen, der zufällig beides von Hand tat.
+  it('ein geglückter Neustart meldet sich bei den Zuhörern – ein erster Start dagegen nicht', async () => {
+    const gum = pendingMediaDevices();
+    const camera = await freshCamera();
+    const seen: boolean[] = [];
+    camera.onCameraRestarted((status) => { seen.push(status.running); });
+
+    const open = camera.openLobbyCamera();
+    gum.answer[0]?.(streamDouble().media);
+    await open;
+    expect(seen, 'der erste Start ist kein Neustart').toEqual([]);
+
+    const restart = camera.restartCamera();
+    await vi.waitFor(() => { expect(gum.count()).toBe(2); });
+    gum.answer[1]?.(streamDouble().media);
+    await restart;
+    expect(seen).toEqual([true]);
+  });
+
+  it('ein gescheiterter Neustart meldet sich nicht – sonst überschriebe die Heilung den Fehlertext', async () => {
+    vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: () => Promise.reject(new DOMException('kein Geraet', 'NotFoundError')) } });
+    const camera = await freshCamera();
+    let calls = 0;
+    camera.onCameraRestarted(() => { calls += 1; });
+
+    expect(await camera.restartCamera()).toEqual({ running: false, gumCalled: true, error: 'NotFoundError' });
+    expect(calls).toBe(0);
+  });
+
+  it('die Rückgabe von onCameraRestarted meldet genau diesen Zuhörer ab', async () => {
+    const gum = pendingMediaDevices();
+    const camera = await freshCamera();
+    const seen: string[] = [];
+    const off = camera.onCameraRestarted(() => { seen.push('a'); });
+    camera.onCameraRestarted(() => { seen.push('b'); });
+    off();
+
+    const restart = camera.restartCamera();
+    await vi.waitFor(() => { expect(gum.count()).toBe(1); });
+    gum.answer[0]?.(streamDouble().media);
+    await restart;
+    expect(seen).toEqual(['b']);
+  });
+
   it('restartCamera wartet eine laufende Anforderung ab: alter Stream genau einmal beendet, genau eine neue Anforderung', async () => {
     const gum = pendingMediaDevices();
     const camera = await freshCamera();

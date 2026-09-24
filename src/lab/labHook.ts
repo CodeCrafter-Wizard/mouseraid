@@ -5,7 +5,7 @@ import { PROTOCOL_VERSION } from '../net/protocol';
 import { createTimeline } from '../net/timeline';
 import { MAX_QR_PAYLOAD_CHARS, qrModuleCount, renderQr } from './qrRender';
 import { detectScanBackend, scanImage, scanVideo } from './scannerAdapter';
-import { attachCamera, cameraStream, openLobbyCamera } from './camera';
+import { attachCamera, cameraStream, openLobbyCamera, restartCamera } from './camera';
 import { createPairingTracker } from './pairing';
 import { createQrExchange, liveExchangeCount } from './qrPanels';
 
@@ -30,6 +30,11 @@ export interface LabHook {
   openLobbyCamera: typeof openLobbyCamera;
   cameraStream: typeof cameraStream;
   attachCamera: typeof attachCamera;
+  /**
+   * Ein Neustart, der NICHT über die Kamera-Karte läuft – denselben Weg nimmt der Knopf im QR-Block.
+   * Der E2E prüft damit, dass die Karte sich auch dann heilt und die Spuren neu beobachtet.
+   */
+  restartCamera: typeof restartCamera;
   /**
    * Task 4: der QR-Block ohne den Rest der Oberfläche. Nur so lässt sich im Tor-Spec ein ZU GROSSER
    * Code zeigen – aus echtem Gathering kommt so einer nie heraus, und ohne ihn bliebe der Weg
@@ -60,6 +65,7 @@ export function installLabHook(): void {
     openLobbyCamera,
     cameraStream,
     attachCamera,
+    restartCamera,
     createQrExchange,
     createPairingTracker,
     liveExchangeCount,

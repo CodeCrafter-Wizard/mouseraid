@@ -20,7 +20,19 @@ const MAX_EVENTS = 200;
 const events: LabEvent[] = [];
 /** Wie viele Einträge vorne herausgefallen sind – hält die Merker unten in globaler Zählung. */
 let dropped = 0;
-const flushedUpTo = new WeakMap<Timeline, number>();
+let flushedUpTo = new WeakMap<Timeline, number>();
+
+/**
+ * NUR für Tests: leert den Seiten-Puffer samt Buchführung. Im Browser gibt es diesen Zustand genau
+ * einmal je Seitenaufruf, und nichts darf ihn dort zurücksetzen – ein Report soll jedes Ereignis
+ * dieses Aufrufs zeigen. In Vitest teilen sich dagegen alle Tests EIN Modul: ohne diese Naht hinge
+ * das Ergebnis eines Kamera-Tests daran, welcher Test vor ihm lief.
+ */
+export function resetLabEvents(): void {
+  events.length = 0;
+  dropped = 0;
+  flushedUpTo = new WeakMap<Timeline, number>();
+}
 
 export function recordLabEvent(kind: string, detail = ''): void {
   events.push({ kind, detail });

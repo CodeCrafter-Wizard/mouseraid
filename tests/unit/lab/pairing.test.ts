@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createExchangeMarks,
   createPairingTracker,
   EMPTY_PAIRING_MARKS,
   measuredPairing,
@@ -83,6 +84,51 @@ describe('createPairingTracker', () => {
       connectedMs: 11_000,
       projectedLobbyFullMs: 6 * 4000 + 3 * 7000,
     });
+  });
+});
+
+// „Neu verbinden" (Sperrtest, D9) beginnt einen NEUEN Austausch: seine Paarung ist neu zu messen.
+// Der QR-Block des Clients lebt dabei weiter und hält seine Marken-Buchführung fest – deshalb zeigt er
+// nicht auf einen bestimmten Tracker, sondern auf den JEWEILS aktuellen.
+describe('createExchangeMarks', () => {
+  it('reicht Marken an die aktuelle Buchführung weiter', () => {
+    const clock = fakeClock();
+    clock.at(1000);
+    const exchange = createExchangeMarks(clock.now);
+    exchange.mark('offerShownAt');
+    clock.at(4000);
+    exchange.mark('connectedMs');
+    expect(exchange.marks()).toEqual(marks({ offerShownAt: 0, connectedMs: 3000 }));
+    expect(exchange.report().projectedLobbyFullMs).toBeNull();
+  });
+
+  it('renew(): der neue Austausch beginnt leer und misst seinen eigenen Nullpunkt', () => {
+    const clock = fakeClock();
+    const exchange = createExchangeMarks(clock.now);
+    exchange.mark('offerShownAt');
+    clock.at(8000);
+    exchange.mark('connectedMs');
+
+    exchange.renew();
+    expect(exchange.marks()).toEqual(EMPTY_PAIRING_MARKS);
+    expect(exchange.report()).toEqual({ ...EMPTY_PAIRING_MARKS, projectedLobbyFullMs: null });
+
+    // Ohne den frischen Tracker blieben die Marken des TOTEN Austauschs stehen (sie rasten je Name
+    // ein) – der Report der neuen Verbindung zeigte dann die Paarungsdauer der alten.
+    clock.at(20_000);
+    exchange.mark('offerShownAt');
+    clock.at(21_500);
+    exchange.mark('connectedMs');
+    expect(exchange.marks()).toEqual(marks({ offerShownAt: 0, connectedMs: 1500 }));
+  });
+
+  it('eine vor renew() gelesene Kopie bleibt unberührt – der alte Report behält seine Zahlen', () => {
+    const exchange = createExchangeMarks(fakeClock().now);
+    exchange.mark('answerShownAt');
+    const before = exchange.report();
+    exchange.renew();
+    expect(before.answerShownAt).toBe(0);
+    expect(exchange.marks().answerShownAt).toBeNull();
   });
 });
 

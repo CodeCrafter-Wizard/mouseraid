@@ -68,6 +68,31 @@ export function projectLobbyFull(marks: PairingMarks): number | null {
   return Math.round(CLIENTS * SCANS_PER_CLIENT * median + CLIENTS * rest);
 }
 
+/** Die Buchführung EINES Austauschs, die einen neuen beginnen kann. */
+export interface ExchangeMarks extends PairingTracker {
+  /** „Neu verbinden"/frisches Angebot: ab hier zählt eine leere, eigene Buchführung. */
+  renew(): void;
+}
+
+/**
+ * Marken je AUSTAUSCH. Ein „Neu verbinden" (Sperrtest, D9) und ein frisches Angebot am Host beginnen
+ * einen neuen Austausch, dessen Paarung neu gemessen werden muss: Marken rasten je Name ein, sonst
+ * trüge der Report der frischen Verbindung die Zeiten des toten Peers.
+ *
+ * Die Hülle zeigt deshalb auf den JEWEILS aktuellen Tracker, statt einer zu sein: Der QR-Block des
+ * Clients lebt über ein „Neu verbinden" hinweg und hält seine `marks` fest – bekäme er einen
+ * bestimmten Tracker, schriebe er für immer in den ersten.
+ */
+export function createExchangeMarks(now: () => number): ExchangeMarks {
+  let current = createPairingTracker(now);
+  return {
+    mark: (name) => { current.mark(name); },
+    marks: () => current.marks(),
+    report: () => current.report(),
+    renew: () => { current = createPairingTracker(now); },
+  };
+}
+
 /**
  * Eine Paarung, die nie einen Code gezeigt hat, ist keine Messung: Der Nutzer war von Anfang an auf
  * dem Text-Pfad, und ein Bericht aus lauter Nullen behauptete eine Paarungsdauer, die es nie gab.
