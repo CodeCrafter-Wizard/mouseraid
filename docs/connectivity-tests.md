@@ -87,6 +87,10 @@ Ein-Gerät-Selbsttest aus `lab.html` („Selbsttest starten"): zwei Verbindungen
 
 | Datum | Build-ID | Gerät | Rolle | Hotspot-Besitzer | Kamera | Pfad | gültig? | Kandidaten Familie | Kandidaten Scope | gewähltes Paar | Ping `state` | Ping `events` | Fehlercodes | Dialoge gesehen |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-09-25 07:43 | 89c959d1 | Android-Handy (Android 10, Chrome 153, installierte App, `displayMode` fullscreen) | selbsttest | unbekannt | aus → `prompt` | loopback | ja | ipv4 1 / ipv6 0 / mdns 0 / other 0 | private 1 | private → private | 1,4 / 2,7 ms / 0 % | 1,4 / 2,5 ms / 0 % | keine | Kamera: nein · Lokales Netzwerk: nein (Status `prompt`, Loopback braucht ihn nicht) |
+| 2026-09-25 07:43 | 89c959d1 | Android-Handy (dito) | selbsttest | unbekannt | an → `granted` | loopback | ja | ipv4 2 / ipv6 4 / mdns 0 / other 0 (je UDP + TCP) | private 2 · global 4 | global → global | 1,5 / 3,1 ms / 0 % | 1,5 / 2,5 ms / 0 % | keine | Kamera: ja – einmal, zwischen Lauf A und B (Selbsttest fragt sie an) · Lokales Netzwerk: nein |
+
+Befund (Details in `docs/decisions.md`, „M1 – Testlabor I" → „Gemessene Befunde"): Lauf A ohne Kamera-Erlaubnis liefert auf Android-Chrome **einen** Host-Kandidaten mit **echter privater IPv4** (kein mDNS-Name, `network-cost 999`), Lauf B mit Erlaubnis **sechs** (private IPv4 + zwei globale IPv6, jeweils UDP und TCP). `BarcodeDetector` ist mit `qr_code` vorhanden (nativer Scan-Pfad), Wake Lock verfügbar, Payload 290 bzw. 529 Zeichen – beides weit unter der QR-Grenze von 1100.
 
 ## Sitzung A – PC-Webcam + Android (M2)
 Zwei Geräte nach `docs/runbook-zwei-handys.md`, Abschnitt 3.1 (Zellen A1–A8). Je Lauf eine Zeile in der Haupttabelle; QR-Läufe zusätzlich eine Zeile in „QR und Paarung", der Sperrtest drei Zeilen in „Sperrbildschirm-Test".
