@@ -72,6 +72,7 @@ Netzwerkadressen aus Test-Annotationen/Reports werden nie ins Repo übernommen (
 
 **Datenschutz**
 19. **SDP-Fixtures und Laborberichte werden vor dem Commit anonymisiert:** IP-Adressen durch Dokumentationsadressen nach RFC 5737 (IPv4) bzw. RFC 3849 (IPv6) ersetzt, `uuid.local`-Namen neu gewürfelt, `ice-ufrag`/`ice-pwd`/`fingerprint` ausgetauscht. Durchgesetzt von `tests/node/privacy-guard.test.ts`, das bei jedem `npm test` alle getrackten Textdateien scannt und nur Art und Anzahl der Befunde meldet.
+20. **Auch lokale Benutzerpfade sind Datenschutz** (Abschluss-Review M3): `C:\Users\<name>`, `/home/<name>` und `/Users/<name>` nennen das Konto auf dem Entwicklungsrechner. Pläne und Runbooks schreiben stattdessen `$repo = '<Pfad zum lokalen Checkout>'`; seit M3 hat der Wächter dafür ein eigenes Muster (Befund wieder nur als Art, nie als Wert). Der Platzhalter selbst passt nicht darauf – hinter dem Trenner steht `<`, kein Namenszeichen. Gefunden hat das Muster beim Einbau genau eine Datei: den M2-Plan (3 Nennungen), im selben Commit geschwärzt.
 
 ## Erster Deploy und Update-Fluss (2026-09-21, gemessen)
 
@@ -530,9 +531,10 @@ deshalb entfernt; `openTemporaryCamera` (Selbsttest) bleibt unverändert. Aus de
 Der Spielkern entstand **headless**: keine Seite lädt `src/core/**`, `index.html` bleibt auf dem Stand M2.
 Nach dem letzten M3-Commit gemessen (`npm run build:pages` + `npm run check-dist`): **Spiel-JS 10.1 kB
 gzip** – genau der Wert vor M3 (Lab-JS 61.5 kB unverändert). Der Kern ist in M3 ausschließlich über Tests
-erreichbar (`npx vitest run tests/unit/core`: 22 Dateien, 515 Tests; `npm test` insgesamt 65 Dateien +
-1 übersprungener, 1330 Tests + 1 übersprungener – übersprungen ist genau der Messlauf `core-bench` ohne
-`MB_BENCH`); angeschlossen wird der Kern erst in M5.
+erreichbar (`npx vitest run tests/unit/core`: 22 Dateien, 517 Tests; `npm test` insgesamt 65 Dateien +
+1 übersprungener, 1335 Tests + 1 übersprungener – übersprungen ist genau der Messlauf `core-bench` ohne
+`MB_BENCH`); angeschlossen wird der Kern erst in M5. Die Zahlen sind der Stand **nach** der
+Feinschliff-Runde (ESLint-Verbot `for…in`, Pfad-Wächter, U7); T7 maß 515 bzw. 1330.
 
 ### Zahlenmodell: float64 mit eigenem Trig, kein Festkomma (D1)
 `+ − × ÷ %`, Vergleiche und `Math.sqrt/floor/ceil/round/trunc/abs/min/max/sign/imul/fround/clz32` schreibt
@@ -565,15 +567,23 @@ der Subtraktion zwei Nachkorrekturen: ohne sie fielen an den Nahtstellen (Vielfa
 
 **Die ESLint-Linie ist in M3 enger geworden** (`eslint.config.js`, nur `src/core/**`): zusätzlich zu den 23
 `Math.*`-Namen, `Date.now`, `performance.now`, `new Date()`, `**`/`**=` und den Browser-Globals sind jetzt
-`Object.keys/values/entries/assign/fromEntries` und `JSON.parse/stringify` gesperrt. Grund: `hashState` und
-`cloneState` laufen über eine **handgeschriebene** Feldfolge – käme die Reihenfolge aus `Object.keys`,
-änderte eine Feldumbenennung still den Golden-Hash, ohne dass der Test die Ursache zeigt; `JSON.*` im Kern
-unterliefe die Injektionsregel (D12). Verschärfen ist erlaubt, Lockern nie.
-`tests/node/eslint-boundaries.test.ts` prüft beide neuen Verbote und ausdrücklich, dass
-`Math.sqrt/imul/fround/clz32`, `DataView` und Typed Arrays durchkommen. `structuredClone` und
+`Object.keys/values/entries/assign/fromEntries`, `JSON.parse/stringify` und **`for…in`** gesperrt. Grund:
+`hashState` und `cloneState` laufen über eine **handgeschriebene** Feldfolge – käme die Reihenfolge aus
+`Object.keys`, änderte eine Feldumbenennung still den Golden-Hash, ohne dass der Test die Ursache zeigt;
+`for…in` ist derselbe Umweg ohne Aufruf (`ForInStatement` in `CORE_SYNTAX_BANS`, nachgezogen in der
+Feinschliff-Runde nach dem Abschluss-Review); `JSON.*` im Kern unterliefe die Injektionsregel (D12).
+Verschärfen ist erlaubt, Lockern nie.
+`tests/node/eslint-boundaries.test.ts` prüft alle drei Verbote und ausdrücklich, dass
+`Math.sqrt/imul/fround/clz32`, `DataView`, Typed Arrays und `for…of` durchkommen. `structuredClone` und
 `TextEncoder` scheitern schon am Typecheck (`tsconfig.core.json`: lib `ES2022`, `types: []`) – der ist hier
 **schärfer** als ESLint; `tests/node/es-library-guard.test.ts` sperrt `structuredClone` zusätzlich per
 Textscan.
+
+**Was ESLint prinzipbedingt NICHT sieht** (gemessen mit der ESLint-API gegen eine Sondendatei, Abschluss-
+Review determinism m-4) und deshalb **Review-Regel** bleibt: der Alias-Umweg (`const M = Math; M.sin(1)`),
+`Reflect.ownKeys`, `Object.getOwnPropertyNames`, `Date.parse`, `Array#sort` ohne ID-Gleichstand und die
+Iteration über `Map`/`Set`. `src/core` hält sie heute sämtlich ein (nachgeprüft: kein `sort`, kein
+`Map`/`Set`, kein `Reflect`/`Proxy`/`Symbol`/`Intl`/`BigInt`, kein `toFixed`).
 
 ### PRNG: sfc32, vier uint32 im Zustand (D2)
 `RngState { a, b, c, d }` liegt **im** `WorldState`, damit `cloneState` und `hashState` ihn automatisch
@@ -614,8 +624,15 @@ Golden-Wert, eine Umsortierung ändert **jeden** – dann braucht es eine Re-Bas
 Der Vertauschungs-Schutz steckt im Typ: `hashEnum` nimmt `value: NoInfer<T>`, sonst verbreitert der
 Übersetzer `T` auf `CatState | Phase` und eine vertauschte Liste übersetzt fehlerfrei (gemessen, T4-Review).
 Aus demselben Grund tragen leere Lärmproben `tick = -1` **und** `slot = -1` (`0` wäre ein gültiger Slot);
-beide Zahlen kleben am Golden-Hash. Array-Löcher werden in **jedem** Blatt gleich behandelt (übersprungen),
-damit eine dünn besetzte Liste nicht je nach Blatt anders in den Strom läuft. Gemessen:
+beide Zahlen kleben am Golden-Hash. Array-Löcher werden im **Hash-Lauf** in jedem Blatt gleich behandelt
+(übersprungen), damit eine dünn besetzte Liste nicht je nach Blatt anders in den Strom läuft.
+**Notiz zur Kodierung** (determinism m-1): ein übersprungenes Loch hinterlässt **keine Positionsspur** –
+vor der Liste steht nur ihre Länge. Zwei Zustände, die sich allein in der *Position* eines Lochs
+unterscheiden, hashen deshalb gleich (nachgestellt mit `skipVotes`). Praktisch unerreichbar: der Typ kennt
+kein Loch, `createInitialState` legt jedes Array voll an, und `cloneState` würde an `copyPlayer(undefined)`
+werfen – Klon und `hashNumbers` scheitern also **hart**, wo der Hash-Lauf überspringt. Der Fix wäre ein
+Markierungsbyte je Loch (`hashU8(0xff)`); er ändert die Kodierung und käme deshalb nur mit einer echten
+Re-Baseline. Gemessen:
 eine 1-ULP-Änderung (`12.5` → `12.500000000000002`) und das Vertauschen zweier Felder ändern den Hash,
 **die Laufordnung ist also Teil des Vertrags**. Ein **Kodierungs-Vektor-Test**
 (`tests/unit/core/sim/stateHash.test.ts`) pinnt den Hash eines handgebauten Zustands für alle sieben
@@ -630,13 +647,23 @@ Laufzeit Trig vor), einer Bitmaske `blocks` (`MOUSE 1 | CAT 2 | SIGHT 4 | CAMERA
 `occluderGroup` der Quelle. Ein Regal wird zu **vier Beinen** (`y 0…gapCm`, `blocks = MOUSE|SIGHT`) und
 **einem Baldachin** über der ganzen Grundfläche (`y gapCm…topCm`, `blocks = CAT|SIGHT|CAMERA`).
 
+Zwei R7-Konventionen, die **am Golden-Hash kleben** (T7-Review, Minor 5) – sie stehen sonst nur im
+Quelltextkommentar von `generateColliders.ts`, und wer sie „vereinheitlicht", verschiebt jede Golden-Zahl:
+- **Bei Wänden kommen `rc`/`rs` aus der NORMIERTEN RICHTUNG** (`dx/length`, `dz/length`), nicht aus
+  `cos(rot)`/`sin(rot)`. Das ist exakt: eine achsenparallele Wand bekommt `rc = 1`, `rs = 0` ohne den
+  Polynomfehler des eigenen Trig. Nur Regale und Kisten rechnen `rc`/`rs` aus dem Winkel.
+- **`occluderGroup` läuft ab 1** je Quellobjekt; die 0 bleibt reserviert („keine Gruppe").
+
 Die Beine blocken `CAT` **ausdrücklich nicht**, und das ist keine Feinheit: Bein und Baldachin überlappen
 sich zwar nicht in der Höhe, treffen aber beide das Höhenband der Katze – ihre Grundflächen liegen
 übereinander und drücken sie in widersprüchliche Richtungen. **Gemessen: 483 eingedrungene Ticks je
 10 000; nach der Trennung 0.** Gestoppt wird die Katze vom Baldachin. Die Überlappungsregel gilt also je
-**Bewegtem**, nicht je Kollider-Paar. Gemessen mit Maus (y 0…1,9) und Katze (y 0…3,0): die Maus läuft
-geradeaus durch alle drei Regalreihen, die Katze bleibt an der Baldachinkante stehen (Kante 2,5 +
-Katzenradius 1,2 = z 3,70). Dass die Maus unter das Regal passt und die Katze nicht, prüft ein Test aus
+**Bewegtem**, nicht je Kollider-Paar. Gemessen am **Struktur-Level des Faktenblatts** (`research.md` §1,
+Prototyp-Zahlen: Maus y 0…1,9, Katze y 0…3,0, drei Regalreihen): die Maus läuft geradeaus durch alle drei
+Reihen, die Katze bleibt an der Baldachinkante stehen (Kante 2,5 + Katzenradius 1,2 = z 3,70). Mit dem
+**ausgelieferten** Stand lautet dieselbe Rechnung `0,6 < 2,0 < 3,0` (Maus `heightCm 6`, Mini-Level
+`gapCm 20`, Katze `heightCm 30`) – die Aussage bleibt, die Zahlen sind andere. Dass die Maus unter das
+Regal passt und die Katze nicht, prüft ein Test aus
 **Level und Balance** zusammen (`mouse.yRange.y1 < gapCm/10 < cat.yRange.y1`); `balance.json` trägt
 deshalb kein `shelfGapCm` mehr – die Spalthöhe steht am Regal.
 
@@ -740,10 +767,14 @@ r 12 cm / h 30 cm. Der Loader rechnet **einmal** um; die Formeln sind Vertrag un
 `u/Tick = cmPerS / (10 · tickRate)` (60 cm/s → 0,2), `u/Tick² = cmPerS2 / (10 · tickRate²)`,
 `u = cm / 10`, `Ticks = s · tickRate` (muss ganzzahlig sein).
 
-**Kein Test hängt an diesen Zahlen.** Tests benutzen `tests/fixtures/core/test-balance.json` mit bewusst
-anderen Werten (u. a. 2 s Tag / 3 s Nacht, damit ein Phasenwechsel in 60 bzw. 90 Ticks prüfbar ist); ein
-Test vergleicht beide Dateien und schlägt fehl, wenn sie gleich werden. Wer die Balance ändert, ändert
-also keine Zusicherung – entschieden wird sie am Spaß-GATE nach M14, mit dem Regler-Panel aus M6.
+**Kein Test pinnt eine dieser Zahlen** (Ruling P1, Abschluss-Review). Golden-Lauf, Determinismus-Naht,
+Systemtests und der Bench benutzen `tests/fixtures/core/test-balance.json` mit bewusst anderen Werten
+(u. a. 2 s Tag / 3 s Nacht, damit ein Phasenwechsel in 60 bzw. 90 Ticks prüfbar ist). **Ein** Test lädt
+die echte Datei (`tests/unit/core/data/balanceLoad.test.ts`), vergleicht aber keinen Wert: er prüft, dass
+sie die Roh-Form `BalanceJson` erfüllt (per Typzuweisung, also im Übersetzer), ohne Wurf durch den Loader
+läuft, 23 endliche Zahlen ergibt – und sich von der Fixture unterscheidet. Gepinnt sind allein die
+**Umrechnungsformeln** oben, und die an der Fixture. Wer am Regler-Panel aus M6 dreht, macht `npm test`
+also nicht rot; entschieden wird die Balance am Spaß-GATE nach M14.
 
 ### Daten werden injiziert, nicht importiert (D12)
 Gemessen: ein `import balance from '../../data/balance.json'` aus `src/core` **wäre erlaubt** – ESLint
@@ -753,7 +784,8 @@ echten Balance-Daten". Jeder Loader nimmt `unknown` (`loadBalance`, `loadLevel`)
 mit dem **Feldpfad** (`shelves[1].gapCm`) und liefert die normalisierte Form; das Lesen der Dateien und
 die Komposition passieren außerhalb des Kerns (M5, `soloSession`). Seit M3 sperrt ESLint zusätzlich
 `JSON.parse`/`JSON.stringify` in `src/core/**`, damit der Umweg „Datei als Text hereinreichen und im Kern
-parsen" gar nicht erst entsteht.
+parsen" gar nicht erst entsteht. `src/data/balance.json` wird von genau **einer** Datei importiert:
+`tests/unit/core/data/balanceLoad.test.ts` – und die pinnt keinen Wert daraus (siehe „Balance").
 
 Zwei Prüfungen des Level-Loaders sind bewusst asymmetrisch (T2-Review): **Spawns** müssen in einem Raum
 liegen, geprüft gegen **halboffene** Grenzen (`x0 ≤ x < x1`, `z0 ≤ z < z1`) – dieselbe Regel, nach der
@@ -796,27 +828,15 @@ Umsetzung, gemessen mit `npm run core:bench` auf dem Entwicklungsrechner:
 - `step()`: **38,25 µs je Tick** (4 Spieler, 200 Kollider, 300 Loot)
 - `hashState()`: **144,67 µs je Zustand** (`step()` + `hashState()` zusammen 182,92 µs)
 
-`hashState` kostet damit rund das Neunfache der 15,7 µs des Prototyps – der Prototyp baute keine Feldpfade.
-Die Vertragsfassung setzt je Zahl einen Pfad wie `players[2].vel.z` zusammen; das macht `NaNError`
-brauchbar und ist in M3 belanglos, weil der Hash nicht je Tick läuft, sondern im Golden-Test. Falls er je
-stört, ist der Ausweg ein schneller Lauf ohne Pfade und ein zweiter Lauf mit Pfaden, sobald ein `NaN`
-auffällt – nicht eine schwächere Diagnose.
-
-Auf dem Handy ist mit dem 4- bis 8-fachen zu rechnen (kein Gerät zum Messen) – immer noch weit unter dem
-Ziel von 2 ms/Tick.
+Der Aufschlag gegenüber den 15,7 µs des Prototyps ist der Feldpfad je Zahl; Vorbehalt („nur dieser
+Rechner") und der mögliche Ausweg stehen unter *Offene Punkte* und werden hier nicht wiederholt.
 **In keinem Test steht eine Zeitzusicherung**: „< 2 s" wäre auf fremder Hardware falsch-rot. Die einzige
 Zeitschranke ist Vitests globales `testTimeout: 30_000`.
 
 ### Bekannte Grenzen von M3
-- **Cross-Engine-Determinismus ist lokal nicht prüfbar.** Installiert ist nur Chromium (Playwright 1.63.0,
-  kein `firefox-*`, kein `webkit-*`), Vitest läuft in Node – beides V8. M3 zeigt **V8 gegen V8** und nennt
-  es auch so; der Drei-Engine-Vergleich ist M20. Nichts wird dafür nachinstalliert.
-- **Die sechs Katzen-/Kolonie-Systeme sind leere Stümpfe.** Reihenfolge, Zustandsfelder und die Naht
-  `SystemFn` entstehen jetzt, das Verhalten in M7 (Kolonie: M16, Interaktion: M13). Jeder Golden-Hash gilt
-  nur für diesen Stand.
-- **Das Mini-Level ist kein Laden.** `tests/fixtures/core/mini-level.json` (1 Raum, 4 Wände, 2 Regale,
-  1 Kiste) beweist Loader, Kollider-Erzeugung und Kollision – sonst nichts. Erreichbarkeit, Engpässe
-  („kein Durchgang schmaler als 2r"), Nav-Graph und `src/data/levels/feinkost.json` gehören zu M4.
+Nur die beiden Punkte, die nirgends sonst stehen – Stümpfe, Mini-Level, Cross-Engine und die Messkosten
+stehen unter *Offene Punkte*, der Liste, die vor jedem Meilenstein gelesen wird.
+
 - **Der Hash beweist Gleichheit, nicht Richtigkeit.** Er fängt Drift, sagt aber nichts über richtige
   Bewegung – deshalb hat jedes System eigene Verhaltenstests neben dem Golden-Lauf.
 - **Der Golden-Wächter greift nur im Git-Arbeitsbaum** und ersetzt nicht das Lesen des Diffs.
@@ -839,7 +859,8 @@ Zeitschranke ist Vitests globales `testTimeout: 30_000`.
 - **Wake Lock nach `pagehide` ungeklärt:** wird die Seite weggeschaltet (Zurück-Taste, iOS-Seitencache), fordert `src/platform/wakeLock.ts` die Sperre nicht erneut an – am Gerät hilft nur ein Neuladen. Ob das auf dem iPhone in der Praxis stört, zeigt erst ein echter Sperrtest.
 - **`lock:reconnect` erreicht praktisch keinen gespeicherten Report:** der Eintrag landet in der Zeitleiste der gerade geschlossenen Verbindung. Wer auswerten will, ob neu verbunden wurde, liest `lockTest.runs[].reconnected`. Ob der Eintrag überhaupt bleiben soll, wird nach Sitzung A entschieden.
 - **Fake-Kamera-Smokes auf dem Linux-CI-Runner ungemessen:** beide Specs laufen bisher nur lokal auf Windows-Chromium (je 3× stabil). Der fremde Smoke baut dabei eine echte `RTCPeerConnection` auf. Fällt einer in der CI um, bekommt er dort `{ tag: '@local' }` und der Grund kommt hierher (C7) – der Test wird nicht abgeschwächt.
-- **Balance-Zahlen sind geraten (M3):** Tempi, Beschleunigung, Reibung und die Lautstärkekurve stehen in keinem Dokument. Sie gehen mit dem Regler-Panel aus M6 ans Spaß-GATE nach M14; kein Test hängt an ihnen, wer sie ändert, ändert keine Zusicherung.
+- **Balance-Zahlen sind geraten (M3):** Tempi, Beschleunigung, Reibung und die Lautstärkekurve stehen in keinem Dokument. Sie gehen mit dem Regler-Panel aus M6 ans Spaß-GATE nach M14 – Herleitung, Formeln und der Stand der Prüfungen im Abschnitt „Balance: jede Zahl ist provisorisch".
+- **In M3 verbraucht kein System Zufall:** `nextU32` & Co. werden nur von `seedRng` und von Testcode gerufen, der `rng`-Anteil des Zustands bleibt nach dem Saaten konstant. Die Golden-Läufe belegen also die **Verankerung** des RNG im Zustand, nicht sein Fortschreiten (das deckt `rng.test.ts` mit einem eingefrorenen sfc32-Vektor ab). Das erste zufallsnutzende System ist M7 – dort ist auch der erste Ort, an dem eine Drift entstehen kann.
 - **Cross-Engine-Hash ungeprüft:** lokal ist nur Chromium installiert, Vitest läuft in Node – beides V8. Ob Firefox und Safari denselben Zustandshash liefern, entscheidet M20. Bis dahin behauptet kein Text und kein Testname „cross-engine".
 - **`npm run core:bench` misst nur diesen Rechner:** auf dem Handy ist mit dem 4- bis 8-fachen zu rechnen (kein Gerät zum Messen). Die Zahlen im Abschnitt „M3 – Core I" tragen diesen Vorbehalt.
 - **`hashState` kostet ~145 µs statt der ~16 µs des Prototyps:** der Unterschied ist der Feldpfad, den die Vertragsfassung je Zahl für die NaN-Diagnose zusammensetzt. In M3 belanglos (der Hash läuft nicht je Tick). Wird er je zum Engpass, ist der Ausweg ein schneller Lauf ohne Pfade plus ein zweiter Lauf mit Pfaden bei `NaN` – nicht eine schwächere Diagnose.

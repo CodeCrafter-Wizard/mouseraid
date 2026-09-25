@@ -1,5 +1,5 @@
 {
-  "_hinweis": "PROVISORISCH (D10/R1). Jede Zahl geht nach M14 ans Spass-GATE. Suffix im Feldnamen = Einheit: Cm, CmPerS, CmPerS2, S. Ohne Suffix: dimensionsloses Verhaeltnis. Kein Test haengt an dieser Datei - Tests benutzen tests/fixtures/core/test-balance.json.",
+  "_hinweis": "PROVISORISCH (D10/R1). Jede Zahl geht nach M14 ans Spass-GATE. Suffix im Feldnamen = Einheit: Cm, CmPerS, CmPerS2, S. Ohne Suffix: dimensionsloses Verhaeltnis. Kein Test pinnt diese Zahlen - Tests benutzen tests/fixtures/core/test-balance.json; ein Test prueft nur Form und Ladbarkeit dieser Datei.",
   "tickRate": 30,
   "dayLengthS": 300,
   "nightLengthS": 300,

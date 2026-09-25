@@ -24,6 +24,11 @@ const BLOCK_EPSILON = 1e-9;
  * moveCircle macht bis zu MAX_SLIDES × (Zahl der Kollider) Sweeps je Bewegtem und Tick. Es wird
  * bei jedem Treffer vollständig neu beschrieben, bevor es gelesen wird, und nie über einen Aufruf
  * hinaus – die Abfragen bleiben damit rein, nur eben allokationsfrei.
+ *
+ * NICHT WIEDEREINTRITTSFÄHIG (wie `playerMove`): `moveCircle` und `sweepCircle` teilen sich dieses
+ * eine Modul-Objekt. Folge: keine Abfrage dieses Moduls darf eine andere Abfrage *während* ihres
+ * eigenen Laufs auslösen – also kein Rückruf-Parameter. M4 baut mit `sweepCircle` Nav-Kanten; die
+ * Kanten werden nacheinander geprüft, nie aus einem Rückruf heraus.
  */
 interface SweepOut { t: number; nx: number; nz: number; push: number }
 const sweepOut: SweepOut = { t: 0, nx: 0, nz: 0, push: 0 };
@@ -32,7 +37,9 @@ const sweepOut: SweepOut = { t: 0, nx: 0, nz: 0, push: 0 };
  * Wirkt der Kollider auf diesen Bewegten? Maskenbit UND Höhenband – und zwar je BEWEGTEM, nicht
  * je Kollider-Paar (Falle 2 des Faktenblatts: Regalbein und Baldachin überlappen sich nicht,
  * treffen aber beide die Katze). Dieselbe Regel wie `overlapsY` in colliderTypes; sie steht hier
- * ausgeschrieben, damit collision.ts außer Typen nichts importiert.
+ * BEWUSST DOPPELT ausgeschrieben, damit collision.ts außer Typen nichts importiert. Beide Seiten
+ * sind getestet – diese hier in `collision.test.ts` (bündige Bänder, also genau der `<`/`<=`-Mutant),
+ * `overlapsY` in `generateColliders.test.ts`. Wer hier das Vergleichszeichen ändert, muss dort mit.
  */
 function affects(c: Collider, yRange: YRange, mask: number): boolean {
   return (c.blocks & mask) !== 0 && yRange.y0 < c.y1 && c.y0 < yRange.y1;

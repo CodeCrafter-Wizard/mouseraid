@@ -19,20 +19,35 @@ describe('Skript-Bots', () => {
     }
   });
 
-  it('haengt an der Saat: eine andere Saat aendert die Frames', () => {
-    // idle ist bewusst saat-unabhaengig, die drei anderen Muster nicht.
+  it('haengt an der Saat: JEDES gesaete Muster reagiert, nicht nur die Summe', () => {
+    // idle ist bewusst saat-unabhaengig, die drei anderen Muster nicht. U7 (1): gezaehlt wird JE
+    // MUSTER. Eine Gesamtschranke uebersieht den Ausfall eines einzelnen Musters – faellt das
+    // Zittern aus walk-circle heraus, liefern die beiden anderen allein schon 800 Abweichungen.
     const seeded: BotPattern[] = ['walk-circle', 'sprint-bursts', 'wall-hugger'];
-    let differences = 0;
+    const proMuster = seeded.map(() => 0);
     for (let tick = 0; tick < 400; tick += 1) {
       const a = scriptedInputs(1, seeded, tick);
       const b = scriptedInputs(2, seeded, tick);
       for (let slot = 0; slot < seeded.length; slot += 1) {
         const left = a[slot];
         const right = b[slot];
-        if (left !== undefined && right !== undefined && (left.mx !== right.mx || left.mz !== right.mz)) differences += 1;
+        if (left !== undefined && right !== undefined && (left.mx !== right.mx || left.mz !== right.mz)) {
+          proMuster[slot] = (proMuster[slot] ?? 0) + 1;
+        }
       }
     }
-    expect(differences).toBeGreaterThan(100);
+    for (let slot = 0; slot < seeded.length; slot += 1) {
+      expect(proMuster[slot], `Muster ${seeded[slot]} reagiert nicht auf die Saat`).toBeGreaterThan(0);
+    }
+    expect(proMuster.reduce((sum, count) => sum + count, 0)).toBeGreaterThan(100);
+  });
+
+  it('wirft bei einem unbekannten Musternamen, statt still wall-hugger zu rechnen', () => {
+    // U7 (2): die if-Kette in `frameFor` endete ohne Bedingung bei wall-hugger. Ein Tippfehler in
+    // golden.json waere so unbemerkt durchgelaufen und nach einem Rebaseline gueltige Baseline.
+    const tippfehler = ['wall-huger'] as unknown as BotPattern[];
+    expect(() => scriptedInputs(1, tippfehler, 0)).toThrow(RangeError);
+    expect(() => scriptedInputs(1, tippfehler, 0)).toThrow(/wall-huger/);
   });
 
   it('liefert je Platz einen Frame mit tick und seq', () => {

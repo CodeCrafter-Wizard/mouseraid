@@ -4,6 +4,7 @@ import { nextInt, nextRange, seedRng } from '../../../../src/core/math/rng';
 import type { Collider, MoveResult, YRange } from '../../../../src/core/world/colliderTypes';
 import { ALL_MASKS, CAMERA, CAT, MOUSE, SIGHT, createMoveResult } from '../../../../src/core/world/colliderTypes';
 import { SKIN, moveCircle, segmentBlocked } from '../../../../src/core/world/collision';
+import { distanceToBox } from './collisionHelpers';
 
 // D14: 10 000 Ticks x 8 Bewegte gegen 60 gesaete OBBs. Der Fuzz sichert DREI Invarianten:
 // (1) alle Zahlen endlich, (2) nie TIEFER als SKIN in einem blockierenden Kasten, (3) die Strecke
@@ -32,20 +33,6 @@ interface Mover {
 
 const MOUSE_Y: YRange = { y0: 0, y1: 1.9 };
 const CAT_Y: YRange = { y0: 0, y1: 3 };
-
-/** Vorzeichenbehafteter Abstand zum RECHTECK (negativ = im Kasten) – die Gegenrechnung zum Kern. */
-function distanceToBox(x: number, z: number, c: Collider): number {
-  const ox = x - c.cx;
-  const oz = z - c.cz;
-  const lx = ox * c.rc + oz * c.rs;
-  const lz = -ox * c.rs + oz * c.rc;
-  const dx = Math.abs(lx) - c.hx;
-  const dz = Math.abs(lz) - c.hz;
-  if (dx <= 0 && dz <= 0) return Math.max(dx, dz);
-  const ex = dx > 0 ? dx : 0;
-  const ez = dz > 0 ? dz : 0;
-  return Math.sqrt(ex * ex + ez * ez);
-}
 
 function obb(id: number, cx: number, cz: number, hx: number, hz: number, rot: number, y0: number, y1: number, blocks: number): Collider {
   return { id, cx, cz, hx, hz, y0, y1, rot, rc: Math.cos(rot), rs: Math.sin(rot), blocks, occluderGroup: 0 };

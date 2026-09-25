@@ -69,6 +69,30 @@ describe('ESLint-Leitplanken', () => {
     expect(ids.filter((id) => id === 'no-restricted-properties')).toHaveLength(5);
   });
 
+  // M3/MAJ-1 (Abschlussreview): for-in ist der Umweg um das Object.keys-Verbot – dieselbe
+  // namensabhaengige Laufordnung, nur ohne Aufruf. CLAUDE.md sagt „erzwungen", also muss es das sein.
+  // Grenzfall: for-of ist die vorgeschriebene Iterationsform im Kern und muss durchkommen.
+  it('core darf for-in nicht benutzen, for-of dagegen schon', async () => {
+    const forIn = await ruleIds(
+      `const o: Record<string, number> = { a: 1 };\nexport const out: string[] = [];\nfor (const k in o) out.push(k);\n`,
+      'src/core/sim/hash.ts',
+    );
+    const forOf = await ruleIds(
+      `const list = [1, 2];\nexport const out: number[] = [];\nfor (const n of list) out.push(n);\n`,
+      'src/core/sim/hash.ts',
+    );
+    expect(forIn.filter((id) => id === 'no-restricted-syntax')).toHaveLength(1);
+    expect(forOf).not.toContain('no-restricted-syntax');
+  });
+
+  it('ausserhalb von src/core bleibt for-in erlaubt', async () => {
+    const ids = await ruleIds(
+      `const o: Record<string, number> = { a: 1 };\nexport const out: string[] = [];\nfor (const k in o) out.push(k);\n`,
+      'src/lab/report.ts',
+    );
+    expect(ids).not.toContain('no-restricted-syntax');
+  });
+
   // M3/D12: Daten werden injiziert, nicht geparst – die Loader nehmen `unknown`.
   it('core darf JSON.parse und JSON.stringify nicht benutzen', async () => {
     const ids = await ruleIds(

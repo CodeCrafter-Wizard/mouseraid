@@ -9,8 +9,9 @@ import type { TestWorld } from '../testWorld';
 import { activate, box, makeStage, makeWorld, player, room, setIntent, speedOf } from '../testWorld';
 
 /**
- * Gemessene Schranke des eigenen `atan2` (1,36e-8 rad, Faktenblatt §1.3) mal zwei – dieselbe
- * Toleranz, mit der T1 gegen `Math.atan2` prüft.
+ * ZUGESICHERTE Schranke des eigenen `atan2` (1,36e-8 rad, Faktenblatt §1.3) mal zwei – dieselbe
+ * Toleranz, mit der T1 gegen `Math.atan2` prüft. GEMESSEN sind 9,73e-9 rad (`trig.test.ts`,
+ * `docs/decisions.md`); der Vertrag nennt bewusst die konservativere Zahl.
  */
 const ATAN2_TOLERANCE = 2.72e-8;
 
@@ -97,7 +98,10 @@ describe('stepPlayerMovement – Beschleunigung und Reibung', () => {
     expect(speedOf(p)).toBeLessThan(1e-9);
     const rest = { x: p.pos.x, z: p.pos.z };
     drive(w, p, 30);
-    expect(p.pos.x - rest.x).toBeLessThan(1e-7);
+    // Betrag, nicht Differenz: eine RUECKDRIFT (falsches Vorzeichen in der Reibung) erfuellt eine
+    // einseitige Schranke ebenfalls. Beide Achsen, sonst bliebe z ungeprueft.
+    expect(Math.abs(p.pos.x - rest.x)).toBeLessThan(1e-7);
+    expect(Math.abs(p.pos.z - rest.z)).toBeLessThan(1e-7);
   });
 
   it('ist im Sprint schneller als beim Gehen', () => {

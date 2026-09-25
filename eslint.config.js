@@ -70,12 +70,15 @@ const NO_NEW_DATE = { selector: "NewExpression[callee.name='Date']", message: DE
 // `**` ist laut ECMAScript genau wie Math.pow nur "implementation-approximated".
 const NO_EXPONENT = { selector: "BinaryExpression[operator='**']", message: DETERMINISM_MSG };
 const NO_EXPONENT_ASSIGN = { selector: "AssignmentExpression[operator='**=']", message: DETERMINISM_MSG };
+// `for…in` ist der Umweg um das Object.keys-Verbot: dieselbe namensabhängige Laufordnung, nur ohne
+// Aufruf. Iteriert wird im Kern über Arrays (`for…of`), damit die Reihenfolge an der Schemafolge hängt.
+const NO_FOR_IN = { selector: 'ForInStatement', message: SCHEMA_MSG };
 
 // ACHTUNG: Flat Config ERSETZT die Optionen einer Regel pro passendem Block, sie summiert sie
 // nicht. Ein Selektor, der nur unten im `src/**`-Block stünde, fehlte im core-Block still. Deshalb
 // bauen alle drei no-restricted-syntax-Listen auf diesen beiden Konstanten auf.
 const SYNTAX_BANS = [NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER];
-const CORE_SYNTAX_BANS = [...SYNTAX_BANS, NO_NEW_DATE, NO_EXPONENT, NO_EXPONENT_ASSIGN];
+const CORE_SYNTAX_BANS = [...SYNTAX_BANS, NO_NEW_DATE, NO_EXPONENT, NO_EXPONENT_ASSIGN, NO_FOR_IN];
 
 export default tseslint.config(
   // `.superpowers/` ist git-ignoriert (Arbeitsdateien der Agenten) – Flat Config überspringt Punkt-Ordner NICHT von selbst.

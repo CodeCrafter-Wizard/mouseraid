@@ -1,8 +1,9 @@
 import type { YRange } from '../world/colliderTypes';
 
 /**
- * ALLE Zahlen dieser Datei sind PROVISORISCH (D10/R1) und gehen nach M14 ans Spaß-GATE.
- * Kein Test hängt an ihnen – Tests benutzen `tests/fixtures/core/test-balance.json`.
+ * ALLE Zahlen von `src/data/balance.json` sind PROVISORISCH (D10/R1) und gehen nach M14 ans Spaß-GATE.
+ * Kein Test pinnt sie – Tests benutzen `tests/fixtures/core/test-balance.json`; die echte Datei wird
+ * einmal gegen `BalanceJson` zugewiesen (Form, keine Werte) und durch den Loader geschickt.
  *
  * `BalanceJson` ist die MENSCHEN-Form (cm, cm/s, Sekunden, Verhältnisse),
  * `Balance` die TICK-Form (Einheiten, Einheiten je Tick, Ticks). `loadBalance` rechnet EINMAL um.

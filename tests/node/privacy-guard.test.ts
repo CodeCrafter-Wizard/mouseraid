@@ -20,6 +20,13 @@ const IPV6 = /\b[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){2,7}\b/gi;
 /** Komprimierte Schreibweise mit `::`: eine kurze ULA hat nur zwei Hextets und verfehlt die Regel oben. */
 const IPV6_COMPRESSED = /\b[0-9a-f]{1,4}::[0-9a-f:]+\b/gi;
 const MDNS = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.local\b/gi;
+/**
+ * Lokale Benutzerpfade (Windows `C:\Users\<name>`, Linux `/home/<name>`, macOS `/Users/<name>`):
+ * sie nennen das Konto auf dem Entwicklungsrechner. Pläne und Runbooks setzen dafür einen Platzhalter
+ * (`$repo = '<Pfad zum lokalen Checkout>'`). Der Platzhalter selbst bleibt frei, weil hinter dem
+ * Trenner `<` steht und nicht das erste Zeichen eines Namens – deshalb braucht es keine Allowlist.
+ */
+const USER_PATH = /(?:[A-Za-z]:[\\/]{1,2}Users|\/home|\/Users)[\\/]{1,2}[A-Za-z0-9._-]+/g;
 
 function isPrivateIpv4(value: string): boolean {
   const octets = value.split('.').map((part) => Number(part));
@@ -57,6 +64,7 @@ function scan(file: string, text: string): string[] {
     }
   }
   found.push(...[...text.matchAll(MDNS)].map(() => `${file}: mDNS-Name`));
+  found.push(...[...text.matchAll(USER_PATH)].map(() => `${file}: lokaler Benutzerpfad`));
   return found;
 }
 
@@ -87,6 +95,24 @@ describe('Datenschutz-Wächter', () => {
     expect(scan('x', compressedUla)).toHaveLength(1);
     expect(scan('x', mdns)).toHaveLength(1);
     expect(scan('x', documentationIpv6)).toEqual([]);
+  });
+
+  it('erkennt lokale Benutzerpfade, laesst den Platzhalter aber durch', () => {
+    // Auch hier zur Laufzeit zusammengesetzt, damit die Testdatei nicht ihren eigenen Wächter auslöst.
+    const windowsPath = ['C:', 'Users', 'beispielkonto', 'Documents'].join('\\');
+    const windowsSlashes = ['C:', 'Users', 'beispielkonto'].join('/');
+    const linuxPath = ['', 'home', 'beispielkonto', 'projekt'].join('/');
+    const macPath = ['', 'Users', 'beispielkonto'].join('/');
+
+    expect(scan('x', windowsPath)).toEqual(['x: lokaler Benutzerpfad']);
+    expect(scan('x', windowsSlashes)).toEqual(['x: lokaler Benutzerpfad']);
+    expect(scan('x', linuxPath)).toEqual(['x: lokaler Benutzerpfad']);
+    expect(scan('x', macPath)).toEqual(['x: lokaler Benutzerpfad']);
+
+    // Der Platzhalter der Pläne, der Ordner ohne Kontonamen und ein Wort, das nur mit „home" beginnt.
+    expect(scan('x', ['C:', 'Users', '<Pfad zum lokalen Checkout>'].join('\\'))).toEqual([]);
+    expect(scan('x', ['C:', 'Users', ''].join('\\'))).toEqual([]);
+    expect(scan('x', '/homepage/index.html und docs/superpowers/plans')).toEqual([]);
   });
 
   it('schlägt bei Versionsnummern, Uhrzeiten und Schleifenadressen keinen Fehlalarm', () => {

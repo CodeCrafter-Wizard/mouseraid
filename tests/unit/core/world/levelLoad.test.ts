@@ -3,19 +3,11 @@ import { ALL_MASKS, CAT, MOUSE } from '../../../../src/core/world/colliderTypes'
 import { LevelError, loadLevel } from '../../../../src/core/world/levelLoad';
 import { CM_PER_UNIT } from '../../../../src/core/world/levelTypes';
 import miniLevel from '../../../fixtures/core/mini-level.json';
-
-type Json = Record<string, unknown>;
+import { makeVariant, pathOfThrow, sub } from '../jsonVariant';
+import type { Json } from '../jsonVariant';
 
 /** Tiefe Kopie der eingefrorenen Fixture, danach EINE gezielte Verletzung. */
-function variant(patch: (level: Json) => void): Json {
-  const copy = JSON.parse(JSON.stringify(miniLevel)) as Json;
-  patch(copy);
-  return copy;
-}
-
-function sub(source: Json, key: string): Json {
-  return source[key] as Json;
-}
+const variant = makeVariant(miniLevel);
 
 function list(source: Json, key: string): Json[] {
   return source[key] as Json[];
@@ -27,13 +19,7 @@ function at(source: Json, key: string, index: number): Json {
 
 /** Liefert den Feldpfad des geworfenen LevelError – oder scheitert, wenn nichts geworfen wurde. */
 function errorPath(json: unknown): string {
-  try {
-    loadLevel(json);
-  } catch (error) {
-    if (error instanceof LevelError) return error.path;
-    throw error;
-  }
-  throw new Error('loadLevel hat nicht geworfen');
+  return pathOfThrow(loadLevel, json, LevelError);
 }
 
 describe('loadLevel – die Mini-Level-Fixture', () => {

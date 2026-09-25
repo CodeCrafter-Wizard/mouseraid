@@ -14,7 +14,9 @@
  *   atan2     |Fehler| <= 9.73e-9 rad  (401x401-Gitter in [-1,1]^2 und Kreis-Sweep)
  * Bei Argumenten weit jenseits von +-100 Umdrehungen frisst die Ausloeschung in `x - k*PI` die
  * Genauigkeit auf; der Wertebereich [-1, 1] bleibt erhalten, die Schranke nicht. Im Spiel kommen
- * solche Winkel nicht vor – `facing` laeuft ueber `normalizeAngle`.
+ * solche Winkel nicht vor: `facing` kommt aus `atan2` und liegt damit schon in [-PI, PI].
+ * `normalizeAngle` ruft in M3 kein Kern-Modul auf – die Funktion ist Vertrag fuer M4/M7 (Kameraweg,
+ * Drehungen), und die Schranke oben gilt fuer jeden, der sie dann benutzt.
  *
  * AN DEN ACHSEN EXAKT, aber mit einer Eigenheit: `sin(0) === 0` und `cos(0) === 1` sind exakt (das
  * Polynom liegt bei PI/2 um 6.6e-10 UEBER 1, die Klemme holt es auf genau 1 zurueck). `cos(HALF_PI)`

@@ -18,6 +18,17 @@ import levelFixture from '../../fixtures/core/mini-level.json';
 /** Eine Testbühne: Zustand, injizierter Kontext, Ereignispuffer des Aufrufers. */
 export interface TestWorld { state: WorldState; ctx: StepContext; events: GameEvent[] }
 
+/**
+ * `noUncheckedIndexedAccess` macht jeden Index optional – hier wird daraus ein harter Fehler.
+ * Stand bis zur Feinschliff-Runde byte-gleich in vier `sim/`-Tests; eine Fehlermeldung statt vier.
+ * `player(state, slot)` unten ist die spezialisierte Fassung derselben Idee.
+ */
+export function at<T>(list: readonly T[], index: number): T {
+  const value = list[index];
+  if (value === undefined) throw new Error(`Index ${index} fehlt`);
+  return value;
+}
+
 /** Balance aus der eingefrorenen Fixture. */
 export function testBalance(): Balance {
   return loadBalance(balanceFixture);

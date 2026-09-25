@@ -11,6 +11,7 @@ import {
   segmentBlocked,
   sweepCircle,
 } from '../../../../src/core/world/collision';
+import { distanceToBox } from './collisionHelpers';
 
 // Tests liegen AUSSERHALB von src/core und duerfen deshalb Math.cos/Math.sin als Referenz benutzen
 // (die Kollider tragen rc/rs ohnehin als Daten – zur Laufzeit rechnet der Kern kein Trig).
@@ -38,20 +39,6 @@ function box(spec: BoxSpec): Collider {
     blocks: spec.blocks,
     occluderGroup: spec.group ?? 0,
   };
-}
-
-/** Vorzeichenbehafteter Abstand des Mittelpunkts zum RECHTECK (negativ = im Kasten). */
-function distanceToBox(x: number, z: number, c: Collider): number {
-  const ox = x - c.cx;
-  const oz = z - c.cz;
-  const lx = ox * c.rc + oz * c.rs;
-  const lz = -ox * c.rs + oz * c.rc;
-  const dx = Math.abs(lx) - c.hx;
-  const dz = Math.abs(lz) - c.hz;
-  if (dx <= 0 && dz <= 0) return Math.max(dx, dz);
-  const ex = dx > 0 ? dx : 0;
-  const ez = dz > 0 ? dz : 0;
-  return Math.sqrt(ex * ex + ez * ez);
 }
 
 const MOUSE_Y: YRange = { y0: 0, y1: 1.9 };

@@ -7,37 +7,33 @@ import type { CatState, PlayerIntent, WorldState } from '../../../../src/core/si
 import { loadLevel } from '../../../../src/core/world/levelLoad';
 import balanceJson from '../../../fixtures/core/test-balance.json';
 import levelJson from '../../../fixtures/core/mini-level.json';
+import { at } from '../testWorld';
 
 const level = loadLevel(levelJson);
 const balance = loadBalance(balanceJson);
 
-/** `noUncheckedIndexedAccess` macht jeden Index optional – hier wird daraus ein harter Fehler. */
-function at<T>(list: readonly T[], index: number): T {
-  const value = list[index];
-  if (value === undefined) throw new Error(`Index ${index} fehlt`);
-  return value;
-}
-
 /**
  * Generischer Blattfinder für Minor 3 (Task-4-Review): läuft JEDEN Zustand ab und sammelt jedes
- * Zahlenfeld mit dem Pfad, den `hash.ts` selbst dafür schreiben würde (`players[0].pos.x`,
- * `cat.awareness[2]`, `noise[63].loudness`, …). `boolean`/`string`-Blätter fehlen absichtlich:
- * die gehen in `hash.ts` durch `hashBool`/`hashStr`/`hashEnum`, nie durch `hashF64`, und können
- * dort keinen `NaNError` auslösen. Dieser Test darf `Object.keys` benutzen (CLAUDE.md: nur
- * `src/core` ist eingeschränkt) – `hash.ts` selbst tut das nie.
+ * primitive Feld mit dem Pfad, den `hash.ts` selbst dafür schreiben würde (`players[0].pos.x`,
+ * `cat.awareness[2]`, `noise[63].loudness`, …). Seit dem Abschluss-Review (determinism m-2) sammelt
+ * er auch `boolean`- und `string`-Blätter: die gehen durch `hashBool`/`hashStr`/`hashEnum` statt
+ * durch `hashF64` und lösen deshalb keinen `NaNError` aus – ein neues Feld dieser Art wäre sonst
+ * vom Übersetzer nur in `cloneState` erzwungen worden, nicht in `hashState`, und kein Test hätte es
+ * gemerkt. Dieser Test darf `Object.keys` benutzen (CLAUDE.md: nur `src/core` ist eingeschränkt) –
+ * `hash.ts` selbst tut das nie.
  */
-interface NumericLeaf { path: string; segments: readonly (string | number)[] }
+type LeafKind = 'number' | 'boolean' | 'string';
+interface Leaf { path: string; segments: readonly (string | number)[]; kind: LeafKind }
 
-function collectNumericLeaves(
-  node: unknown, path: string, segments: readonly (string | number)[], leaves: NumericLeaf[],
+function collectLeaves(
+  node: unknown, path: string, segments: readonly (string | number)[], leaves: Leaf[],
 ): void {
-  if (typeof node === 'number') {
-    leaves.push({ path, segments });
-    return;
-  }
+  if (typeof node === 'number') { leaves.push({ path, segments, kind: 'number' }); return; }
+  if (typeof node === 'boolean') { leaves.push({ path, segments, kind: 'boolean' }); return; }
+  if (typeof node === 'string') { leaves.push({ path, segments, kind: 'string' }); return; }
   if (Array.isArray(node)) {
     for (let i = 0; i < node.length; i += 1) {
-      collectNumericLeaves(node[i], `${path}[${i}]`, [...segments, i], leaves);
+      collectLeaves(node[i], `${path}[${i}]`, [...segments, i], leaves);
     }
     return;
   }
@@ -45,14 +41,24 @@ function collectNumericLeaves(
     const obj = node as Record<string, unknown>;
     for (const key of Object.keys(obj)) {
       const childPath = path === '' ? key : `${path}.${key}`;
-      collectNumericLeaves(obj[key], childPath, [...segments, key], leaves);
+      collectLeaves(obj[key], childPath, [...segments, key], leaves);
     }
   }
-  // boolean, string, null: kein Blatt für diesen Test.
+  // null und undefined: kein Blatt für diesen Test.
 }
 
-/** Setzt GENAU das Blatt, das `collectNumericLeaves` an diesem Pfad gefunden hat, auf `value`. */
-function setAtPath(root: WorldState, segments: readonly (string | number)[], value: number): void {
+/** Liest GENAU das Blatt, das `collectLeaves` an diesem Pfad gefunden hat. */
+function readAtPath(root: WorldState, segments: readonly (string | number)[]): unknown {
+  let node: unknown = root;
+  for (const seg of segments) {
+    node = typeof seg === 'number' ? (node as unknown[])[seg] : (node as Record<string, unknown>)[seg];
+  }
+  return node;
+}
+
+/** Setzt GENAU das Blatt, das `collectLeaves` an diesem Pfad gefunden hat, auf `value`. */
+function setAtPath(root: WorldState, segments: readonly (string | number)[],
+  value: number | boolean | string): void {
   let node: unknown = root;
   for (let i = 0; i < segments.length - 1; i += 1) {
     const seg = segments[i];
@@ -61,9 +67,36 @@ function setAtPath(root: WorldState, segments: readonly (string | number)[], val
   }
   const last = segments[segments.length - 1];
   if (last === undefined) throw new Error('leerer Pfad');
-  if (typeof last === 'number') (node as number[])[last] = value;
-  else (node as Record<string, number>)[last] = value;
+  if (typeof last === 'number') (node as unknown[])[last] = value;
+  else (node as Record<string, unknown>)[last] = value;
 }
+
+/**
+ * Als Hex vergleichen – wie `tests/node/golden.test.ts`: der Fehlerbericht zeigt dann den Hash und
+ * nicht eine nackte Dezimalzahl, die niemand einer Fixture zuordnen kann.
+ */
+function hex(value: number): string {
+  return `0x${(value >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Dieselbe Erinnerung wie der `HINT` in `golden.test.ts`, hier für die Zähl-Zusicherung: die Zahl
+ * ist kein Selbstzweck, sie zwingt zum Mitziehen von `hash.ts`.
+ */
+const TABELLEN_HINT = [
+  'Die MUTATIONEN-Tabelle hat eine andere Laenge als erwartet. Wer ein WorldState-Feld hinzufuegt',
+  'oder entfernt, zieht DREI Stellen mit: src/core/sim/hash.ts (Hash-Lauf), diese Tabelle und diese',
+  'Zahl. Ein neues Feld verschiebt ausserdem jeden Golden-Hash -> `npm run core:rebaseline` und',
+  'eine Zeile `Rebaseline: <Grund>` in docs/decisions.md.',
+].join('\n');
+
+/** Dieselbe Erinnerung wie der `HINT` in `golden.test.ts` – hier für die gepinnten Hash-Werte. */
+const REBASELINE_HINT = [
+  'Kodierungsvektor abgewichen. Ursachen: PHASES/CAT_STATES umsortiert, ein Feld im Hash-Lauf',
+  'hinzugekommen oder umgestellt, oder die Bytefolge geaendert (FNV, Laengenpraefix).',
+  'Das ist eine ABSICHTLICHE Rebaseline wie beim Golden-Test: neue Werte nur MIT Grund im Commit,',
+  'plus eine Zeile `Rebaseline: <Grund>` in docs/decisions.md. Nie stillschweigend ersetzen.',
+].join('\n');
 
 function fresh(): WorldState {
   const state = createInitialState(level, balance, 'hash');
@@ -178,7 +211,7 @@ describe('hashState – jede einzelne Feldänderung ändern den Wert', () => {
     // MUTATIONEN-Tabelle ein WorldState-Feld hinzufügt (oder wegnimmt), muss diese Zahl mitziehen;
     // der generische Blatt-Test unten ("deckt jedes Zahlenfeld ab") fängt ein VERGESSENES Feld
     // zusätzlich automatisch ab, weil er den Zustand zur Laufzeit abläuft statt eine Liste zu tippen.
-    expect(MUTATIONEN.length).toBe(58);
+    expect(MUTATIONEN.length, TABELLEN_HINT).toBe(58);
   });
 
   it('unterscheidet vertauschte Feldwerte – die Laufordnung ist Teil des Vertrags', () => {
@@ -219,14 +252,17 @@ describe('hashState – Sonderfälle der Zahlen', () => {
   // auf einer FRISCHEN Kopie einzeln auf NaN gesetzt, und der gemeldete Pfad wird gegen genau den
   // Pfad geprüft, den der Walker für dasselbe Feld gebildet hat – das deckt automatisch auch ein
   // künftig hinzugefügtes Feld ab, ohne dass jemand die Liste nachpflegen muss.
-  const NUMERISCHE_BLAETTER = ((): NumericLeaf[] => {
-    const leaves: NumericLeaf[] = [];
-    collectNumericLeaves(fresh(), '', [], leaves);
+  const ALLE_BLAETTER = ((): Leaf[] => {
+    const leaves: Leaf[] = [];
+    collectLeaves(fresh(), '', [], leaves);
     return leaves;
   })();
+  const NUMERISCHE_BLAETTER = ALLE_BLAETTER.filter((leaf) => leaf.kind === 'number');
+  const ANDERE_BLAETTER = ALLE_BLAETTER.filter((leaf) => leaf.kind !== 'number');
 
   it('findet mehr als die getippten 11 Zahlenblätter (Wächter gegen einen kaputten Walker)', () => {
     expect(NUMERISCHE_BLAETTER.length).toBeGreaterThan(390);
+    expect(ANDERE_BLAETTER.length).toBeGreaterThan(20);
   });
 
   // EIN Fall mit Schleife statt `it.each` über ~400 Blätter: gleiche Aussage, aber die Zählung von
@@ -247,6 +283,32 @@ describe('hashState – Sonderfälle der Zahlen', () => {
       }
     }
     expect(falsch, `Blätter mit falschem/fehlendem NaN-Pfad (${falsch.length}/${NUMERISCHE_BLAETTER.length})`).toEqual([]);
+  });
+
+  // determinism m-2 (Abschluss-Review): `boolean`- und `string`-Felder können keinen `NaNError`
+  // auslösen, der Test darüber erreicht sie also nicht. Ein neues Feld dieser Art erzwingt der
+  // Übersetzer nur in `cloneState` (das Objektliteral muss `WorldState` erfüllen), NICHT in
+  // `hashState` – ohne diesen Test bliebe es dort unbemerkt liegen und ein Spielstand könnte ab M17
+  // still driften. Wieder EIN Fall mit Schleife statt `it.each`, damit die Zählung lesbar bleibt.
+  it('jedes boolean- und string-Blatt geht wirklich in den Hash ein', () => {
+    const unbemerkt: string[] = [];
+    for (const { path, segments, kind } of ANDERE_BLAETTER) {
+      const state = fresh();
+      const vorher = readAtPath(state, segments);
+      setAtPath(state, segments, kind === 'boolean' ? !(vorher as boolean) : `${String(vorher)}-anders`);
+      let neu: number;
+      try {
+        neu = hashState(state);
+      } catch (error) {
+        // Aufzählungsfelder (`clock.phase`, `cat.state`) werfen bei einem unbekannten Wert einen
+        // RangeError MIT ihrem Feldpfad – auch das beweist, dass `hashState` das Feld liest. Dass
+        // die REIHENFOLGE der Aufzählung zählt, pinnt der Kodierungsvektor weiter unten.
+        if (error instanceof RangeError && error.message.startsWith(`${path}: `)) continue;
+        throw error;
+      }
+      if (neu === BASIS) unbemerkt.push(`${path} (${kind})`);
+    }
+    expect(unbemerkt, `Blätter ohne Wirkung auf den Hash (${unbemerkt.length}/${ANDERE_BLAETTER.length})`).toEqual([]);
   });
 });
 
@@ -346,7 +408,7 @@ describe('hashState – Kodierungsvektor (Minor 2, Task-4-Review)', () => {
   it.each(ALLE_KATZENZUSTAENDE.map((catState) => ({ catState })))(
     'pinnt hashState für cat.state = $catState',
     ({ catState }) => {
-      expect(hashState(buildVectorState(catState))).toBe(ERWARTETE_HASHES[catState]);
+      expect(hex(hashState(buildVectorState(catState))), REBASELINE_HINT).toBe(hex(ERWARTETE_HASHES[catState]));
     },
   );
 });

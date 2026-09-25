@@ -50,6 +50,11 @@ export function createMoveResult(): MoveResult {
 /**
  * Überlappen sich zwei Höhenbänder? Halboffen, deshalb `<` und nicht `<=`:
  * ein Regalbein 0…2 und ein Baldachin 2…6 liegen bündig übereinander und überlappen sich nicht.
+ *
+ * BEWUSST DOPPELT: dieselbe Regel steht ausgeschrieben in `affects()` (`src/core/world/collision.ts`),
+ * damit `collision.ts` außer Typen nichts importiert. Beide Seiten sind getestet – diese hier in
+ * `generateColliders.test.ts`, die Kopie in `collision.test.ts` (bündige Bänder, also genau der
+ * `<`/`<=`-Mutant). Wer hier das Vergleichszeichen ändert, muss dort mit ändern.
  */
 export function overlapsY(a: YRange, b: YRange): boolean {
   return a.y0 < b.y1 && b.y0 < a.y1;

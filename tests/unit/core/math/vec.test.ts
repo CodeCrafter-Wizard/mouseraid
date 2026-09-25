@@ -128,15 +128,19 @@ describe('vec: Reinheit', () => {
     const b2 = v2(3, 4);
     const a3 = v3(1, 2, 3);
     const b3 = v3(4, 5, 6);
-    const results: object[] = [
-      add2(a2, b2), sub2(a2, b2), scale2(a2, 2), normalize2(a2), rotateY2(a2, 0, 1),
-      add3(a3, b3), sub3(a3, b3), scale3(a3, 2), normalize3(a3), rotateY3(a3, 0, 1),
+    // Tragend ist: ZWEI Aufrufe mit denselben Eingaben liefern zwei VERSCHIEDENE Objekte. Die
+    // fruehere Fassung verglich das Ergebnis mit den Argumenten – eine Funktion, die ein
+    // Objektliteral baut, kann eines ihrer Argumente gar nicht zurueckgeben, der Test war Zierde.
+    // Ein Helfer, der auf ein Modul-Objekt als Kratzflaeche umgestellt wuerde, faellt hier auf.
+    const zweimal: [object, object][] = [
+      [add2(a2, b2), add2(a2, b2)], [sub2(a2, b2), sub2(a2, b2)], [scale2(a2, 2), scale2(a2, 2)],
+      [normalize2(a2), normalize2(a2)], [rotateY2(a2, 0, 1), rotateY2(a2, 0, 1)],
+      [add3(a3, b3), add3(a3, b3)], [sub3(a3, b3), sub3(a3, b3)], [scale3(a3, 2), scale3(a3, 2)],
+      [normalize3(a3), normalize3(a3)], [rotateY3(a3, 0, 1), rotateY3(a3, 0, 1)],
     ];
-    for (const r of results) {
-      expect(r).not.toBe(a2);
-      expect(r).not.toBe(b2);
-      expect(r).not.toBe(a3);
-      expect(r).not.toBe(b3);
+    for (const [links, rechts] of zweimal) {
+      expect(links).not.toBe(rechts);
+      expect(links).toEqual(rechts);
     }
     expect(a2).toEqual({ x: 1, z: 2 });
     expect(b2).toEqual({ x: 3, z: 4 });

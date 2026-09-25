@@ -7,16 +7,10 @@ import type { WorldState } from '../../../../src/core/sim/state';
 import { loadLevel } from '../../../../src/core/world/levelLoad';
 import balanceJson from '../../../fixtures/core/test-balance.json';
 import levelJson from '../../../fixtures/core/mini-level.json';
+import { at } from '../testWorld';
 
 const level = loadLevel(levelJson);
 const balance = loadBalance(balanceJson);
-
-/** `noUncheckedIndexedAccess` macht jeden Index optional – hier wird daraus ein harter Fehler. */
-function at<T>(list: readonly T[], index: number): T {
-  const value = list[index];
-  if (value === undefined) throw new Error(`Index ${index} fehlt`);
-  return value;
-}
 
 /**
  * Ein Zustand, in dem KEIN Feld mehr auf seinem Anfangswert steht – sonst prüft der Klon-Test

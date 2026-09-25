@@ -83,7 +83,15 @@ describe('Golden-Hash gegen die eingefrorene Fixture', () => {
       expect(golden.cases.some((entry) => entry.ticks === ticks)).toBe(true);
     }
     const used = new Set<string>();
-    for (const entry of golden.cases) for (const slot of entry.slots) used.add(slot);
+    for (const entry of golden.cases) {
+      for (const slot of entry.slots) {
+        // U7 (2): JEDER Eintrag muss ein gueltiges Muster sein, nicht nur jedes Muster irgendwo
+        // vorkommen. Die Fixture wird nur `as GoldenFile` gelesen – ein Tippfehler faellt sonst
+        // erst `scriptedInputs` auf, und das auch nur seit es wirft.
+        expect(BOT_PATTERNS, `Fall ${entry.name}: unbekanntes Bot-Muster "${slot}"`).toContain(slot);
+        used.add(slot);
+      }
+    }
     for (const pattern of BOT_PATTERNS) expect(used.has(pattern)).toBe(true);
   });
 

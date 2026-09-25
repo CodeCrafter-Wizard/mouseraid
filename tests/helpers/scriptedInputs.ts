@@ -76,16 +76,23 @@ function frameFor(seed: number, slot: number, pattern: BotPattern, tick: number)
     frame.buttons = sprinting ? BUTTON_SPRINT : 0;
     return frame;
   }
-  // wall-hugger: lange Geraden entlang einer Weltachse, alle LEG_TICKS ein saatabhaengiger Wechsel
-  // (90 Grad oder Kehrtwende). Am ersten Tick jeder Geraden ein BUTTON_INTERACT-Druck – so laeuft
-  // auch die Flankenauswertung in playerIntent durch die Golden-Faelle.
-  const legStart = sectionStart(tick, LEG_TICKS);
-  const rng = seedRng(hashNumbers([seed, slot, legStart]));
-  const direction = AXES[nextInt(rng, AXES.length)];
-  frame.mx = axis((direction === undefined ? 0 : direction[0]) * WALL_MAG);
-  frame.mz = axis((direction === undefined ? 0 : direction[1]) * WALL_MAG);
-  frame.buttons = tick === legStart ? BUTTON_INTERACT : 0;
-  return frame;
+  if (pattern === 'wall-hugger') {
+    // wall-hugger: lange Geraden entlang einer Weltachse, alle LEG_TICKS ein saatabhaengiger Wechsel
+    // (90 Grad oder Kehrtwende). Am ersten Tick jeder Geraden ein BUTTON_INTERACT-Druck – so laeuft
+    // auch die Flankenauswertung in playerIntent durch die Golden-Faelle.
+    const legStart = sectionStart(tick, LEG_TICKS);
+    const rng = seedRng(hashNumbers([seed, slot, legStart]));
+    const direction = AXES[nextInt(rng, AXES.length)];
+    frame.mx = axis((direction === undefined ? 0 : direction[0]) * WALL_MAG);
+    frame.mz = axis((direction === undefined ? 0 : direction[1]) * WALL_MAG);
+    frame.buttons = tick === legStart ? BUTTON_INTERACT : 0;
+    return frame;
+  }
+  // Der letzte Zweig ist BEWUSST kein Rest-Zweig (U7): bis hierher lief ein Tippfehler aus
+  // golden.json (`"wall-huger"`) still als wall-hugger durch – `golden.json` wird nur `as GoldenFile`
+  // gelesen, der Uebersetzer sieht davon nichts. Nach einem Rebaseline waere daraus eine dauerhaft
+  // gueltige Baseline fuer ein Muster geworden, das niemand gemeint hat.
+  throw new RangeError(`Unbekanntes Bot-Muster: ${String(pattern)}`);
 }
 
 /**

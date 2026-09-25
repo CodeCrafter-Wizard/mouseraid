@@ -1,30 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { BalanceError, loadBalance } from '../../../../src/core/data/balanceLoad';
+import type { BalanceJson } from '../../../../src/core/data/balanceTypes';
 import realBalance from '../../../../src/data/balance.json';
 import testBalance from '../../../fixtures/core/test-balance.json';
-
-type Json = Record<string, unknown>;
+import { makeVariant, pathOfThrow, sub } from '../jsonVariant';
+import type { Json } from '../jsonVariant';
 
 /** Tiefe Kopie der eingefrorenen Fixture, danach EINE gezielte Verletzung. */
-function variant(patch: (balance: Json) => void): Json {
-  const copy = JSON.parse(JSON.stringify(testBalance)) as Json;
-  patch(copy);
-  return copy;
-}
-
-function sub(source: Json, key: string): Json {
-  return source[key] as Json;
-}
+const variant = makeVariant(testBalance);
 
 /** Liefert den Feldpfad des geworfenen BalanceError – oder scheitert, wenn nichts geworfen wurde. */
 function errorPath(json: unknown): string {
-  try {
-    loadBalance(json);
-  } catch (error) {
-    if (error instanceof BalanceError) return error.path;
-    throw error;
-  }
-  throw new Error('loadBalance hat nicht geworfen');
+  return pathOfThrow(loadBalance, json, BalanceError);
 }
 
 describe('loadBalance – Umrechnung (gepinnt, Vertrag)', () => {
@@ -114,17 +101,30 @@ describe('loadBalance – Feldverwechslungen zwischen gleichwertigen Rohwerten',
 });
 
 describe('loadBalance – die echte (provisorische) Balance', () => {
-  const balance = loadBalance(realBalance);
+  // KEINE Zahl aus `src/data/balance.json` wird hier gepinnt (Ruling P1). Die Werte sind
+  // provisorisch und gehen nach M14 ans Spass-GATE; wer am Regler-Panel (M6) dreht, darf `npm test`
+  // dadurch nicht rot machen. Gepruft wird nur: die ausgelieferte Datei erfuellt die Roh-FORM,
+  // laeuft durch den Loader, ergibt endliche Zahlen – und ist NICHT die Fixture.
+  //
+  // Diese eine Zeile ist der einzige Ort, an dem `BalanceJson` etwas traegt: ohne sie beschreibt der
+  // Typ nichts und `balance.json` koennte still von ihm abdriften. tsc wird rot, sobald ein Feld
+  // fehlt oder seine Art wechselt.
+  const rohForm: BalanceJson = realBalance;
+  const balance = loadBalance(rohForm);
 
-  it('300 s ergeben 9000 Ticks je Phase', () => {
-    expect(balance.dayTicks).toBe(9000);
-    expect(balance.nightTicks).toBe(9000);
+  it('die ausgelieferte Datei laeuft ohne Wurf durch den Loader', () => {
+    expect(() => loadBalance(realBalance)).not.toThrow();
   });
 
-  it('R1: 100 cm/s Gehen, Sprint x1.8, 600 cm/s² Beschleunigung', () => {
-    expect(balance.mouse.walkSpeed).toBeCloseTo(1 / 3, 12);
-    expect(balance.mouse.sprintSpeed).toBeCloseTo(0.6, 12);
-    expect(balance.mouse.accel).toBeCloseTo(1 / 15, 12);
+  it('jede umgerechnete Zahl ist endlich – 23 Blaetter, keines vergessen', () => {
+    const zahlen: number[] = [];
+    const sammle = (value: unknown): void => {
+      if (typeof value === 'number') { zahlen.push(value); return; }
+      if (value !== null && typeof value === 'object') for (const inner of Object.values(value)) sammle(inner);
+    };
+    sammle(balance);
+    expect(zahlen).toHaveLength(23);
+    expect(zahlen.filter((n) => !Number.isFinite(n))).toEqual([]);
   });
 
   it('die Fixture unterscheidet sich von der echten Balance (CLAUDE.md: Golden gegen Fixtures)', () => {

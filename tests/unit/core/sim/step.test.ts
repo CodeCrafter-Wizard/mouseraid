@@ -4,6 +4,7 @@ import type { InputFrame } from '../../../../src/core/sim/input';
 import { neutralInput } from '../../../../src/core/sim/input';
 import { SYSTEM_ORDER, SYSTEMS, step, stepPlayerMovement } from '../../../../src/core/sim/step';
 import type { MoveModifiers, StepContext } from '../../../../src/core/sim/step';
+import { catchSystem } from '../../../../src/core/systems/catch';
 import { stepPlayerMovement as fromPlayerMove } from '../../../../src/core/systems/playerMove';
 import type { TestWorld } from '../testWorld';
 import { activate, frame, makeWorld, player } from '../testWorld';
@@ -33,9 +34,12 @@ describe('SYSTEMS / SYSTEM_ORDER', () => {
   });
 
   it('nennt den Eintrag catch, obwohl die Funktion catchSystem heißt', () => {
+    // Tragende Richtung: hinter dem Namen `catch` steckt GENAU `catchSystem`. Die frühere Fassung
+    // (`run.name` ist nicht `catch`) konnte nicht rot werden – `catch` ist ein reserviertes Wort,
+    // eine Funktion kann gar nicht so heißen.
     const entry = SYSTEMS.find((s) => s.name === 'catch');
     expect(entry).toBeDefined();
-    expect(entry?.run.name).not.toBe('catch');
+    expect(entry?.run).toBe(catchSystem);
   });
 });
 

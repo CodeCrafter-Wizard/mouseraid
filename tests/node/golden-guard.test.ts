@@ -82,9 +82,12 @@ function verdict(state: GuardState): Verdict {
   };
 }
 
-/** Legt ein Wegwerf-Repo im Temp-Ordner an, in dem der Waechter selbst rot werden kann. */
-function makeRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'maeusebau-golden-'));
+/**
+ * Baut das Wegwerf-Repo in einem BEREITS angelegten Ordner auf, in dem der Waechter selbst rot werden
+ * kann. Der Ordner entsteht ausserhalb (U7): wirft `git init`/`git commit` – etwa wegen einer
+ * erzwungenen Signatur –, greift trotzdem das `finally` des Aufrufers und raeumt ihn weg.
+ */
+function initRepo(dir: string): void {
   const git = (...args: string[]): void => {
     execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
   };
@@ -100,7 +103,6 @@ function makeRepo(): string {
   write(DECISIONS, '# Entscheidungen\n\nRebaseline: erste Baseline\n');
   git('add', '-A');
   git('commit', '-q', '-m', 'Basis');
-  return dir;
 }
 
 describe('Golden-Waechter', () => {
@@ -116,8 +118,10 @@ describe('Golden-Waechter', () => {
   });
 
   it('wird in einem Wegwerf-Repo ROT bei nackter Fixture-Aenderung und GRUEN mit Rebaseline-Zeile', () => {
-    const dir = makeRepo();
+    const dir = mkdtempSync(join(tmpdir(), 'maeusebau-golden-'));
     try {
+      initRepo(dir);
+
       // 1. unveraendert -> gruen
       expect(verdict(readGuardState(dir)).ok).toBe(true);
 
