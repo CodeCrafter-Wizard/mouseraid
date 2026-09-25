@@ -811,12 +811,20 @@ Verfahren, wenn ein Golden-Wert sich ändert:
    Commit-Nachricht: die wäre bei Amend und Rebase falsch-rot, und der Index wäre vor `git add` falsch-grün.
    Ohne `git` oder ohne die Datei in `HEAD` meldet der Wächter das und geht durch.
 
-Re-Baselines (chronologisch, jeweils eine Zeile mit dem Präfix aus Schritt 3): bisher keine. Die **erste**
+Re-Baselines (chronologisch, jeweils eine Zeile mit dem Präfix aus Schritt 3). Die **erste**
 Baseline ist selbst keine Re-Baseline – `golden.json` stand vorher nicht in `HEAD`, der Wächter startet
 also bei null Zeilen. Eingefroren wurde sie in T6 gegen den Kern **nach** Ruling U6; die Zahlen des
 Plan-Trockenlaufs (vor U6) sind damit Geschichte: `ruhe-1` blieb bei `0x8db4fa20` (im ersten Tick greift
 noch keine Wand), `kreis-30` ging von `0x3b2610b0` auf `0x286097f8`, `gemischt-300` von `0x6c59058e` auf
 `0x62fcb233` und `gemischt-3000` von `0x95fd841b` auf `0xb539ff54`.
+
+Rebaseline: 2026-09-25 (M4/T3) – **neuer fünfter Fall** `mini-neutral-300` (`test-balance.json` +
+`mini-level.json`, Saat 1, viermal `idle`, 300 Ticks, Hash `0xa0ae3457`, Endlagen = die vier
+Maus-Spawns). **Keine** der vier M3-Zahlen ändert sich; `golden.json` weicht trotzdem von `HEAD` ab,
+und `tests/node/golden-guard.test.ts` sieht nur „Datei ≠ HEAD" – er kann „neuer Fall" nicht von
+„geänderte Zahl" unterscheiden. Deshalb steht die Zeile hier, obwohl nichts neu berechnet wurde.
+Der Fall ist der Node-Teil des Browser-Beweises aus M4: der Tor-Spec injiziert dieselben beiden
+eingefrorenen Fixtures über `__mb.cmd.loadFixtures` und vergleicht `hash()` damit.
 
 ### Gemessene Kosten
 Prototyp-Messungen (Node 24 / V8, Faktenblatt): `step()` mit 4 Spielern, Katze und 300 Loot kostet bei
