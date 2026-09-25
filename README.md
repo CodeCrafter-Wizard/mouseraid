@@ -1,7 +1,7 @@
 # Mäusebau
 
 Kooperatives 3D-Mäuse-Abenteuer im Browser – offline spielbar, für Handy, Tablet und PC.
-**Status:** Meilenstein M3 (Spielkern headless: eigene Mathematik, deterministische Simulation mit Golden-Hash, 2.5D-Kollision – noch ohne Bild). Live: https://codecrafter-wizard.github.io/mouseraid/
+**Status:** Meilenstein M4 (Level als einzige Quelle: erweitertes Level-Modell mit `feinkost.json`, Nav-Graph beim Laden, Level-Validator mit 12 Regeln – dazu eine Entwickler-Ansicht `?view=2d` auf Canvas 2D. Noch kein 3D-Bild, kein Spielgefühl). Live: https://codecrafter-wizard.github.io/mouseraid/
 
 ## Entwickeln
 Voraussetzung: Node ≥ 22.18 (`scripts/wait-for-deploy.mjs` lädt ein TypeScript-Modul direkt).

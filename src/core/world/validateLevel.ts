@@ -276,8 +276,13 @@ export function validateLevel(runtime: LevelRuntime, balance: Balance): LevelFin
       `Versteck "${plant.id}" erreicht keinen Wegpunkt desselben Raums mit einem freien Maus-Sweep.`);
   }
 
-  // 8/9 – das Mauseloch. Die lichte Weite wird GEOMETRISCH geprüft (Q5), nicht als Zahlenvergleich:
-  //       der Beweis ist der Sweep gegen den Stopfen, und nur er stimmt für JEDE Balance.
+  // 8/9 – das Mauseloch. Geprüft wird der STOPFEN, nicht die lichte Weite: ein Sweep der Länge 0
+  //       am Loch muss für die Maus frei und für die Katze blockiert sein – geometrisch statt als
+  //       Zahlenvergleich (Q5), denn nur so stimmt die Probe für JEDE Balance. GEMESSENE Grenze
+  //       (U3): der Stopfen deckt das Loch in jeder Weite ab, `widthCm` 2 und `widthCm` 120 bleiben
+  //       deshalb befundfrei, und die Wandlücke NEBEN dem Stopfen prüft niemand (`ueberdeckung`
+  //       fängt nur den Stopfen IN einer Wand). Dass die Maus wirklich durch die Wand kommt,
+  //       verantwortet bis M16 (Portal) der Level-Autor.
   const hole = level.mouseHole;
   if (!circleFree(hole.x, hole.z, mouse.radius, mouse.yRange, MOUSE, colliders)) {
     add('loch-sperrt-maus', 'mouseHole', 'Die Maus kommt nicht durch das Mauseloch.');

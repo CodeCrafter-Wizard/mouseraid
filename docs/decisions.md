@@ -849,6 +849,401 @@ stehen unter *Offene Punkte*, der Liste, die vor jedem Meilenstein gelesen wird.
   Bewegung – deshalb hat jedes System eigene Verhaltenstests neben dem Golden-Lauf.
 - **Der Golden-Wächter greift nur im Git-Arbeitsbaum** und ersetzt nicht das Lesen des Diffs.
 
+## M4 – Core II (2026-09-25)
+
+Das Level wird zur **einzigen Quelle** und dabei beweisbar: erweitertes Modell (Pflanzen, Beuteplätze,
+Wegpunkte, Kisten-Bauarten, vermaßtes Mauseloch), `src/data/levels/feinkost.json` als erster echter
+Laden, ein beim Laden gerechneter Nav-Graph, ein reiner `validateLevel` mit zwölf Regeln und die
+Entwickler-Ansicht `?view=2d` auf Canvas 2D. Kein Babylon, keine Grafik-Entscheidung, kein Spielgefühl –
+Bild und Balance fallen in M5/M6. Sichtbare **Spiel**-Texte entstehen keine: `src/ui/strings.ts` bleibt
+in M4 unangetastet.
+
+### Level-Modell: drei neue Listen, eine Bauart und ein vermaßtes Mauseloch (D6)
+`LevelDef` bekommt `plants`, `lootSpawns` und `nav`, jede Kiste ein `kind`; `mouseHole` wird vom `Vec2`
+zum vermaßten Portal. Die drei Listen sind **im JSON optional** (fehlend → leer) – nur so bleibt jedes
+M3-Level gültig. Die Cm-Regel aus `levelTypes.ts` gilt unverändert: Feldname mit `Cm` = Zentimeter, jedes
+andere Zahlenfeld = Einheiten (deshalb heißt es `LevelPlant.radiusCm`, nicht `radius`).
+
+- **`BoxKind` hat vier Glieder** (`crate | counter | vitrine | window`). Das Schaufenster ist eine
+  **Kiste mit `blocks: 11`** (`MOUSE|CAT|CAMERA`, ohne `SIGHT` – die Straßenlaterne aus §8.14 scheint
+  hindurch) und **keine Wand**: Wände bekommen in `generateColliders` hart `ALL_MASKS`. Eine als `crate`
+  deklarierte Glasscheibe wäre eine Lüge in den Daten, die M5 mit Holz materialisiert.
+- **Topfpflanze = Versteck** (§8.3): ein Kollider, das **umschreibende Quadrat** (Halbmaß = Radius – ein
+  Versteck darf lieber etwas zu groß sein, zu klein heißt, die Katze greift hinein), `rot 0` und damit
+  `rc = 1, rs = 0` ohne Trig. `blocks = CAT|SIGHT` = **Maske 6**, ausdrücklich **ohne `CAMERA`**: D6
+  schrieb `CAT|SIGHT|CAMERA`, und das wäre (a) der Spring-Arm aus M5, der an jedem Busch klemmt, und (b)
+  Maske **14** – die trägt schon der Regal-Baldachin, und die Farbtafel der 2D-Ansicht unterscheidet nach
+  **Maske**. Mit 14 wäre eine Pflanze im Bild nicht von einem Baldachin zu unterscheiden, und genau dafür
+  ist die Ansicht da.
+- **`mouseHole` trägt vier Pflichtfelder** (`widthCm`, `heightCm`, `thicknessCm`, `rot`); Q5 ließ die
+  Frage offen. `generateColliders` sucht **nie** im Level nach „der Wand, in der das Loch sitzt" – eine
+  Suche machte die Kollider-Reihenfolge von Geometrie abhängig, und die Kollider-`id` ist der Tiebreak
+  jeder Abfrage. Höhe und Dicke heißen wörtlich wie am Wandsegment, damit der Autor sie abschreibt; dass
+  das Ergebnis stimmt, beweist der Validator.
+- **Der Sperrkörper („Stopfen") entsteht in JEDEM Level**, genau einer je Level, `blocks = CAT|CAMERA` =
+  **Maske 10**, Halbmaß `hx = widthCm/20` (also `widthCm/2` in Zentimetern geteilt durch `CM_PER_UNIT`),
+  Höhe, Dicke und `rot` wörtlich aus dem Loch. `MOUSE` fehlt – das Loch ist der Weg der Maus; `SIGHT`
+  fehlt – die Katze soll eine Maus im Loch sehen können (Lauern, M7). Der Autor lässt in der Wand eine
+  **Lücke**; liegt der Stopfen in einer Wand statt in einer Lücke, meldet `validateLevel` `ueberdeckung`.
+- **Das Mauseloch darf auf einer Raumgrenze liegen** und wird deshalb – anders als Spawns, Pflanzen,
+  Beuteplätze und Wegpunkte – **nicht** gegen die Räume geprüft. Das ist die Regel, die M3 unter „Daten
+  werden injiziert" ausdrücklich offengelassen hat. Alles andere benutzt dieselbe **halboffene** Regel wie
+  die Spawns (`x0 ≤ x < x1`), also die, mit der `playerMove` zur Laufzeit einen Raum zuordnet.
+
+### Kollider-Reihenfolge ist Vertrag (Q4)
+**Wände → Regale → Kisten → Pflanzen → Mauseloch-Stopfen.** Ausgeschrieben, weil die Quelltexte für die
+Begründung hierher verweisen: je Wandsegment ein Kollider mit `ALL_MASKS`; je Regal **fünf** (vier Beine
+`MOUSE|SIGHT` = Maske 5, dann der Baldachin `CAT|SIGHT|CAMERA` = Maske 14 mit `y0 = gapCm`); je Kiste
+einer mit ihrer eigenen `blocks`-Maske; je Pflanze das umschreibende Quadrat mit Maske 6; zuletzt der
+eine Stopfen mit Maske 10. Neue Arten werden **angehängt**, nie eingeschoben: die `id` ist die Position
+im Ergebnis und der Gleichstands-Tiebreak *jeder* Abfrage (`moveCircle`, `rayCast3`), ein Einschub ändert
+also stumm jeden Golden-Hash eines betroffenen Levels. Die Reihenfolge steht im Kommentar von
+`generateColliders.ts` **und** hier – im Prototyp des Faktenblatts lagen die Pflanzen noch zwischen
+Regalen und Kisten, und das wäre unbemerkt geblieben, solange kein Level beides hat.
+
+### Mini-Level: drei Wegpunkte, ein versetztes Loch – und vier unveränderte Hashes (Q2)
+`tests/fixtures/core/mini-level.json` bekommt `nav.points` (drei handgesetzte Punkte, damit die Regel
+„Wegpunkte vorhanden und je Raum zusammenhängend" für **jedes** Level gleich gilt) und die vier Maße am
+Mauseloch; das Loch wandert dabei von `(-19, -14)` nach `(-10, -14)`, also aus der Südwest-Ecke. Grund für
+den Umzug: in der Ecke überdeckte der neue Stopfen die Westwand und hätte `ueberdeckung` ausgelöst. Grund,
+warum die vier M3-Golden-Hashes das **nicht** merken: `hashState` hasht den `WorldState`, nie den
+`StepContext`; der Nav-Graph ist statisch und steht gar nicht im Zustand, und `mouseHole` geht nur als
+**Parkplatz inaktiver Plätze** hinein – das Mini-Level hat vier Maus-Spawns, dort parkt also niemand.
+Gemessen nach dem gesamten Typ-, Loader- und Kollider-Umbau: `npm run core:rebaseline` druckt
+**4× `(unveraendert)`**. Weil `golden.json` sich dabei **nicht** ändert, braucht diese Fixture-Änderung
+**keine** Re-Baseline-Zeile – sie ist trotzdem eine bewusst geänderte, von Hand eingefrorene Fixture und
+steht deshalb hier.
+
+### Nav-Graph beim Laden, nicht im Zustand (D7)
+`src/core/world/levelRuntime.ts` liefert `LevelRuntime { level, colliders, nav }`. Eine Kante entsteht für
+jedes Punktpaar mit Abstand ≤ `maxEdge`, dessen `sweepCircle` mit **Katzenradius und Katzen-Höhenband**
+frei ist. `WorldState` und `StepContext` bleiben in M4 **unangetastet**: im Zustand würde der Graph
+geklont und gehasht, im Kontext braucht ihn vor M7 kein System. M7 hängt `nav` an `StepContext`, wenn
+`catBrain` ihn wirklich liest.
+
+- **`NavGraph` sind verschachtelte Arrays** (`adjacency: number[][]`, `lengths: number[][]`), nicht die
+  CSR-Form des Faktenblatts. Die für M7 wichtige Eigenschaft bleibt: die Nachbarn eines Punkts stehen
+  **aufsteigend** nach Index (die innere Schleife läuft aufsteigend über `j`), und die Kantenlänge ist
+  vorgerechnet. Bei ~60 Punkten ist die Speicherform ohne Messwert-Unterschied; M7 darf flach umbauen,
+  wenn A* es braucht.
+- **`NavPoint` trägt den aufgelösten Raumindex `room`** – ohne ihn wäre „ein Wegpunkt **desselben** Raums"
+  nicht formulierbar. Der Loader bürgt dafür, dass jeder Wegpunkt in einem Raum liegt, also ist `room`
+  nie −1.
+- **`NAV_MAX_EDGE = 12` Einheiten ist gemessen, nicht gesetzt.** `buildLevelRuntime` nimmt `maxEdge` als
+  dritten, vorbelegten Parameter, damit ein Unit-Test die Wahl zeigt statt sie zu behaupten. An
+  `feinkost` gemessen (gegen die eingefrorene `test-balance.json`): L = 8 → 55 Kanten, L = 10 → 79,
+  **L = 12 → 91**, L = 16 → 139; ab L = **10** liegt jeder Raum in **einer** Komponente (bei L = 8
+  zerfällt der Verkaufsraum in **sieben**). Gewählt ist trotzdem **12**: die Reserve gibt jeder Gasse eine
+  zweite Verbindung, damit eine verschobene Regalreihe den Raum nicht sofort zerfallen lässt – die Wahl
+  begründet also die **Reserve**, nicht der Zusammenhang. Gegen `src/data/balance.json` (Katze r 1,2
+  statt 1,0) sind es bei L = 16 **138** statt 139 Kanten; gepinnt wird ausschließlich die Fixture-Zahl,
+  gegen die echte Balance steht nur die Beziehung „ein größeres L nimmt keine Kante weg" (R6).
+  `feinkost` hat **39** Kollider (9 Wände + 4×5 Regal + 4 Kisten + 5 Pflanzen + 1 Stopfen) und **60**
+  Wegpunkte (54 `verkaufsraum`, 6 `bau`), der Graph-Bau kostet rund **0,07 ms** (Median aus 12 Läufen auf
+  dem Entwicklungsrechner, Spanne 0,06–0,13 ms; 60 Punkte = 1 770 Paare) – beim Laden gratis, auch mit dem
+  4- bis 8-fachen Handy-Faktor aus *Offene Punkte*.
+- **Wegpunkte sind handgesetzt, nicht generiert.** Ein Raster ist der Startpunkt, der Validator ist der
+  Beweis – siehe „Layout-Prüfung" unten.
+
+### „Zusammenhängend" heißt JE RAUM, nicht global
+Die Katze passt nicht durchs Mauseloch, also kann es **nie** eine Kante zwischen Verkaufsraum und Bau
+geben – eine globale Regel wäre dauerhaft rot (gemessen an der Vertrags-Probe: größte Komponente 6 von 9;
+an `feinkost` sind es global **zwei** Komponenten, 54 und 6). Geprüft wird deshalb: die Punkte **jedes**
+Raums, der Punkte hat, liegen in **einer** Komponente. Die Wegpunkte im Bau sind Vorrat; die Katze kommt
+nie hin, sie tragen in M4 nur die Erreichbarkeitsregel und später die Kolonie (M16) – mit sechs Punkten in
+zwei Reihen ist der Bau dünn besiedelt, und das ist eine M16-Notiz, kein Befund. Wer das auf mehrere
+Katzenräume ausdehnt, formuliert die Regel je **Raumgruppe**, nicht global.
+
+Damit ist auch die Engpassfrage aus *Offene Punkte* beantwortet („kein Durchgang schmaler als 2r", 12 zu
+enge Paare im Entwurfs-Level): ein für die Katze zu enger Durchgang erzeugt **keine Kante** und zerfällt
+den Raum in zwei Komponenten – `nav-getrennt` findet ihn. Für die Maus tun es `unerreichbar` und die
+Loch-Regeln. Eine eigene Durchgangs-Metrik entsteht nicht.
+
+### `validateLevel`: zwölf Regeln, deutsche Kürzel, kein Flood-Fill (D8)
+`validateLevel(runtime, balance)` ist **rein**, wirft nie, liest keine Datei und liefert eine Befundliste
+(`{ code, path, message }`, leer = in Ordnung). Die Reihenfolge der Befunde ist die Regelreihenfolge,
+innerhalb einer Regel die Definitionsreihenfolge – nur so kann ein Test `expect(codes).toEqual([…])`
+schreiben. Die Befundtexte sind **Entwickler-Rückkanal** wie `LevelError`, keine Spiel-UI.
+
+| Kürzel | Regel |
+|---|---|
+| `nav-leer` | `nav.points` ist leer – jedes Level braucht Wegpunkte |
+| `nav-getrennt` | die Punkte EINES Raums liegen in mehr als einer Komponente |
+| `nav-blockiert` | ein Wegpunkt ist für die Katze nicht frei (die Kanten sind es per Konstruktion) |
+| `spawn-blockiert` | Maus-Spawn für die Maus / Katzen-Spawn für die Katze nicht frei |
+| `loot-blockiert` | Beuteplatz für die Maus nicht frei |
+| `ausserhalb` | Pflanze/Beuteplatz/Wegpunkt in keinem Raum |
+| `unerreichbar` | kein freier Maus-Sweep zu einem Wegpunkt DESSELBEN Raums |
+| `loch-sperrt-maus` | die Maus kommt nicht durch das Mauseloch (oder nicht in einen der beiden Räume) |
+| `loch-laesst-katze` | die Katze kommt durch das Mauseloch |
+| `versteck-offen` | Versteck falsch: Maus kommt nicht hinein ODER Katze kommt hinein |
+| `regalspalt` | NICHT `mouse.yRange.y1 < gapCm/CM_PER_UNIT < cat.yRange.y1` |
+| `ueberdeckung` | zwei WIRKSAME Kollider überdecken sich im Grundriss (je Bewegten-Art) |
+
+Fünf Festlegungen dahinter:
+
+- **Die Kürzel sind sprechend und deutsch**, kein F-Nummernschema wie im Labor. Die F-Codes stehen in
+  einer Oberfläche; ein Level-Befund steht in einer Testausgabe, und dort ist
+  `expect(codes).toEqual(['nav-getrennt'])` die bessere Fehlermeldung.
+- **Kein Flood-Fill.** Das Faktenblatt empfahl einen (1,0-u-Raster, 5,3 ms). Die Kette
+  „Spawn/Loot/Versteck → freier Maus-Sweep zu einem Wegpunkt **desselben** Raums" (`unerreichbar`) plus
+  „Mauseloch → je ein Wegpunkt **beider** angrenzenden Räume" (`loch-*`) beweist dieselbe globale
+  Erreichbarkeit, kostet Mikrosekunden statt Millisekunden und zeigt bei einem Fehler die **Stelle** statt
+  einer Zellenzahl. Der Flood-Fill fand im Prototyp ohnehin keine unerreichbare Zelle. Die beiden Räume am
+  Loch ergeben sich aus `hole ± Normale(rot) · (thicknessCm/2/CM_PER_UNIT + mouseRadius)`.
+- **Die Freiheitsprobe ist ein Sweep der LÄNGE 0** (`circleFree`): in `sweepCollider` greift bei
+  `dx = dz = 0` Fall A (Startlage im Minkowski-Körper → blockiert), Fall B rechnet nichts. `moveCircle`
+  mit Delta 0 taugt **nicht** – es fragt laut M3-Konvention bewusst gar nichts ab.
+- **`ueberdeckung` wirkt JE BEWEGTEN-ART** (Maus, Katze) mit **deren** Höhenband, nicht über alle
+  Kollider, und mit der Ausnahme Wand∩Wand (Raumecken, erkannt an `id < level.walls.length`, weil die
+  Wände zuerst entstehen). Gemessen: ohne die Einschränkung auf die Art meldet schon das als sauber
+  bekannte Mini-Level **8 falsche Befunde** – jedes Regalbein gegen den Baldachin desselben Regals, die
+  sich in der Höhe gar nicht begegnen. Mit ihr: 4 Paare je Art, alle Wand∩Wand, mit der Ausnahme
+  **0 Befunde**. Ein Umkreis-Vorfilter allein ist zu grob (22/14 Paare auf demselben Level), der SAT über
+  die vier Achsen ist exakt; Berührung zählt **nicht** als Überdeckung (`≥` trennt).
+- **Zwei Regeln mehr, als D8 nennt:** `regalspalt` (aus Level **und** Balance) und `versteck-offen` (Maus
+  kommt in die Pflanze, Katze nicht). Beide stehen im Faktenblatt als gemessene Regeln und sind auf
+  `feinkost` grün. `ausserhalb` bleibt, obwohl der Loader sie schon erfüllt: ein `LevelRuntime` kann auch
+  aus einem **von Hand** gebauten `LevelDef` entstehen – genau so entstehen die roten Testfälle.
+
+**Was die Loch-Regeln NICHT prüfen** (Grenze, gemessen im T3-Review): geprüft wird der **Stopfen** – am
+Loch ist die Maus frei und die Katze blockiert. Die **lichte Weite** prüft niemand: der Stopfen deckt das
+Loch in jeder Weite ab, `widthCm: 2` und `widthCm: 120` bleiben also befundfrei. Auch die **Wandlücke
+neben** dem Stopfen ist ungeprüft – `ueberdeckung` fängt nur den Stopfen *in* einer Wand, nicht eine Wand,
+die daneben weiterläuft. Das Mini-Level hat aus genau diesem Grund einen frei stehenden Stopfen ohne
+Wandlücke (seine M3-Wände sind eingefroren). Dass die Maus wirklich durch die Wand kommt, verantwortet bis
+M16 (Portal) der Level-Autor; in `feinkost` ist es nachgerechnet: die Nordwand endet bei x = ±20 und das
+Schaufenster füllt genau `-20 … 20`, die geteilte Westwand endet bei z = ∓1 und der Stopfen füllt genau
+`-1 … 1` – Berührung, keine Überdeckung.
+
+### Der fünfte Golden-Fall hängt an eingefrorenen Fixtures – nicht an `feinkost` (R2)
+`tests/fixtures/core/golden.json` bekommt `mini-neutral-300`: `test-balance.json` + `mini-level.json`, 4×
+`idle`, Saat 1, 300 Ticks, keine neuen Fallfelder, Hash `0xa0ae3457`. Der ursprüngliche Vorschlag (Q3)
+hängte den Fall an `src/data/balance.json` und `feinkost.json`; das ist verworfen, weil jede Balance-Zahl
+bis zum Spaß-GATE nach M14 provisorisch ist und der erste Reglerdreh in M6 Vitest **und** das E2E-Tor
+gleichzeitig rot gemacht hätte. Der Fall-Typ bleibt damit wörtlich der aus M3, und
+`tests/node/golden.test.ts` wie `scripts/core-rebaseline.mjs` bleiben **unverändert**.
+
+Dieser Fall ist zugleich der Node-Teil des Browser-Beweises: der Tor-Spec injiziert genau diese beiden
+Fixtures über `__mb.cmd.loadFixtures` und vergleicht `hash()` nach `advance(300)`. `idle` ist nachweislich
+dauerhaft neutral, die Seite schickt ohne Tastendruck denselben neutralen Rahmen, und `seq`/`tick` des
+Rahmens erreichen den Zustand nicht – der Wert **muss** derselbe sein.
+
+**Ein neuer Fall braucht eine Re-Baseline-Zeile.** `tests/node/golden-guard.test.ts` sieht nur „Datei ≠
+HEAD" und kann „neuer Fall" nicht von „geänderter Zahl" unterscheiden; er zählt die Zeilen, die am
+**Zeilenanfang** mit dem Präfix beginnen. Die Zeile selbst steht im Abschnitt „Golden-Hash, Fixtures und
+das Re-Baseline-Verfahren (D13)" – und genau deshalb wird das Präfix hier nur mitten in einer Zeile und in
+Rückwärts-Anführungszeichen zitiert (Form: `Rebaseline: <Grund>`), damit dieser Absatz nicht selbst als
+Re-Baseline mitgezählt wird.
+
+### Test-Haken `window.__mb` und die URL-Parameter der Ansicht (D3)
+`src/render/view2d/hook.ts` ist **importfrei** – kein einziger Import, auch kein Typ aus dem Kern.
+Gemessener Grund (M2 und erneut M4): `tsconfig.node.json` umfasst `tests/e2e`; schreibt ein Spec
+`import type { MbHook }`, zieht das den Haken-Graphen in den Node-Typecheck. Erreicht er
+`src/platform/buildInfo.ts`, bricht `npm run typecheck` an der fehlenden Vite-Konstante `__BUILD_ID__`
+(TS2552); erreicht er eine `.css`, an TS2882. Repariert wird das im **Modul**, nie in der tsconfig –
+deshalb besteht `MbStats` nur aus Zahlen.
+
+- `advance(ticks)` rechnet n Ticks und zeichnet danach **genau ein** Bild; `tick()` **liest nur**. Ein
+  Getter, der heimlich rechnet, ist in einem Test eine Falle (`expect(__mb.tick()).toBe(300)` machte 301).
+  `advance` wirft bei nicht ganzzahligen, negativen und absurd großen Werten (`MAX_ADVANCE = 100000`) –
+  ein vertippter Aufruf soll eine Meldung liefern, nicht eine Minute rechnen.
+- `cmd` hat in M4 **genau drei** Befehle: `benchDraw(frames)`, `pixelAt(x, z)` (Farbe an einem
+  **Welt**-Punkt, damit der Tor-Spec `worldToScreen` nicht verdoppelt) und `loadFixtures(level, balance)`
+  (baut Runtime, Zustand und Kamera aus **injizierten** Daten neu auf, Saat fest 1). `validateLevel`
+  bekommt **keinen** Befehl: der Validator bleibt aus dem Spiel-Bundle und läuft in Vitest.
+- **Der Haken wird bei `?view=2d` immer installiert**, ohne `?hook=1` (anders als `window.__mbLab` im
+  Labor): ohne ihn gäbe es keinen tick-getriebenen Pfad, und die Ansicht ist reine Entwicklersache.
+- **URL-Parameter (nur Entwicklung und Tests):** `?view=2d`, `?clock=manual` (die rAF-Schleife wird nie
+  gestartet, gerechnet wird ausschließlich über `advance`), `?layers=` (Komma-Liste aus `rooms`,
+  `colliders`, `nav`, `marks`, `undershelf`, `actors`; `all` = alle, leer = keine, unbekannte Namen werden
+  ignoriert – und weil `__mb.layers()` das **Ergebnis** zurückgibt, sieht der Aufrufer den Tippfehler an
+  der fehlenden Ebene), `?w=`/`?h=` (Vorgabe 960×720), `?seed=` (Vorgabe `'1'`) und **`?room=<id>`**
+  (Raum-Ausschnitt für die Layoutprüfung: `camera2d.fitRoom` passt die Grenzen dieses Raums mit derselben
+  ganzzahligen Skala ein; ein **unbekannter** Name fällt **still** auf das ganze Level zurück – eine
+  Lesehilfe darf keinen Fehler werfen). Dieselbe Einpass-Regel gilt für `cmd.loadFixtures`, sonst liefen
+  injizierte Fixture und Vorgabe auseinander.
+- **Die Saat geht als Zeichenkette durch.** `seedRng` hasht eine Zahl als ihre Dezimalziffern,
+  `seedRng('1')` und `seedRng(1)` liefern denselben Zustand – nur deshalb stimmt der Hash der Seite mit
+  dem Golden-Fall aus Vitest überein.
+
+### Tastatur: 112 gerade, 79 diagonal – nicht 127 (D5, aus M5 vorgezogen)
+D5 schrieb „±127 mit Diagonal-Normierung auf ≤ 127". Gemessen: `playerIntent` macht daraus `mag = 1`, und
+`sprint = mag ≥ sprintRingMag` – mit `sprintRingMag` 0,95 (echte Balance) bzw. 0,9 (Fixture)
+**sprintete damit jeder Tastenschritt**. Gehen benutzt deshalb `KEY_AXIS_WALK = 112`
+(`112/127 = 0,88189`) und `KEY_AXIS_WALK_DIAG = 79` (`79·√2/127 = 0,87971`) – beide unter **beiden**
+Außenringen. Gehaltenes Shift schaltet auf 127/89 **und** setzt `BUTTON_SPRINT`; „Sprint ist Knopf ODER
+Außenring" gilt unverändert, nur nie mehr versehentlich. Dieselbe Logik benutzen die Skript-Bots aus M3
+schon (`CIRCLE_MAG` 90, `WALL_MAG` 100, `BURST_MAG` 127 nur mit dem Knopf). Der Test pinnt **keine**
+Balance-Zahl, sondern die **Beziehung** (R11: gegen `src/data/balance.json` stehen nur Ungleichungen) –
+und das gegen beide Balance-Dateien.
+
+`INTERACT` wird **gerastet**: ein Tastendruck, der zwischen zwei Ticks beginnt und endet, wäre sonst
+verloren (rAF 60 Hz gegen 30 Hz Simulation). Der Reducer merkt „seit dem letzten `frame()` gedrückt" als
+**Wahrheitswert** (die Autowiederholung des Betriebssystems setzt die Marke nicht neu) und löscht sie beim
+Lesen – genau ein Tick mit gesetztem Bit, also genau eine Flanke in `playerIntent`.
+
+`src/input/keyboard.ts` ist ein **reiner** Reducer ohne DOM, Listener und Timer; die Ereignisse verdrahtet
+`src/render/view2d/main.ts`. Die Tastatur folgt dem **Bild**: die 2D-Ansicht ist ein Grundriss mit +X nach
+rechts und **+Z nach unten** (`sy = offsetY + (z − z0)·scale`, kein Vorzeichenwechsel, eine Fehlerquelle
+weniger), also ist `W` = −Z. M5 macht die Eingabe kamerarelativ; dort fällt die Frage neu, und dann für
+beide Ansichten. Für die Polish-Runde offen und bewusst nicht in M4 erledigt: `reset()` bei Fokusverlust,
+eine DOM-Globals-Sperre für `src/input` und dynamische `import()` in den ESLint-Schichtregeln.
+
+### 2D-Ansicht: die Unter-Regal-Zone wird ZULETZT gezeichnet (D9)
+Zeichenreihenfolge = die Reihenfolge von `LAYERS`: Raumflächen → Kollider nach Maske → Nav-Kanten und
+-Punkte → Marken (Beuteplätze, Mauseloch, Spawns) → **Unter-Regal-Zonen** → Figuren. Der Prototyp
+zeichnete die Zonen zuerst, und das war **nutzlos**: der Baldachin deckt dieselbe Grundfläche ab und malt
+sie vollständig zu – im ersten Screenshot war die wichtigste Aussage der Ansicht unsichtbar. Sie gehören
+zuletzt darüber, mit `UNDER_SHELF_ALPHA = 0.55` (`globalAlpha` wird danach wieder auf 1 gesetzt); die
+Figuren bleiben trotzdem obenauf. Erkannt wird eine Zone allein an den **Masken** – hält `CAT` auf,
+`MOUSE` nicht, `y0 > 0` – und braucht kein Extrafeld im Level. Praktische Folge beim Lesen eines Bildes:
+ein Baldachin **mit** Zone ist nur an der Mischfarbe von einem **ohne** zu unterscheiden, also vergleicht
+man `?layers=rooms,colliders` gegen `?layers=rooms,colliders,undershelf`.
+
+Feste Farbtafel **nach `blocks`**, nicht nach Quelle; eine unbekannte Maske bekommt ein grelles
+`Colors.unknownMask` (`#ff00ff`) – ein neuer Kollidertyp soll auffallen, nicht sich tarnen. Alle Werte
+unten sind mit `cmd.pixelAt` an Welt-Punkten von `feinkost` nachgemessen:
+
+| Maske | Bedeutung | Farbe |
+|---|---|---|
+| 15 (`MOUSE\|CAT\|SIGHT\|CAMERA`) | Wand, Theke, Vitrine | `#3c4360` |
+| 14 (`CAT\|SIGHT\|CAMERA`) | Regal-Baldachin | `#a8642e`, mit Unter-Regal-Zone `#aacbaf` |
+| 11 (`MOUSE\|CAT\|CAMERA`) | Schaufenster (Sicht frei) | `#2a4a63` |
+| 10 (`CAT\|CAMERA`) | Mauseloch-Stopfen | `#c88a3c` |
+| 6 (`CAT\|SIGHT`) | Topfpflanze | `#2f6b3a` |
+| 5 (`MOUSE\|SIGHT`) | Regalbein | `#7a4a2e` (liegt unter dem Baldachin und ist deshalb selten zu sehen) |
+
+Dazu die Flächen: Hintergrund `#10131c`, Raum `#1e2536`, Raum mit `cameraMode: 'diorama'` **heller**
+(`#2b3350` – im Bild der Beweis, dass der Bau den Diorama-Modus trägt).
+
+**Theke und Vitrine tragen dieselbe Maske wie eine Wand und haben deshalb dieselbe Farbe.** Das ist
+gewollt – die Tafel geht nach **Wirkung**, nicht nach Möbelstück – und beim Layout-Lesen zu wissen.
+
+Weitere Festlegungen: **kein Text auf der Leinwand** (Schriftrasterung ist der einzige echte
+Plattformunterschied), **kein `devicePixelRatio`** (`canvas.width/height` werden fest gesetzt, die
+CSS-Breite skaliert – sonst hinge das Bild am Anzeigegerät), **ganzzahlige Skala**
+(`Math.max(1, Math.floor(rohskala))`, Versatz über `Math.round`, jede 1-px-Linie auf halbe Pixel), damit
+ein Screenshot nicht von Rundung zu Rundung zittert. Die Figurenkreise sind ein **Pixelmaß der Ansicht**,
+keine Balance-Zahl: sonst hinge ein Screenshot an einem Regler – beim Bildlesen heißt das umgekehrt, dass
+ein zu knapper Spawn **nicht** am Kreis abzulesen ist, sondern nachgerechnet werden muss.
+
+### Das erste Canvas-2D-Bild kostet ~1,5 s – unabhängig von den Flags
+Gemessen im kalten Chromium: die **erste** Canvas-2D-Zeichnung kostet ~**1 526 ms**, und zwar
+**unabhängig von den Kontext-Flags**. Belegt in vier Flag-Kombinationen in **zwei Reihenfolgen** im selben
+Seitenkontext: `{}` als Erstes → 1 446,8 ms, danach `{alpha:false}` 0,4 ms, `{willReadFrequently:true}`
+0,6 ms, beide zusammen 0,5 ms; in umgekehrter Reihenfolge trägt `{alpha:false, willReadFrequently:true}`
+die 1 442,7 ms und die drei anderen liegen unter 1 ms. Es sind also **einmalige Aufwärmkosten des
+Software-Rasterizers**; eine frühere Messung („mit dem Flag 1,0 ms") hatte einen bereits warmen Prozess
+erwischt. **Nicht streng je Prozess**: ein unmittelbar nach dem ersten gestarteter zweiter Browser-Prozess
+zahlte in derselben Messreihe nur noch 1,8 ms.
+
+`getContext('2d', { alpha: false, willReadFrequently: true })` steht trotzdem – aber aus einem anderen
+Grund: **`cmd.pixelAt` ruft je Probe `getImageData`**, und genau dafür ist das Flag gemacht. Dauerkosten
+hat es keine (`cmd.benchDraw(50)` auf `feinkost` mit allen Ebenen: Mittel **0,064 ms**, Maximum 0,30 ms je
+Bild), und ein Pixel ändert es nicht. Im vollen Tor fällt die Aufwärmzeit gar nicht an, weil ein früherer
+Spec schon zeichnet: `view2d.spec.ts` braucht dort **232 ms**, allein aufgerufen **1,7 s**.
+
+### Farbproben mit ± 2 je Kanal, keine Golden-PNGs (R3)
+Pixelgleichheit ist nur auf **einem** Rechner gemessen (drei Prozesse, zwei Canvas-Backends), nicht über
+Betriebssysteme. Daraus folgt:
+
+- **kein `toHaveScreenshot`, keine Golden-PNGs im Repo.** Screenshots gehen nach `test-results/`
+  (git-ignoriert) – für die Augen von Nutzer und Agent, nicht als Zusicherung. Ein Golden-PNG wäre
+  außerdem eine Binärdatei, die bei jeder Layout-Änderung von Hand neu abgesegnet werden müsste.
+- Der Tor-Spec vergleicht Farben nur an **einfarbigen** Stellen, dort in der **Mitte der Fläche** und mit
+  **± 2 je Kanal**; eine Kantenprobe oder exakte Gleichheit könnte an der Rasterung des Linux-CI-Runners
+  scheitern. Die Wandprobe sitzt in der **Theke** (dieselbe Maske 15, groß genug für eine Flächenmitte).
+- Die Unter-Regal-Zone ist per Konstruktion eine **Mischfarbe**; dort prüft der Spec nur „weicht um mehr
+  als die Toleranz von Hintergrund **und** reiner Baldachinfarbe ab".
+- Die **exakte** Tafel und die **Reihenfolge** beweist ein Vitest-Test mit aufzeichnendem Kontext.
+- Plattformunabhängig und deshalb erlaubt: Anteil Nicht-Hintergrund-Pixel, die Schwellen aus `stats()`
+  (30/40/60 gegen die gemessenen 39/60/91) und die Gleichheit **zweier Aufrufe in derselben Sitzung**
+  (FNV-1a-Pixelhash, in der Seite gerechnet – nur die Zahl verlässt sie).
+
+### Seiten-Anbindung, Schichtgrenzen und Bundle
+`src/main.ts` bekommt sechs Zeilen: bei `?view=2d` ein eigenes `<div class="shell-stage">` **nach**
+`mountShell` (die Hülle ruft `root.replaceChildren()` und löschte ein früher eingehängtes Element) und ein
+**dynamischer** `import()` – so bleibt der Kern aus dem Einstiegs-Chunk.
+`tests/e2e/offline-smoke.spec.ts` bleibt wortgleich gültig und wird nicht angefasst.
+
+- **Neue ESLint-Grenzen:** `src/render/**` darf `src/net/**` und `src/lab/**` nicht importieren (Babylon
+  bleibt dort erlaubt – M5 braucht es); `src/input/**` darf **nur** `src/core` importieren. `src/ui/**`
+  bekommt die Regel bewusst **nicht**: `src/ui/strings.ts` importiert einen **Typ** aus
+  `src/net/failureCodes` (nötig für das `satisfies Record<FailureCode, …>`), und die Basisregel
+  `no-restricted-imports` kennt kein `allowTypeImports` (gemessen). In beiden neuen Blöcken steht
+  `LEGACY_IMPORT` noch einmal: Flat Config **ersetzt** die Optionen einer Regel je passendem Block, sie
+  summiert sie nicht – sonst fiele das Legacy-Verbot dort still weg.
+- **Der Haken-Wächter bewacht drei Einstiege** – `src/lab/labHook.ts`, `src/render/view2d/hook.ts` und
+  `src/render/view2d/draw.ts` (der Tor-Spec importiert die Farbtafel daraus, statt Hexwerte zu
+  verdoppeln) – gegen dieselbe verbotene Menge, dazu den Fall „`hook.ts` ist importfrei, der Graph ist die
+  Datei selbst". Die Gegenprobe läuft über `src/main.ts`: sie erreicht `buildInfo`, ein Stylesheet **und**
+  `view2d/main.ts`, und beweist damit zugleich, dass der Wächter `import()` sieht.
+- **Das CSS der Bühne steht in `src/ui/shell.css`**; `src/render/view2d/**` importiert kein CSS – dann
+  bleibt die CSS-Prüfung des Wächters für die Ansicht trivial grün, und `lab.html` bezahlt **zwei
+  ungenutzte Selektoren**.
+- **`scripts/check-dist.mjs` und `vite.config.ts` bleiben unverändert.** „Spiel-JS 10,1 kB" war immer eine
+  **Report**-Zeile; zugesichert sind 900 kB gzip. Gemessen nach M4: Spiel-JS **22,3 kB gzip**, Lab-JS
+  61,5 kB gzip, Precache **17 Dateien, 286,8 kB** (vorher 16). Der dynamische Chunk (33,98 kB roh /
+  12,41 kB gzip) ist `.js` und damit von `globPatterns` erfasst; `collectJsGraph` folgt `import()`, er
+  zählt also zum Spiel-Budget – gewollt. Der Einstiegs-Chunk bleibt bei 0,51 kB (0,37 kB gzip).
+- **E2E-Tor: 13 → 14 Tests.** `tests/e2e/view2d.spec.ts` trägt **kein** `@local`: Canvas 2D braucht weder
+  GPU noch Berechtigung noch echte Netzschnittstelle, und ohne `finishRun` auch kein
+  `local-network-access`.
+
+### Layout-Prüfung von `feinkost.json`
+`feinkost.json` ist ein **erster Entwurf, kein Layout-Urteil**: ob sich der Laden gut spielt, zeigt erst
+M6. M4 beweist nur, dass er widerspruchsfrei ist – `validateLevel` 0 Befunde (mit **beiden** Balancen) und
+die Struktur-Schwellen des Tor-Specs. Layout-Änderungen sind billig (nur JSON) und passieren mit
+2D-Screenshots; korrigiert wird **ausschließlich** die JSON-Datei, nie ein Test und nie eine Regel. Was
+beim Lesen der Bilder zu prüfen ist – und was die Proben gefunden haben:
+
+- **Gassenbreite gegen den Katzendurchmesser.** Eine Gasse muss deutlich breiter sein als 2·`cat.radius`;
+  in `feinkost` sind es 6 Einheiten zwischen zwei Regalreihen gegen 2,4 = das 2,5-fache. Zu enge Gassen
+  fallen nicht durch, sie erzeugen nur **keine Kante** – und dann ist `nav-getrennt` der Befund, nicht
+  „zu eng".
+- **Ein Raster allein erreicht die Gassen nicht.** Fallen die Rasterzeilen in die Regalbänder, zerfällt
+  der Verkaufsraum in mehrere Komponenten, obwohl jede Gasse begehbar ist: die Regalreihen sind breiter
+  als `NAV_MAX_EDGE`, es gibt also keinen Umweg außen herum. Erster Layout-Befund der Planung: ein reines
+  Raster zerfiel in **drei** Komponenten. Die Antwort sind handgesetzte Punkte **in jeder Gasse** – dafür
+  sind die Wegpunkte handgesetzt und nicht generiert.
+- **Eine Topfpflanze kann einen Korridor verstopfen.** Eine Pflanze (Radius 2,5) in einem gut fünf
+  Einheiten breiten Gang zwischen Regal und Wand lässt der Katze (r 1,2) nichts übrig; der Bereich
+  dahinter wird zur eigenen Komponente. Im Bild sofort zu sehen, in den Zahlen nur als `nav-getrennt`.
+- **Unter-Regal-Zonen müssen sichtbar sein.** Im Bild mit `undershelf` tragen genau die vier Regale die
+  Mischfarbe, Theke und Vitrine **nicht** – das ist der optische Beweis für „Mäuse passen unter die
+  Regale, nicht unter die Theke". Die vier Regal-Beuteplätze liegen bewusst **unter** den Baldachinen und
+  sind deshalb im Bild mit `undershelf` von der Zone überdeckt.
+- **Das Mauseloch braucht auf JEDER Seite einen Wegpunkt** und eine echte Lücke in der Wand; ohne beides
+  fällt `loch-*` oder `ueberdeckung`.
+- **Spawns am Rand prüfen:** ein Katzen-Spawn direkt neben einer Pflanze ist schnell zu knapp, und ein
+  Bild je Raum (`?room=<id>&layers=…,marks,actors`) zeigt das schneller als jede Zahl – die Maus-Spawns
+  liegen im Bau und sind im Laden-Ausschnitt gar nicht zu sehen.
+- **Die Bilder kommen aus der Ansicht, nicht aus einem Skript.** `?room=verkaufsraum` / `?room=bau`
+  schneiden einen Raum aus (`camera2d.fitRoom`, dieselbe ganzzahlige Skala), `?layers=` schaltet
+  Ebenen; ein unbekannter Raumname fällt still auf das ganze Level zurück. Der Vergleich
+  `?layers=rooms,colliders` gegen `?layers=rooms,colliders,undershelf` ist der einzige Weg, eine
+  Unter-Regal-Zone von einem nackten Baldachin zu unterscheiden.
+
+Die Schluss-Bildprüfung von M4 (sechs Ansichten: ganzes Level mit und ohne Zonen, Verkaufsraum dreifach,
+Bau) fand **keinen** Befund; `feinkost.json` ist deshalb unverändert geblieben, und die gepinnten Zahlen
+39 / 60 / 91 stimmen in allen sechs Ansichten mit denen aus Vitest überein.
+
+Nach **jeder** Korrektur an `feinkost.json` laufen der Validator und die gepinnten Zahlen erneut:
+Kollider-, Wegpunkt- und Kantenzahl sind **gepinnt**, eine Layout-Änderung kostet also bewusst eine Zeile
+im Test – das ist billiger als ein Playwright-Lauf und macht jede Layout-Änderung sichtbar.
+
+### Was in M4 NICHT entschieden wurde
+- **Spielgefühl, Gassenbreiten als Balance und Kameramodi** – das ist M5/M6 und das Spaß-GATE nach M14.
+- **Theke als zweites Versteck?** Mäuse passen in M4 **nicht** unter die Theke (massive Kiste, y 0…100
+  cm): die Flucht unter die Regale ist der Fairness-Hebel der Jagd, und eine zweite Zuflucht machte die
+  „lauern"-Mechanik aus M7 sinnlos. Die Frage geht mit auf die Liste des **Spaß-GATEs nach M14** –
+  zusammen mit den Regalabständen und Gassenbreiten, dem Layout des Ladens selbst und der Frage, wie dicht
+  der Bau mit Wegpunkten besiedelt sein muss (heute sechs, Vorrat für M16).
+- **Eine Legende in der Ansicht.** Sie wäre sichtbarer Text und müsste nach `src/ui/strings.ts`, also in
+  jeden ausgelieferten Build und jede spätere Übersetzung. Will der Nutzer sie später doch, entsteht ein
+  eigener Ast `S.dev.view2d.*` mit einer Notiz hier.
+
 ## Offene Punkte
 
 - **Update-Suche offline:** Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).
@@ -869,11 +1264,17 @@ stehen unter *Offene Punkte*, der Liste, die vor jedem Meilenstein gelesen wird.
 - **Fake-Kamera-Smokes auf dem Linux-CI-Runner ungemessen:** beide Specs laufen bisher nur lokal auf Windows-Chromium (je 3× stabil). Der fremde Smoke baut dabei eine echte `RTCPeerConnection` auf. Fällt einer in der CI um, bekommt er dort `{ tag: '@local' }` und der Grund kommt hierher (C7) – der Test wird nicht abgeschwächt.
 - **Balance-Zahlen sind geraten (M3):** Tempi, Beschleunigung, Reibung und die Lautstärkekurve stehen in keinem Dokument. Sie gehen mit dem Regler-Panel aus M6 ans Spaß-GATE nach M14 – Herleitung, Formeln und der Stand der Prüfungen im Abschnitt „Balance: jede Zahl ist provisorisch".
 - **In M3 verbraucht kein System Zufall:** `nextU32` & Co. werden nur von `seedRng` und von Testcode gerufen, der `rng`-Anteil des Zustands bleibt nach dem Saaten konstant. Die Golden-Läufe belegen also die **Verankerung** des RNG im Zustand, nicht sein Fortschreiten (das deckt `rng.test.ts` mit einem eingefrorenen sfc32-Vektor ab). Das erste zufallsnutzende System ist M7 – dort ist auch der erste Ort, an dem eine Drift entstehen kann.
-- **Cross-Engine-Hash ungeprüft:** lokal ist nur Chromium installiert, Vitest läuft in Node – beides V8. Ob Firefox und Safari denselben Zustandshash liefern, entscheidet M20. Bis dahin behauptet kein Text und kein Testname „cross-engine".
+- **Cross-Engine-Hash ungeprüft:** lokal ist nur Chromium installiert, Vitest läuft in Node – beides V8. Seit M4 läuft der Kern auch im Browser (`__mb.cmd.loadFixtures` + `advance(300)` gegen den Golden-Fall `mini-neutral-300`), die Frage ist also **messbar** geworden – beantwortet ist sie nicht: Node und Chromium sind dieselbe Engine. Ob Firefox und Safari denselben Zustandshash liefern, entscheidet M20. Bis dahin behauptet kein Text und kein Testname „cross-engine".
 - **`npm run core:bench` misst nur diesen Rechner:** auf dem Handy ist mit dem 4- bis 8-fachen zu rechnen (kein Gerät zum Messen). Die Zahlen im Abschnitt „M3 – Core I" tragen diesen Vorbehalt.
 - **`hashState` kostet ~145 µs statt der ~16 µs des Prototyps:** der Unterschied ist der Feldpfad, den die Vertragsfassung je Zahl für die NaN-Diagnose zusammensetzt. In M3 belanglos (der Hash läuft nicht je Tick). Wird er je zum Engpass, ist der Ausweg ein schneller Lauf ohne Pfade plus ein zweiter Lauf mit Pfaden bei `NaN` – nicht eine schwächere Diagnose.
 - **Die sechs Katzen-/Kolonie-Systeme sind leere Stümpfe:** jeder Golden-Hash aus M3 gilt nur bis zum ersten echten Verhalten (M7, M13, M16). Der Umbau braucht dann eine Re-Baseline mit Begründung – das ist erwartet, kein Fehler.
-- **Level-Validator und `feinkost.json` fehlen (M4):** das Mini-Level prüft nur Loader, Kollider-Erzeugung und Kollision. „Kein Durchgang schmaler als 2r" und „keine zwei wirksamen Kollider überlappen sich im Grundriss" (je Bewegten-Art) sind in M4 fällig – im Entwurfs-Level fand die Probe für die Katze 12 zu enge Paare, also echte Layout-Fehler. Dort fällt auch die Regel für das Mauseloch, das der Loader heute bewusst nicht gegen Raumgrenzen prüft.
+- **Level-Validator und `feinkost.json`:** erledigt in M4 – `validateLevel` mit zwölf Regeln, die Engpassfrage beantwortet `nav-getrennt`, die Überdeckung `ueberdeckung` je Bewegten-Art, und das Mauseloch darf auf einer Raumgrenze liegen (Abschnitt „M4 – Core II").
+- **Die Loch-Regeln prüfen den Stopfen, nicht die Wand (M4, Grenze):** eine zu enge oder zu weite Öffnung (`widthCm` 2 oder 120) bleibt befundfrei, und die Wandlücke neben dem Stopfen prüft niemand. Bis M16 (Portal) verantwortet der Level-Autor, dass die Maus wirklich durch die Wand kommt; in `feinkost` ist es nachgerechnet, im Mini-Level steht der Stopfen bewusst frei.
+- **Für `feinkost.json` gibt es keinen gepinnten Zustandshash (M4, Absicht):** bewiesen wird das Level über den Validator (0 Befunde) und die Struktur-Schwellen des Tor-Specs; der Zustandshash hängt allein an den eingefrorenen Fixtures. Jede Zahl in `src/data/balance.json` ist bis zum Spaß-GATE nach M14 provisorisch, und ein Reglerdreh in M6 darf keinen Testlauf rot machen. Wer später doch einen Hash auf die echten Daten setzt, holt sich genau dieses Problem ins Haus.
+- **Der Browser-Beweis hängt an `__mb.cmd.loadFixtures`:** geht dieser Befehl verloren oder ändert er still die Saat, prüft der Tor-Spec nur noch Struktur und Farben, ohne dass etwas rot wird. Deshalb stehen `advance(300) === 300` **und** der Hash-Vergleich im selben Test.
+- **`src/render/view2d/loop.ts`, `src/input/keyboard.ts` und die Tastatur-Verdrahtung sind Leihgaben:** M5 ersetzt Schleife und Verdrahtung durch `src/modes/fixedLoop.ts` und `src/modes/soloSession.ts` (injizierbare Uhr, Interpolation, `visibilitychange`) und macht die Eingabe kamerarelativ. Die Tastatur ist bewusst aus M5 vorgezogen, weil eine Ansicht ohne Eingabe nichts zeigt. Wer hier Interpolation oder Kamera-Relativität einbaut, baut M5 zweimal. Offen für die Polish-Runde: `reset()` bei Fokusverlust, DOM-Globals-Sperre für `src/input`, dynamische `import()` in den Schichtregeln.
+- **Pixelgleichheit über Betriebssysteme bleibt ungemessen (M4):** nur drei Prozesse und zwei Canvas-Backends auf diesem Rechner. Bleibt eine Farbprobe auf dem Linux-Runner rot, ist die Antwort „weicht um mehr als die Toleranz vom Hintergrund ab" – nicht eine größere Toleranz, die jede Farbe akzeptiert. Ebenfalls ungemessen: `?view=2d` über den Service Worker auf Pages (nur über `vite preview` geprüft), die Leistung der Ansicht am Handy (kein Gerät) und Firefox/WebKit-Pixel.
+- **`--enable-unsafe-swiftshader` ist ein Zufallsgeschenk:** es steht in `FAKE_MEDIA_ARGS` für WebGL und gilt allen drei Playwright-Projekten. Fällt es je heraus, ändert sich das Zeitverhalten der 2D-Specs; mit `willReadFrequently: true` ist die Ansicht davon unabhängig.
 
 ## Beobachten (vor jedem Release prüfen)
 - Chrome „Local Network Access Restrictions for WebRTC" (WebRTC ins lokale Netz nur noch nach Berechtigungsabfrage): chromestatus.com/feature/5065884686876672
