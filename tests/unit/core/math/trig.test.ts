@@ -163,6 +163,20 @@ describe('trig: normalizeAngle', () => {
       expect(r).toBeLessThan(PI);
     }
   });
+
+  it('bleibt an den Naehten grosser TAU-Vielfacher im Bereich', () => {
+    // Ohne die zwei Nachkorrekturen in normalizeAngle rutscht das Ergebnis ab |a| ~ 1.26e6 durch
+    // Rundung von `a - k*TAU` knapp unter -PI bzw. auf PI (gemessen: 121 149 Verletzungen in diesem
+    // Gitter). Das dichte Gitter oben endet bei 1000 und sieht das nicht.
+    let violations = 0;
+    for (let k = -200000; k <= 200000; k += 1) {
+      for (const d of [0, PI, -PI, PI - 1e-13, -PI + 1e-13]) {
+        const r = normalizeAngle(k * TAU + d);
+        if (!(r >= -PI && r < PI)) violations += 1;
+      }
+    }
+    expect(violations).toBe(0);
+  });
 });
 
 describe('trig: sqrt', () => {

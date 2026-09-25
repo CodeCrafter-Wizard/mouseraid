@@ -66,14 +66,16 @@ export function nextFloat(rng: RngState): number {
 
 /**
  * Gleichverteilt in [0, n) – mit VERWERFUNG, also ohne Modulo-Verzerrung. MUTIERT `rng`.
- * `n` muss eine positive ganze Zahl sein, sonst `RangeError`.
+ * `n` muss eine positive ganze Zahl <= 2^32 sein, sonst `RangeError` – oberhalb von 2^32 waere
+ * `limit` 0, jeder Rohwert wuerde verworfen und der Notausgang liefert dann still nur die untere
+ * Haelfte des Bereichs (und verbraucht 65 Rohwerte, was einen Golden-Hash verschiebt).
  *
  * Gemessen ist die Verzerrung des reinen Modulo bei kleinen n winzig (2.33e-8 % bei n = 3); die
  * faire Fassung kostet im Normalfall trotzdem nichts und macht die Eigenschaft beweisbar.
  */
 export function nextInt(rng: RngState, n: number): number {
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new RangeError(`nextInt braucht eine positive ganze Zahl, bekam: ${n}`);
+  if (!Number.isInteger(n) || n <= 0 || n > TWO_32) {
+    throw new RangeError(`nextInt braucht eine positive ganze Zahl <= 2^32, bekam: ${n}`);
   }
   // Alles ab `limit` faellt in einen unvollstaendigen Block und wird verworfen.
   const limit = TWO_32 - (TWO_32 % n);

@@ -78,8 +78,10 @@ export function sin(x: number): number {
   const k = Math.round(x / PI);
   const r = x - k * PI;
   const s0 = sinCore(r);
-  // `k % 2` statt `k & 1`: bei sehr grossen Argumenten liegt k ausserhalb von int32, und `&`
-  // wuerde still falsch rechnen. `%` gilt fuer jede ganze Zahl (auch negative: -3 % 2 = -1).
+  // `k % 2` statt `k & 1`: bei sehr grossen Argumenten (|x| > 2^31 * PI ~ 6.7e9) liegt k ausserhalb
+  // von int32, und `&` wuerde still falsch rechnen. `%` gilt fuer jede ganze Zahl (auch negative:
+  // -3 % 2 = -1). Vorsorglich: im zugesicherten Bereich ist der Unterschied nicht beobachtbar, jenseits
+  // davon garantiert `sin` ohnehin nur noch die Klemme auf [-1, 1] – deshalb gibt es dafuer keinen Test.
   const s = k % 2 === 0 ? s0 : -s0;
   // Klemmen auf [-1, 1]: bei riesigen Argumenten laesst die Ausloeschung in `x - k*PI` den Rest
   // knapp ueber PI/2 rutschen, und dort liegt das Polynom bis zu 6.7e-10 ueber 1 (gemessen bei

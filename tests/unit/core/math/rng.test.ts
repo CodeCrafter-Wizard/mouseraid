@@ -180,6 +180,15 @@ describe('rng: nextInt', () => {
     for (const n of [0, -1, -1000]) expect(() => nextInt(s, n)).toThrow(RangeError);
     for (const n of [1.5, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => nextInt(s, n)).toThrow(RangeError);
   });
+
+  it('wirft bei n > 2^32 statt still nur die untere Haelfte zu liefern', () => {
+    // Ohne den Wurf waere `limit` 0: jeder Rohwert verworfen, 65 Rohwerte verbraucht, Ergebnis < 2^32.
+    const s = seedRng('gross');
+    const before = { ...s };
+    expect(() => nextInt(s, 2 ** 33)).toThrow(RangeError);
+    expect(s).toEqual(before); // kein Rohwert verbraucht
+    expect(nextInt(s, 2 ** 32)).toBeGreaterThanOrEqual(0); // die Grenze selbst bleibt erlaubt
+  });
 });
 
 describe('rng: nextRange', () => {

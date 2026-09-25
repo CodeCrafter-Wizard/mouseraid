@@ -56,7 +56,7 @@ const FNV_PRIME = 16777619;
 /**
  * Neuer Hasher. Startwert 0x811c9dc5, Schritt `h = Math.imul(h ^ byte, 16777619) >>> 0`.
  * `Math.imul` ist erlaubt und exakt spezifiziert (ECMA-262 21.3.2.20) – eine gewoehnliche
- * Multiplikation verliere oberhalb von 2^53 Bits.
+ * Multiplikation verliert oberhalb von 2^53 Bits.
  */
 export function createHasher(): Hasher {
   let h = FNV_OFFSET;
