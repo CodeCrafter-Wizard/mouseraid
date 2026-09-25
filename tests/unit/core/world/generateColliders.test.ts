@@ -37,6 +37,11 @@ function clearBetween(a: Collider, b: Collider): number {
 // dann der Baldachin. Regal 0 beginnt hinter den 4 Wänden.
 const SHELF_BASE: readonly number[] = [4, 9];
 
+// Die Kiste steht hinter den 4 Wänden und den 2x5 Regal-Kollidern. Bewusst von VORNE gezählt und
+// nicht über `length - 1`: seit M4 hängt hinter jedem Level der Mauseloch-Stopfen.
+const BOX_INDEX = 14;
+const PLUG_INDEX = 15;
+
 function legsOf(shelf: number): Collider[] {
   const base = SHELF_BASE[shelf] ?? -1;
   return [at(base), at(base + 1), at(base + 2), at(base + 3)];
@@ -47,20 +52,23 @@ function canopyOf(shelf: number): Collider {
 }
 
 describe('generateColliders – Anzahl, Reihenfolge, Masken', () => {
-  it('4 Wände + 2 Regale a 5 + 1 Kiste = 15 Kollider mit fortlaufenden IDs ab 0', () => {
-    expect(colliders).toHaveLength(15);
-    expect(colliders.map((collider) => collider.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  it('4 Wände + 2 Regale a 5 + 1 Kiste + 1 Stopfen = 16 Kollider mit fortlaufenden IDs ab 0', () => {
+    expect(colliders).toHaveLength(16);
+    expect(colliders.map((collider) => collider.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
-  it('die Reihenfolge ist Wände -> Regale -> Kisten, jede Gruppe in Definitionsreihenfolge', () => {
+  it('die Reihenfolge ist Wände -> Regale -> Kisten -> Pflanzen -> Stopfen (Q4)', () => {
     const wall = MOUSE | CAT | SIGHT | CAMERA;
     const leg = MOUSE | SIGHT;
     const canopy = CAT | SIGHT | CAMERA;
+    const plug = CAT | CAMERA;
+    // Die Fixture hat keine Pflanzen; die Pflanzen-Stufe prüft der Fall „mit Pflanzen" weiter unten.
     expect(colliders.map((collider) => collider.blocks)).toEqual([
       wall, wall, wall, wall,
       leg, leg, leg, leg, canopy,
       leg, leg, leg, leg, canopy,
       wall,
+      plug,
     ]);
   });
 
@@ -70,6 +78,7 @@ describe('generateColliders – Anzahl, Reihenfolge, Masken', () => {
       5, 5, 5, 5, 5,
       6, 6, 6, 6, 6,
       7,
+      8,
     ]);
   });
 
@@ -77,12 +86,17 @@ describe('generateColliders – Anzahl, Reihenfolge, Masken', () => {
     expect(generateColliders(level)).toEqual(colliders);
   });
 
-  it('ein Level ohne Grundformen liefert keine Kollider', () => {
+  it('ein Level ohne Grundformen liefert GENAU den Mauseloch-Stopfen', () => {
+    // `mouseHole` ist Pflichtfeld, der Stopfen entsteht also in JEDEM Level – auch in einem ohne
+    // eine einzige Wand. Vor M4 war dieses Ergebnis leer.
     const bare = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
     bare['walls'] = [];
     bare['shelves'] = [];
     bare['boxes'] = [];
-    expect(generateColliders(loadLevel(bare))).toHaveLength(0);
+    const bareColliders = generateColliders(loadLevel(bare));
+    expect(bareColliders).toHaveLength(1);
+    expect(bareColliders[0]?.blocks).toBe(CAT | CAMERA);
+    expect(bareColliders[0]?.occluderGroup).toBe(1);
   });
 
   it('rc/rs sind cos(rot)/sin(rot) und bilden einen Einheitsvektor', () => {
@@ -209,7 +223,7 @@ describe('generateColliders – Regal: vier Beine + ein Baldachin', () => {
 
 describe('generateColliders – Kiste', () => {
   it('die Kiste kommt unverändert durch, nur cm werden zu Einheiten', () => {
-    const box = at(14);
+    const box = at(BOX_INDEX);
     expect(box.cx).toBe(10);
     expect(box.cz).toBe(-8);
     expect(box.hx).toBe(1.5);
@@ -224,7 +238,8 @@ describe('generateColliders – Kiste', () => {
     // Die Fixture-Kiste ist quadratisch (hx = hz = 1.5) und steht auf dem Boden (y0Cm = 0) –
     // damit fallen ein fehlendes "/ CM_PER_UNIT" bei y0 (0 = 0) UND ein Tausch hx<->hz (1.5 = 1.5)
     // nicht auf (Review Minor 2). Diese Variante mit unterschiedlichen Halbmaßen und y0Cm > 0
-    // deckt beides auf.
+    // deckt beides auf. Gegriffen wird die Kiste seit M4 über BOX_INDEX statt über `length - 1`:
+    // am Ende steht jetzt der Mauseloch-Stopfen.
     const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
     const box = (raw['boxes'] as Record<string, unknown>[])[0] as Record<string, unknown>;
     box['y0Cm'] = 5;
@@ -232,12 +247,101 @@ describe('generateColliders – Kiste', () => {
     box['hx'] = 2;
     box['hz'] = 1;
     const variantColliders = generateColliders(loadLevel(raw));
-    const variantBox = variantColliders[variantColliders.length - 1];
+    const variantBox = variantColliders[BOX_INDEX];
     if (variantBox === undefined) throw new Error('Kiste fehlt');
     expect(variantBox.y0).toBe(0.5); // y0Cm 5 / CM_PER_UNIT
     expect(variantBox.y1).toBe(4); // y1Cm 40 / CM_PER_UNIT
     expect(variantBox.hx).toBe(2);
     expect(variantBox.hz).toBe(1);
+  });
+});
+
+describe('generateColliders – Topfpflanze (M4)', () => {
+  /** Zwei Pflanzen in die Fixture setzen: eine quadratische Probe und eine zweite für die Reihenfolge. */
+  function withPlants(): Collider[] {
+    const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
+    raw['plants'] = [
+      { id: 'busch-west', x: -12, z: 0, radiusCm: 25, heightCm: 60 },
+      { id: 'busch-ost', x: 12, z: 0, radiusCm: 15, heightCm: 40 },
+    ];
+    return generateColliders(loadLevel(raw));
+  }
+
+  it('eine Pflanze wird zu GENAU EINEM Kollider – dem umschreibenden Quadrat', () => {
+    const withTwo = withPlants();
+    expect(withTwo).toHaveLength(18); // 16 wie bisher + 2 Pflanzen
+    const plant = withTwo[15];
+    if (plant === undefined) throw new Error('Pflanze fehlt');
+    expect(plant.cx).toBe(-12);
+    expect(plant.cz).toBe(0);
+    expect(plant.hx).toBe(2.5); // radiusCm 25 / CM_PER_UNIT – Halbmaß = Radius, nicht Durchmesser
+    expect(plant.hz).toBe(2.5);
+    expect(plant.y0).toBe(0);
+    expect(plant.y1).toBe(6); // heightCm 60 / CM_PER_UNIT
+  });
+
+  it('blockt CAT|SIGHT (6) – nicht MOUSE (Versteck) und nicht CAMERA (Boom aus M5)', () => {
+    const plant = withPlants()[15];
+    expect(plant?.blocks).toBe(6);
+    expect(plant?.blocks).toBe(CAT | SIGHT);
+    expect((plant?.blocks ?? 0) & MOUSE).toBe(0);
+    expect((plant?.blocks ?? 0) & CAMERA).toBe(0);
+  });
+
+  it('steht EXAKT ungedreht: rot 0, rc 1, rs 0 – ein Kreis hat keine Drehung', () => {
+    const plant = withPlants()[15];
+    expect(plant?.rot).toBe(0);
+    expect(plant?.rc).toBe(1);
+    expect(plant?.rs).toBe(0);
+  });
+
+  it('die Pflanzen stehen zwischen Kisten und Stopfen, jede mit eigener occluderGroup', () => {
+    const withTwo = withPlants();
+    expect(withTwo.map((collider) => collider.blocks).slice(14)).toEqual([
+      MOUSE | CAT | SIGHT | CAMERA, // Kiste
+      CAT | SIGHT, CAT | SIGHT, // die beiden Pflanzen
+      CAT | CAMERA, // Stopfen
+    ]);
+    expect(withTwo.map((collider) => collider.occluderGroup).slice(14)).toEqual([7, 8, 9, 10]);
+    expect(withTwo[16]?.hx).toBe(1.5); // die zweite Pflanze: radiusCm 15
+  });
+});
+
+describe('generateColliders – Mauseloch-Stopfen (M4)', () => {
+  it('genau einer, am Ende, mit den Maßen aus mouseHole', () => {
+    const plug = at(PLUG_INDEX);
+    expect(plug.id).toBe(15);
+    expect(plug.cx).toBe(-10);
+    expect(plug.cz).toBe(-14);
+    expect(plug.hx).toBe(1); // widthCm 20 / 2 / CM_PER_UNIT
+    expect(plug.hz).toBe(0.5); // thicknessCm 10 / 2 / CM_PER_UNIT
+    expect(plug.y0).toBe(0);
+    expect(plug.y1).toBe(20); // heightCm 200 / CM_PER_UNIT
+  });
+
+  it('blockt CAT|CAMERA (10): nicht MOUSE (das Loch IST ihr Weg), nicht SIGHT (Lauern, M7)', () => {
+    const plug = at(PLUG_INDEX);
+    expect(plug.blocks).toBe(10);
+    expect(plug.blocks).toBe(CAT | CAMERA);
+    expect(plug.blocks & MOUSE).toBe(0);
+    expect(plug.blocks & SIGHT).toBe(0);
+  });
+
+  it('nimmt Drehung, rc und rs AUSGESCHRIEBEN aus mouseHole.rot – es wird keine Wand gesucht', () => {
+    const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
+    const hole = raw['mouseHole'] as Record<string, unknown>;
+    hole['rot'] = Math.PI / 2;
+    hole['widthCm'] = 30;
+    hole['thicknessCm'] = 20;
+    hole['heightCm'] = 150;
+    const plug = generateColliders(loadLevel(raw))[PLUG_INDEX];
+    if (plug === undefined) throw new Error('Stopfen fehlt');
+    expect(plug.rot).toBe(Math.PI / 2);
+    expect(plug.rc).toBeCloseTo(0, 12);
+    expect(plug.rs).toBeCloseTo(1, 12);
+    expect(plug.hx).toBe(1.5);
+    expect(plug.hz).toBe(1);
+    expect(plug.y1).toBe(15);
   });
 });
 

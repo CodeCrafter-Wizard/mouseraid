@@ -1,5 +1,5 @@
 {
-  "_hinweis": "EINGEFROREN. Kein Laden, sondern die kleinste Geometrie, an der Loader, Kollider-Erzeugung und (ab T3) Kollision pruefbar sind: 1 Raum 40x30 Einheiten, 4 Waende auf den Raumkanten, 2 Regale (eines gedreht), 1 Kiste OHNE blocks (prueft die Vorgabe ALL_MASKS), 4 Maus-Spawns, 1 Katzen-Spawn, Mauseloch in der Suedwest-Ecke.",
+  "_hinweis": "EINGEFROREN. Kein Laden, sondern die kleinste Geometrie, an der Loader, Kollider-Erzeugung und Kollision pruefbar sind: 1 Raum 40x30 Einheiten, 4 Waende auf den Raumkanten, 2 Regale (eines gedreht), 1 Kiste OHNE blocks (prueft die Vorgabe ALL_MASKS) und OHNE kind (prueft die Vorgabe 'crate'), 4 Maus-Spawns, 1 Katzen-Spawn, Mauseloch mit Maassen, 3 handgesetzte Wegpunkte. KEINE plants und KEINE lootSpawns - so beweist die Fixture zugleich, dass fehlende Listen zu [] werden. M4: das Loch ist aus der Suedwest-Ecke nach (-10,-14) gerueckt, weil der Sperrkoerper dort sonst die Westwand ueberdeckt haette.",
   "id": "mini",
   "scale": 10,
   "rooms": [
@@ -23,6 +23,13 @@
   "boxes": [
     { "cx": 10, "cz": -8, "hx": 1.5, "hz": 1.5, "rot": 0, "y0Cm": 0, "y1Cm": 40 }
   ],
+  "nav": {
+    "points": [
+      { "id": "nav-west", "x": -10, "z": 10 },
+      { "id": "nav-mitte", "x": 0, "z": 10 },
+      { "id": "nav-ost", "x": 10, "z": 10 }
+    ]
+  },
   "spawns": {
     "mice": [
       { "x": -18, "z": -13 },
@@ -32,5 +39,5 @@
     ],
     "cat": { "x": 12, "z": 10 }
   },
-  "mouseHole": { "x": -19, "z": -14 }
+  "mouseHole": { "x": -10, "z": -14, "widthCm": 20, "heightCm": 200, "thicknessCm": 10, "rot": 0 }
 }

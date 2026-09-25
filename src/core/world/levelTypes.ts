@@ -25,9 +25,57 @@ export interface LevelShelf {
   gapCm: number; topCm: number; legHalfCm: number;
 }
 
+/**
+ * Bauart einer Kiste. Sie ändert in M4 KEINE Geometrie und KEINE Maske – sie sagt nur, was das
+ * Ding IST, damit M5 Material und Mesh daran hängen kann und die Daten nicht lügen.
+ * Das Schaufenster ist deshalb eine Kiste mit `kind: 'window'` und `blocks: 11` (ohne SIGHT) und
+ * keine Wand: Wände bekommen in `generateColliders` hart ALL_MASKS.
+ */
+export type BoxKind = 'crate' | 'counter' | 'vitrine' | 'window';
+
 export interface LevelBox {
   cx: number; cz: number; hx: number; hz: number; rot: number;
-  y0Cm: number; y1Cm: number; blocks: number;
+  y0Cm: number; y1Cm: number; blocks: number; kind: BoxKind;
+}
+
+/**
+ * Topfpflanze = Versteck (§8.3). Aus dem Kreis wird in `generateColliders` das UMSCHREIBENDE
+ * Quadrat (Halbmaß = Radius): ein Versteck darf lieber etwas zu groß sein – zu klein heißt,
+ * die Katze greift hinein.
+ */
+export interface LevelPlant { id: string; x: number; z: number; radiusCm: number; heightCm: number }
+
+/**
+ * Beuteplatz. `table` ist die ID einer Loot-Tabelle; die Tabellen selbst entstehen in M14.
+ * M4 prüft nur, dass die ID nicht leer ist – ein Verweis auf eine noch nicht existierende
+ * Tabelle ist in M4 KEIN Fehler.
+ */
+export interface LevelLootSpawn { id: string; x: number; z: number; table: string }
+
+/**
+ * Wegpunkte sind HANDGESETZT, nicht generiert: ein reines Raster lässt Punkte in Nischen hängen
+ * (Faktenblatt §6, gemessen). Das Raster ist der Startpunkt, der Validator (T3) ist der Beweis.
+ */
+export interface LevelNavPoint { id: string; x: number; z: number }
+export interface LevelNav { points: readonly LevelNavPoint[] }
+
+/**
+ * Das Mauseloch: Portal für die Maus und Sperre für die Katze. Die vier Maße sind PFLICHT und
+ * stehen AUSGESCHRIEBEN im Level – `generateColliders` sucht nie im Level nach „der Wand, in der
+ * das Loch sitzt". Eine solche Suche machte die Kollider-Reihenfolge von Geometrie abhängig, und
+ * die Kollider-`id` ist der Tiebreak jeder Abfrage.
+ */
+export interface LevelMouseHole {
+  /** Mittelpunkt der lichten Öffnung, auf der Wandlinie (darf auf einer Raumgrenze liegen). */
+  x: number; z: number;
+  /** Lichte Weite: > 2*mouseRadius UND < 2*catRadius – beides prüft der Validator (T3). */
+  widthCm: number;
+  /** Höhe des Sperrkörpers = Höhe der Wand (sonst rutscht der Kamera-Boom aus M5 darüber). */
+  heightCm: number;
+  /** Dicke des Sperrkörpers = Dicke dieser Wand. */
+  thicknessCm: number;
+  /** Gierwinkel der Wandlinie im Bogenmaß – ausgeschrieben, nie gesucht. */
+  rot: number;
 }
 
 export interface LevelSpawns { mice: readonly Vec2[]; cat: Vec2 }
@@ -40,8 +88,14 @@ export interface LevelDef {
   walls: readonly LevelWall[];
   shelves: readonly LevelShelf[];
   boxes: readonly LevelBox[];
+  /** Im JSON OPTIONAL, im normalisierten Typ PFLICHT – der Loader füllt `[]`. */
+  plants: readonly LevelPlant[];
+  lootSpawns: readonly LevelLootSpawn[];
+  nav: LevelNav;
   spawns: LevelSpawns;
-  mouseHole: Vec2;
+  mouseHole: LevelMouseHole;
 }
-// `LevelDef` ist die NORMALISIERTE Form: der Loader füllt Vorgaben (fehlendes box.blocks -> ALL_MASKS).
-// M4 erweitert den Typ (Theke, Vitrine, Pflanzen, Loot, Nav); M3 nimmt nur, was die Kollision braucht.
+// `LevelDef` ist die NORMALISIERTE Form: der Loader füllt Vorgaben (fehlendes box.blocks -> ALL_MASKS,
+// fehlende Liste -> [], fehlendes box.kind -> 'crate').
+// `LevelMouseHole` ist strukturell ein `Vec2` MIT Zusatzfeldern – deshalb bleibt `createInitialState`
+// (liest nur x/z, um Plätze ohne Spawn zu parken) und damit `src/core/sim/**` unangetastet.

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ALL_MASKS, CAT, MOUSE } from '../../../../src/core/world/colliderTypes';
 import { LevelError, loadLevel } from '../../../../src/core/world/levelLoad';
 import { CM_PER_UNIT } from '../../../../src/core/world/levelTypes';
+import feinkostLevel from '../../../../src/data/levels/feinkost.json';
 import miniLevel from '../../../fixtures/core/mini-level.json';
 import { makeVariant, pathOfThrow, sub } from '../jsonVariant';
 import type { Json } from '../jsonVariant';
@@ -42,15 +43,27 @@ describe('loadLevel – die Mini-Level-Fixture', () => {
     expect((room?.bounds.z1 ?? 0) - (room?.bounds.z0 ?? 0)).toBe(30);
   });
 
-  it('eine Kiste ohne blocks bekommt die Vorgabe ALL_MASKS', () => {
+  it('eine Kiste ohne blocks bekommt die Vorgabe ALL_MASKS und ohne kind die Bauart crate', () => {
     expect(level.boxes[0]?.blocks).toBe(ALL_MASKS);
+    expect(level.boxes[0]?.kind).toBe('crate');
+  });
+
+  it('die Fixture hat keine plants und keine lootSpawns – der Loader macht daraus leere Listen', () => {
+    // Genau dafür fehlen die beiden Listen in der Fixture: „optional" ist damit bewiesen und nicht
+    // behauptet. `nav` steht dagegen drin (3 handgesetzte Punkte, M4).
+    expect(level.plants).toEqual([]);
+    expect(level.lootSpawns).toEqual([]);
+    expect(level.nav.points.map((point) => point.id)).toEqual(['nav-west', 'nav-mitte', 'nav-ost']);
+    expect(level.nav.points[1]).toEqual({ id: 'nav-mitte', x: 0, z: 10 });
   });
 
   it('Spawns und Mauseloch stehen so da, wie sie in der Fixture stehen', () => {
     expect(level.spawns.mice).toHaveLength(4);
     expect(level.spawns.mice[0]).toEqual({ x: -18, z: -13 });
     expect(level.spawns.cat).toEqual({ x: 12, z: 10 });
-    expect(level.mouseHole).toEqual({ x: -19, z: -14 });
+    // M4: das Loch trägt vier Maße und ist aus der Südwest-Ecke gerückt – dort überdeckte sein
+    // Sperrkörper die Westwand. Der Golden-Hash bleibt davon unberührt (siehe Abschnittskopf).
+    expect(level.mouseHole).toEqual({ x: -10, z: -14, widthCm: 20, heightCm: 200, thicknessCm: 10, rot: 0 });
   });
 
   it('ist REIN: eine spätere Änderung an der Eingabe erreicht das Ergebnis nicht', () => {
@@ -92,6 +105,65 @@ describe('loadLevel – erlaubte Sonderfälle', () => {
       list(sub(l, 'spawns'), 'mice')[0] = { x: -20, z: -15 };
     }));
     expect(level.spawns.mice[0]).toEqual({ x: -20, z: -15 });
+  });
+
+  it('alle vier Bauarten werden angenommen', () => {
+    for (const kind of ['crate', 'counter', 'vitrine', 'window'] as const) {
+      const level = loadLevel(variant((l) => { at(l, 'boxes', 0)['kind'] = kind; }));
+      expect(level.boxes[0]?.kind).toBe(kind);
+    }
+  });
+
+  it('ein leeres nav-Objekt und leere M4-Listen sind erlaubt', () => {
+    const level = loadLevel(variant((l) => {
+      l['plants'] = [];
+      l['lootSpawns'] = [];
+      l['nav'] = {};
+    }));
+    expect(level.plants).toEqual([]);
+    expect(level.lootSpawns).toEqual([]);
+    expect(level.nav.points).toEqual([]);
+  });
+
+  it('Pflanze, Beuteplatz und Wegpunkt genau auf der unteren Raumkante werden angenommen', () => {
+    const level = loadLevel(variant((l) => {
+      l['plants'] = [{ id: 'p', x: -20, z: -15, radiusCm: 25, heightCm: 60 }];
+      l['lootSpawns'] = [{ id: 'b', x: -20, z: -15, table: 'kaese' }];
+      l['nav'] = { points: [{ id: 'n', x: -20, z: -15 }] };
+    }));
+    expect(level.plants[0]?.id).toBe('p');
+    expect(level.lootSpawns[0]?.table).toBe('kaese');
+    expect(level.nav.points[0]).toEqual({ id: 'n', x: -20, z: -15 });
+  });
+});
+
+/**
+ * Die echte Ladendatei kommt in T1 dazu; ihre ZAHLEN (Kollider, Wegpunkte, Kanten, Befunde) pinnen
+ * T2 und T3. Hier steht nur die Zusicherung, die T1 selbst tragen muss: die Datei ist ladbar und
+ * normalisiert, ohne dass eine Layout-Änderung in T3 diesen Test rot macht.
+ */
+describe('loadLevel – src/data/levels/feinkost.json', () => {
+  const level = loadLevel(feinkostLevel);
+
+  it('lädt ohne Fehler und hat beide Räume mit ihren Kameramodi', () => {
+    expect(level.id).toBe('feinkost');
+    expect(level.rooms.map((r) => r.id)).toEqual(['verkaufsraum', 'bau']);
+    expect(level.rooms.map((r) => r.cameraMode)).toEqual(['follow', 'diorama']);
+  });
+
+  it('trägt alle drei M4-Listen gefüllt und vier verschiedene Bauarten', () => {
+    expect(level.plants.length).toBeGreaterThan(0);
+    expect(level.lootSpawns.length).toBeGreaterThan(0);
+    expect(level.nav.points.length).toBeGreaterThan(0);
+    const kinds = level.boxes.map((box) => box.kind);
+    for (const kind of ['crate', 'counter', 'vitrine', 'window'] as const) expect(kinds).toContain(kind);
+  });
+
+  it('das Mauseloch steht in der geteilten Westwand, quer zur Wandlinie', () => {
+    expect(level.mouseHole.widthCm).toBe(20);
+    expect(level.mouseHole.thicknessCm).toBe(10);
+    expect(level.mouseHole.heightCm).toBe(250);
+    expect(level.mouseHole.rot).toBeCloseTo(Math.PI / 2, 12);
   });
 });
 
@@ -155,13 +227,71 @@ describe('loadLevel – jede Wurf-Bedingung mit ihrem Feldpfad', () => {
     },
     { name: 'mouseHole fehlt', json: variant((l) => { delete l['mouseHole']; }), path: 'mouseHole' },
     { name: 'mouseHole.x ist NaN', json: variant((l) => { sub(l, 'mouseHole')['x'] = Number.NaN; }), path: 'mouseHole.x' },
+    // ── M4: Bauart, die drei neuen Listen und die vier Maße des Mauselochs ──────────────────────
+    { name: 'unbekannte Kisten-Bauart', json: variant((l) => { at(l, 'boxes', 0)['kind'] = 'regal'; }), path: 'boxes[0].kind' },
+    { name: 'Bauart ist keine Zeichenkette', json: variant((l) => { at(l, 'boxes', 0)['kind'] = 3; }), path: 'boxes[0].kind' },
+    { name: 'plants ist keine Liste', json: variant((l) => { l['plants'] = {}; }), path: 'plants' },
+    { name: 'Pflanze ist kein Objekt', json: variant((l) => { l['plants'] = [7]; }), path: 'plants[0]' },
+    { name: 'Pflanze ohne id', json: variant((l) => { l['plants'] = [{ x: 0, z: 0, radiusCm: 25, heightCm: 60 }]; }), path: 'plants[0].id' },
+    { name: 'Pflanze mit leerer id', json: variant((l) => { l['plants'] = [{ id: '', x: 0, z: 0, radiusCm: 25, heightCm: 60 }]; }), path: 'plants[0].id' },
+    {
+      name: 'zwei Pflanzen mit derselben id',
+      json: variant((l) => {
+        l['plants'] = [
+          { id: 'busch', x: 0, z: 0, radiusCm: 25, heightCm: 60 },
+          { id: 'busch', x: 4, z: 0, radiusCm: 25, heightCm: 60 },
+        ];
+      }),
+      path: 'plants[1].id',
+    },
+    { name: 'Pflanze ohne Radius', json: variant((l) => { l['plants'] = [{ id: 'busch', x: 0, z: 0, radiusCm: 0, heightCm: 60 }]; }), path: 'plants[0].radiusCm' },
+    { name: 'Pflanze mit negativer Höhe', json: variant((l) => { l['plants'] = [{ id: 'busch', x: 0, z: 0, radiusCm: 25, heightCm: -1 }]; }), path: 'plants[0].heightCm' },
+    { name: 'Pflanze außerhalb jedes Raums', json: variant((l) => { l['plants'] = [{ id: 'busch', x: 99, z: 0, radiusCm: 25, heightCm: 60 }]; }), path: 'plants[0]' },
+    {
+      name: 'Pflanze genau auf z1 liegt in keinem Raum (halboffen: z < z1)',
+      json: variant((l) => { l['plants'] = [{ id: 'busch', x: 0, z: 15, radiusCm: 25, heightCm: 60 }]; }),
+      path: 'plants[0]',
+    },
+    { name: 'lootSpawns ist keine Liste', json: variant((l) => { l['lootSpawns'] = 'viele'; }), path: 'lootSpawns' },
+    { name: 'Beuteplatz ohne id', json: variant((l) => { l['lootSpawns'] = [{ x: 0, z: 0, table: 'kaese' }]; }), path: 'lootSpawns[0].id' },
+    {
+      name: 'zwei Beuteplätze mit derselben id',
+      json: variant((l) => {
+        l['lootSpawns'] = [{ id: 'b', x: 0, z: 0, table: 'kaese' }, { id: 'b', x: 2, z: 0, table: 'kaese' }];
+      }),
+      path: 'lootSpawns[1].id',
+    },
+    { name: 'Beuteplatz ohne Tabelle', json: variant((l) => { l['lootSpawns'] = [{ id: 'b', x: 0, z: 0, table: '' }]; }), path: 'lootSpawns[0].table' },
+    { name: 'Beuteplatz außerhalb jedes Raums', json: variant((l) => { l['lootSpawns'] = [{ id: 'b', x: 0, z: -99, table: 'kaese' }]; }), path: 'lootSpawns[0]' },
+    { name: 'nav ist keine Karte', json: variant((l) => { l['nav'] = []; }), path: 'nav' },
+    { name: 'nav.points ist keine Liste', json: variant((l) => { l['nav'] = { points: 3 }; }), path: 'nav.points' },
+    { name: 'Wegpunkt ohne id', json: variant((l) => { l['nav'] = { points: [{ x: 0, z: 0 }] }; }), path: 'nav.points[0].id' },
+    {
+      name: 'zwei Wegpunkte mit derselben id',
+      json: variant((l) => { l['nav'] = { points: [{ id: 'n', x: 0, z: 0 }, { id: 'n', x: 2, z: 0 }] }; }),
+      path: 'nav.points[1].id',
+    },
+    { name: 'Wegpunkt ohne x', json: variant((l) => { l['nav'] = { points: [{ id: 'n', z: 0 }] }; }), path: 'nav.points[0].x' },
+    {
+      name: 'Wegpunkt außerhalb jedes Raums',
+      json: variant((l) => { l['nav'] = { points: [{ id: 'n1', x: 0, z: 0 }, { id: 'n2', x: 0, z: 0 }, { id: 'n3', x: 0, z: 99 }] }; }),
+      path: 'nav.points[2]',
+    },
+    { name: 'mouseHole.widthCm fehlt', json: variant((l) => { delete sub(l, 'mouseHole')['widthCm']; }), path: 'mouseHole.widthCm' },
+    { name: 'mouseHole.widthCm ist 0', json: variant((l) => { sub(l, 'mouseHole')['widthCm'] = 0; }), path: 'mouseHole.widthCm' },
+    { name: 'mouseHole.heightCm ist negativ', json: variant((l) => { sub(l, 'mouseHole')['heightCm'] = -5; }), path: 'mouseHole.heightCm' },
+    { name: 'mouseHole.thicknessCm fehlt', json: variant((l) => { delete sub(l, 'mouseHole')['thicknessCm']; }), path: 'mouseHole.thicknessCm' },
+    { name: 'mouseHole.rot fehlt', json: variant((l) => { delete sub(l, 'mouseHole')['rot']; }), path: 'mouseHole.rot' },
+    { name: 'mouseHole.rot ist nicht endlich', json: variant((l) => { sub(l, 'mouseHole')['rot'] = Number.POSITIVE_INFINITY; }), path: 'mouseHole.rot' },
   ];
 
   it('das Mauseloch darf auf einer Raumgrenze liegen (Portal in der Wand – M4 legt die Regel fest)', () => {
     // Bewusst KEINE Raumprüfung fürs Mauseloch: ein Portal sitzt in einer Wand, also genau auf der
-    // (halboffenen) Grenze; erst das echte Level in M4 entscheidet, wie das Loch verortet wird.
-    const onEdge = variant((l) => { l['mouseHole'] = { x: 20, z: -14 }; });
-    expect(loadLevel(onEdge).mouseHole).toEqual({ x: 20, z: -14 });
+    // (halboffenen) Grenze. Diese Ausnahme gilt NUR dem Loch – Pflanzen, Beuteplätze und Wegpunkte
+    // müssen in einem Raum liegen (Fälle oben).
+    const hole = { x: 20, z: -14, widthCm: 20, heightCm: 200, thicknessCm: 10, rot: 0 };
+    const onEdge = variant((l) => { l['mouseHole'] = { ...hole }; });
+    expect(loadLevel(onEdge).mouseHole).toEqual(hole);
   });
 
   it.each(CASES)('$name -> LevelError auf "$path"', ({ json, path }) => {

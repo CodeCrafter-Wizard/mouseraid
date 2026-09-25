@@ -1,0 +1,135 @@
+{
+  "_hinweis": "Erster echter Laden (M4). 1 Einheit = 10 cm. Verkaufsraum 80x60 u (follow) + Bau 24x16 u (diorama), geteilt durch die Westwand des Ladens; in ihr sitzt das Mauseloch, in der Nordwand das Schaufenster - beide Waende sind deshalb in zwei Segmente geteilt, damit der Sperrkoerper bzw. die Scheibe in einer LUECKE liegt und keine Wand ueberdeckt. Layout ist ein erster Entwurf, kein Layout-Urteil: bewiesen wird in M4 nur die Widerspruchsfreiheit (validateLevel = 0 Befunde), gespielt wird es ab M6.",
+  "id": "feinkost",
+  "scale": 10,
+  "rooms": [
+    {
+      "id": "verkaufsraum",
+      "name": "Verkaufsraum",
+      "bounds": { "x0": -40, "z0": -30, "x1": 40, "z1": 30 },
+      "cameraMode": "follow"
+    },
+    {
+      "id": "bau",
+      "name": "Mäusebau",
+      "bounds": { "x0": -64, "z0": -8, "x1": -40, "z1": 8 },
+      "cameraMode": "diorama"
+    }
+  ],
+  "walls": [
+    { "x0": -40, "z0": -30, "x1": -20, "z1": -30, "heightCm": 250, "thicknessCm": 10 },
+    { "x0": 20, "z0": -30, "x1": 40, "z1": -30, "heightCm": 250, "thicknessCm": 10 },
+    { "x0": 40, "z0": -30, "x1": 40, "z1": 30, "heightCm": 250, "thicknessCm": 10 },
+    { "x0": 40, "z0": 30, "x1": -40, "z1": 30, "heightCm": 250, "thicknessCm": 10 },
+    { "x0": -40, "z0": 30, "x1": -40, "z1": 1, "heightCm": 250, "thicknessCm": 10 },
+    { "x0": -40, "z0": -1, "x1": -40, "z1": -30, "heightCm": 250, "thicknessCm": 10 },
+    { "x0": -40, "z0": -8, "x1": -64, "z1": -8, "heightCm": 120, "thicknessCm": 10 },
+    { "x0": -64, "z0": -8, "x1": -64, "z1": 8, "heightCm": 120, "thicknessCm": 10 },
+    { "x0": -64, "z0": 8, "x1": -40, "z1": 8, "heightCm": 120, "thicknessCm": 10 }
+  ],
+  "shelves": [
+    { "cx": -8, "cz": -14, "hx": 16, "hz": 2, "rot": 0, "gapCm": 12, "topCm": 180, "legHalfCm": 3 },
+    { "cx": -8, "cz": -4, "hx": 16, "hz": 2, "rot": 0, "gapCm": 12, "topCm": 180, "legHalfCm": 3 },
+    { "cx": -8, "cz": 6, "hx": 16, "hz": 2, "rot": 0, "gapCm": 12, "topCm": 180, "legHalfCm": 3 },
+    { "cx": 22, "cz": -6, "hx": 16, "hz": 2, "rot": 1.5707963267948966, "gapCm": 12, "topCm": 180, "legHalfCm": 3 }
+  ],
+  "boxes": [
+    { "cx": -10, "cz": 20, "hx": 18, "hz": 2.5, "rot": 0, "y0Cm": 0, "y1Cm": 100, "blocks": 15, "kind": "counter" },
+    { "cx": 36.5, "cz": 0, "hx": 3, "hz": 12, "rot": 0, "y0Cm": 0, "y1Cm": 160, "blocks": 15, "kind": "vitrine" },
+    { "cx": 0, "cz": -30, "hx": 20, "hz": 0.5, "rot": 0, "y0Cm": 0, "y1Cm": 250, "blocks": 11, "kind": "window" },
+    { "cx": -32, "cz": -8, "hx": 2, "hz": 2, "rot": 0, "y0Cm": 0, "y1Cm": 80 }
+  ],
+  "plants": [
+    { "id": "pflanze-nordwest", "x": -36, "z": -26, "radiusCm": 25, "heightCm": 60 },
+    { "id": "pflanze-nordost", "x": 36, "z": -26, "radiusCm": 25, "heightCm": 60 },
+    { "id": "pflanze-suedwest", "x": -36, "z": 26, "radiusCm": 25, "heightCm": 60 },
+    { "id": "pflanze-suedost", "x": 36, "z": 26, "radiusCm": 25, "heightCm": 60 },
+    { "id": "pflanze-gang", "x": 14, "z": 20, "radiusCm": 25, "heightCm": 60 }
+  ],
+  "lootSpawns": [
+    { "id": "loot-regal-nord", "x": -8, "z": -14, "table": "kaese" },
+    { "id": "loot-regal-mitte", "x": -8, "z": -4, "table": "wurst" },
+    { "id": "loot-regal-sued", "x": -8, "z": 6, "table": "brot" },
+    { "id": "loot-regal-ost", "x": 22, "z": -6, "table": "kaese" },
+    { "id": "loot-theke-west", "x": -24, "z": 14, "table": "krume" },
+    { "id": "loot-theke-ost", "x": 4, "z": 14, "table": "wurst" },
+    { "id": "loot-vitrine", "x": 30, "z": 4, "table": "kaese" },
+    { "id": "loot-schaufenster", "x": 0, "z": -26, "table": "krume" },
+    { "id": "loot-bau-nord", "x": -52, "z": -4, "table": "nuss" },
+    { "id": "loot-bau-sued", "x": -56, "z": 4, "table": "nuss" }
+  ],
+  "nav": {
+    "points": [
+      { "id": "w1", "x": -28, "z": -26 },
+      { "id": "w2", "x": -28, "z": -20 },
+      { "id": "w3", "x": -28, "z": -14 },
+      { "id": "w4", "x": -28, "z": -8 },
+      { "id": "w5", "x": -28, "z": -2 },
+      { "id": "w6", "x": -28, "z": 4 },
+      { "id": "w7", "x": -28, "z": 10 },
+      { "id": "w8", "x": -28, "z": 14 },
+      { "id": "w9", "x": -31, "z": 20 },
+      { "id": "w10", "x": -28, "z": 26 },
+      { "id": "w11", "x": -36, "z": 0 },
+      { "id": "w12", "x": -36, "z": -14 },
+      { "id": "w13", "x": -36, "z": 14 },
+      { "id": "n1", "x": -20, "z": -24 },
+      { "id": "n2", "x": -13, "z": -24 },
+      { "id": "n3", "x": -6, "z": -24 },
+      { "id": "n4", "x": 1, "z": -24 },
+      { "id": "n5", "x": 8, "z": -24 },
+      { "id": "n6", "x": 15, "z": -24 },
+      { "id": "n7", "x": 22, "z": -24 },
+      { "id": "n8", "x": 29, "z": -24 },
+      { "id": "n9", "x": 36, "z": -18 },
+      { "id": "e1", "x": 29, "z": -18 },
+      { "id": "e2", "x": 29, "z": -10 },
+      { "id": "e3", "x": 29, "z": -2 },
+      { "id": "e4", "x": 29, "z": 6 },
+      { "id": "e5", "x": 29, "z": 14 },
+      { "id": "e6", "x": 29, "z": 22 },
+      { "id": "e7", "x": 29, "z": 26 },
+      { "id": "e8", "x": 36, "z": 18 },
+      { "id": "a1", "x": -20, "z": -9 },
+      { "id": "a2", "x": -12, "z": -9 },
+      { "id": "a3", "x": -4, "z": -9 },
+      { "id": "a4", "x": 4, "z": -9 },
+      { "id": "b1", "x": -20, "z": 1 },
+      { "id": "b2", "x": -12, "z": 1 },
+      { "id": "b3", "x": -4, "z": 1 },
+      { "id": "b4", "x": 4, "z": 1 },
+      { "id": "c1", "x": 14, "z": -16 },
+      { "id": "c2", "x": 14, "z": -9 },
+      { "id": "c3", "x": 14, "z": 1 },
+      { "id": "c4", "x": 14, "z": 7 },
+      { "id": "m1", "x": -20, "z": 14 },
+      { "id": "m2", "x": -12, "z": 14 },
+      { "id": "m3", "x": -4, "z": 14 },
+      { "id": "m4", "x": 4, "z": 14 },
+      { "id": "m5", "x": 12, "z": 14 },
+      { "id": "m6", "x": 18, "z": 14 },
+      { "id": "s1", "x": -20, "z": 26 },
+      { "id": "s2", "x": -12, "z": 26 },
+      { "id": "s3", "x": -4, "z": 26 },
+      { "id": "s4", "x": 4, "z": 26 },
+      { "id": "s5", "x": 12, "z": 26 },
+      { "id": "s6", "x": 20, "z": 26 },
+      { "id": "bau1", "x": -58, "z": -4 },
+      { "id": "bau2", "x": -50, "z": -4 },
+      { "id": "bau3", "x": -44, "z": -4 },
+      { "id": "bau4", "x": -58, "z": 4 },
+      { "id": "bau5", "x": -50, "z": 4 },
+      { "id": "bau6", "x": -44, "z": 4 }
+    ]
+  },
+  "spawns": {
+    "mice": [
+      { "x": -60, "z": -4 },
+      { "x": -57, "z": -4 },
+      { "x": -60, "z": 4 },
+      { "x": -57, "z": 4 }
+    ],
+    "cat": { "x": 30, "z": 20 }
+  },
+  "mouseHole": { "x": -40, "z": 0, "widthCm": 20, "heightCm": 250, "thicknessCm": 10, "rot": 1.5707963267948966 }
+}

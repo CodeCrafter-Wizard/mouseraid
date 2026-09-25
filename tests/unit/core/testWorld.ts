@@ -56,8 +56,12 @@ export function makeStage(rooms: readonly LevelRoom[], colliders: readonly Colli
   const level: LevelDef = {
     id: 'stage', scale: CM_PER_UNIT,
     rooms, walls: [], shelves: [], boxes: [],
+    // Die drei M4-Listen sind hier leer: die Bühne stellt ihre Kollider selbst, sie baut keine.
+    plants: [], lootSpawns: [], nav: { points: [] },
     spawns: { mice: [{ x: 0, z: 0 }], cat: { x: 0, z: 0 } },
-    mouseHole: { x: 0, z: 0 },
+    // Das Mauseloch trägt seit M4 vier Maße. Für die Bühne zählt nur x/z (dort parkt
+    // `createInitialState` Plätze ohne Spawn); die Maße sind die eines gewöhnlichen Wandlochs.
+    mouseHole: { x: 0, z: 0, widthCm: 20, heightCm: 200, thicknessCm: 10, rot: 0 },
   };
   return { state: createInitialState(level, balance, 'stage'), ctx: { balance, level, colliders }, events: [] };
 }

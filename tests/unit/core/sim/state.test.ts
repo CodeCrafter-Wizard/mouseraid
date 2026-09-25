@@ -106,8 +106,11 @@ describe('createInitialState – Spieler', () => {
     const zweiSpawns = loadLevel({ ...levelJson, spawns: { ...levelJson.spawns, mice: levelJson.spawns.mice.slice(0, 2) } });
     const state = createInitialState(zweiSpawns, balance, 'zwei');
     expect(state.players.map((p) => p.active)).toEqual([true, true, false, false]);
-    expect(at(state.players, 2).pos).toEqual(level.mouseHole);
-    expect(at(state.players, 3).pos).toEqual(level.mouseHole);
+    // Seit M4 trägt `mouseHole` vier Maße mit. In den Zustand geht nur die Lage – `createInitialState`
+    // liest x/z und bleibt damit unverändert (genau dafür ist LevelMouseHole strukturell ein Vec2).
+    const hole = { x: level.mouseHole.x, z: level.mouseHole.z };
+    expect(at(state.players, 2).pos).toEqual(hole);
+    expect(at(state.players, 3).pos).toEqual(hole);
     expect(at(state.players, 2).pos).not.toBe(at(state.players, 3).pos);
   });
 

@@ -14,6 +14,18 @@ const WALL_BLOCKS = MOUSE | CAT | SIGHT | CAMERA;
  */
 const LEG_BLOCKS = MOUSE | SIGHT;
 const CANOPY_BLOCKS = CAT | SIGHT | CAMERA;
+/**
+ * Topfpflanze = Versteck (§8.3): hält die Katze auf (das IST die Versteck-Regel, nicht bloß
+ * Unsichtbarkeit) und bricht die Blicklinie. NICHT `MOUSE` – die Maus muss hinein. NICHT `CAMERA`:
+ * mit gesetztem Kamerabit klemmte der Spring-Arm aus M5 an jedem Busch, und die Maske wäre 14 –
+ * dieselbe wie die des Regal-Baldachins, womit die 2D-Ansicht beide nicht mehr unterscheiden könnte.
+ */
+const PLANT_BLOCKS = CAT | SIGHT;
+/**
+ * Mauseloch-Stopfen: hält Katze und Kamera auf. `MOUSE` fehlt – das Loch IST der Weg der Maus.
+ * `SIGHT` fehlt, damit die Katze eine Maus im Loch sehen kann (Lauern, M7).
+ */
+const HOLE_PLUG_BLOCKS = CAT | CAMERA;
 
 /**
  * Ein Regalbein an der Ecke (sx, sz) der Grundfläche, um sein eigenes Halbmaß eingerückt,
@@ -43,10 +55,14 @@ function legCollider(
 }
 
 /**
- * Baut aus den Level-Grundformen die Kollider – deterministisch in Definitionsreihenfolge
- * (erst Wände, dann Regale, dann Kisten), `id` fortlaufend ab 0, `occluderGroup` fortlaufend
- * ab 1 je QUELLOBJEKT (die fünf Kollider eines Regals teilen ihre Gruppe; 0 bleibt für
- * Kollider reserviert, die aus keinem Levelobjekt stammen).
+ * Baut aus den Level-Grundformen die Kollider – deterministisch in Definitionsreihenfolge,
+ * `id` fortlaufend ab 0, `occluderGroup` fortlaufend ab 1 je QUELLOBJEKT (die fünf Kollider eines
+ * Regals teilen ihre Gruppe; 0 bleibt für Kollider reserviert, die aus keinem Levelobjekt stammen).
+ *
+ * REIHENFOLGE IST VERTRAG (Q4): WÄNDE -> REGALE -> KISTEN -> PFLANZEN -> MAUSELOCH-STOPFEN.
+ * Eine neue Art wird HINTEN angehängt, nie eingeschoben: die `id` ist der Gleichstands-Tiebreak
+ * JEDER Abfrage (`moveCircle`, `rayCast3`), ein Einschub änderte also stumm jeden Golden-Hash
+ * eines betroffenen Levels. Dieselbe Regel steht in `docs/decisions.md`.
  *
  * KEIN Balance-Argument: die Spalthöhe steht als `gapCm` am Regal, die Körperhöhen der
  * Bewegten kommen erst bei der Abfrage aus der Balance (`mouse.yRange` / `cat.yRange`).
@@ -132,6 +148,50 @@ export function generateColliders(level: LevelDef): Collider[] {
       occluderGroup: group,
     });
   }
+
+  // Pflanzen: EIN Kollider je Pflanze, das UMSCHREIBENDE Quadrat des Kreises (Halbmaß = Radius).
+  // Lieber etwas zu groß als zu klein – zu klein hieße, die Katze greift ins Versteck hinein.
+  // `rot 0` ist kein Vereinfachungsschritt, sondern die Wahrheit: ein Kreis hat keine Drehung.
+  // Damit stehen rc = 1 und rs = 0 EXAKT da, ohne einen einzigen Trig-Aufruf.
+  for (const plant of level.plants) {
+    group += 1;
+    const half = plant.radiusCm / CM_PER_UNIT;
+    out.push({
+      id: out.length,
+      cx: plant.x,
+      cz: plant.z,
+      hx: half,
+      hz: half,
+      y0: 0,
+      y1: plant.heightCm / CM_PER_UNIT,
+      rot: 0,
+      rc: 1,
+      rs: 0,
+      blocks: PLANT_BLOCKS,
+      occluderGroup: group,
+    });
+  }
+
+  // Der Mauseloch-Stopfen, GENAU EINER je Level – `mouseHole` ist Pflichtfeld, also entsteht er
+  // auch in einem Level ohne jede Grundform. Er sitzt in der LÜCKE, die der Autor zwischen zwei
+  // Wandsegmente legt; liegt er stattdessen IN einer Wand, meldet `validateLevel` (T3)
+  // `ueberdeckung`. Gesucht wird hier nichts: Maße und Winkel stehen ausgeschrieben am Loch,
+  // sonst hinge die Kollider-Reihenfolge an der Geometrie – und die `id` ist der Tiebreak jeder Abfrage.
+  group += 1;
+  out.push({
+    id: out.length,
+    cx: level.mouseHole.x,
+    cz: level.mouseHole.z,
+    hx: level.mouseHole.widthCm / 2 / CM_PER_UNIT,
+    hz: level.mouseHole.thicknessCm / 2 / CM_PER_UNIT,
+    y0: 0,
+    y1: level.mouseHole.heightCm / CM_PER_UNIT,
+    rot: level.mouseHole.rot,
+    rc: cos(level.mouseHole.rot),
+    rs: sin(level.mouseHole.rot),
+    blocks: HOLE_PLUG_BLOCKS,
+    occluderGroup: group,
+  });
 
   return out;
 }

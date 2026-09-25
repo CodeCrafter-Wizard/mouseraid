@@ -1,7 +1,10 @@
 import type { Vec2 } from '../math/vec';
 import { ALL_MASKS } from './colliderTypes';
 import { CM_PER_UNIT } from './levelTypes';
-import type { CameraMode, LevelBounds, LevelBox, LevelDef, LevelRoom, LevelShelf, LevelSpawns, LevelWall } from './levelTypes';
+import type {
+  BoxKind, CameraMode, LevelBounds, LevelBox, LevelDef, LevelLootSpawn, LevelMouseHole, LevelNav,
+  LevelNavPoint, LevelPlant, LevelRoom, LevelShelf, LevelSpawns, LevelWall,
+} from './levelTypes';
 
 /**
  * Fehler des Level-Loaders. `path` ist der FELDPFAD ("shelves[1].gapCm").
@@ -34,6 +37,16 @@ function asArray(source: Record<string, unknown>, key: string, path: string): re
   return value as readonly unknown[];
 }
 
+/**
+ * Eine Liste, die FEHLEN darf (dann leer). Nur so bleibt jedes M3-Level gültig, ohne dass
+ * `plants`/`lootSpawns`/`nav` in jede Fixture geschrieben werden müssten. Steht das Feld da, wird
+ * es voll geprüft – „optional" heißt nicht „egal".
+ */
+function optionalArray(source: Record<string, unknown>, key: string, path: string): readonly unknown[] {
+  if (source[key] === undefined) return [];
+  return asArray(source, key, path);
+}
+
 /** Liest ein Zahlenfeld und schließt NaN und ±Infinity aus – beides darf nie in den Kern. */
 function num(source: Record<string, unknown>, key: string, path: string): number {
   const value = source[key];
@@ -51,6 +64,16 @@ function text(source: Record<string, unknown>, key: string, path: string): strin
 
 function needPositive(value: number, path: string): void {
   if (!(value > 0)) throw new LevelError(path, 'muss größer als 0 sein');
+}
+
+/**
+ * Eindeutigkeit über eine lineare Suche in einem Array – dieselbe Disziplin wie bei den Räumen
+ * (`loadRooms`) und wie im ganzen Kern: kein `Set`, keine `Map`, nur Arrays.
+ */
+function needUniqueId(ids: readonly string[], id: string, path: string, message: string): void {
+  for (let i = 0; i < ids.length; i += 1) {
+    if (ids[i] === id) throw new LevelError(join(path, 'id'), message);
+  }
 }
 
 function vec2(value: unknown, path: string): Vec2 {
@@ -158,6 +181,14 @@ function loadBlocks(source: Record<string, unknown>, path: string): number {
   return blocks;
 }
 
+/** Fehlende Bauart ist `crate` – so bleibt jede M3-Kiste ohne `kind` gültig. */
+function loadBoxKind(source: Record<string, unknown>, path: string): BoxKind {
+  const value = source['kind'];
+  if (value === undefined) return 'crate';
+  if (value === 'crate' || value === 'counter' || value === 'vitrine' || value === 'window') return value;
+  throw new LevelError(join(path, 'kind'), 'muss "crate", "counter", "vitrine" oder "window" sein');
+}
+
 function loadBoxes(raw: readonly unknown[]): LevelBox[] {
   const boxes: LevelBox[] = [];
   for (let i = 0; i < raw.length; i += 1) {
@@ -173,7 +204,7 @@ function loadBoxes(raw: readonly unknown[]): LevelBox[] {
     const y0Cm = num(source, 'y0Cm', path);
     const y1Cm = num(source, 'y1Cm', path);
     if (!(y1Cm > y0Cm)) throw new LevelError(join(path, 'y1Cm'), 'muss größer als y0Cm sein');
-    boxes.push({ cx, cz, hx, hz, rot, y0Cm, y1Cm, blocks: loadBlocks(source, path) });
+    boxes.push({ cx, cz, hx, hz, rot, y0Cm, y1Cm, blocks: loadBlocks(source, path), kind: loadBoxKind(source, path) });
   }
   return boxes;
 }
@@ -194,6 +225,95 @@ function insideAnyRoom(point: Vec2, rooms: readonly LevelRoom[]): boolean {
   return false;
 }
 
+/**
+ * Pflanzen, Beuteplätze und Wegpunkte teilen drei Regeln: eine nicht leere, eindeutige ID, endliche
+ * Koordinaten und „liegt in einem Raum" nach derselben HALBOFFENEN Regel wie die Spawns. Das
+ * MAUSELOCH bleibt davon ausgenommen – es sitzt per Bauart auf der Grenze.
+ */
+function loadPlants(raw: readonly unknown[], rooms: readonly LevelRoom[]): LevelPlant[] {
+  const plants: LevelPlant[] = [];
+  const ids: string[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const path = `plants[${i}]`;
+    const source = asObject(raw[i], path);
+    const id = text(source, 'id', path);
+    needUniqueId(ids, id, path, 'doppelte Pflanzen-ID');
+    const x = num(source, 'x', path);
+    const z = num(source, 'z', path);
+    const radiusCm = num(source, 'radiusCm', path);
+    needPositive(radiusCm, join(path, 'radiusCm'));
+    const heightCm = num(source, 'heightCm', path);
+    needPositive(heightCm, join(path, 'heightCm'));
+    if (!insideAnyRoom({ x, z }, rooms)) throw new LevelError(path, 'liegt in keinem Raum');
+    ids.push(id);
+    plants.push({ id, x, z, radiusCm, heightCm });
+  }
+  return plants;
+}
+
+function loadLootSpawns(raw: readonly unknown[], rooms: readonly LevelRoom[]): LevelLootSpawn[] {
+  const spawns: LevelLootSpawn[] = [];
+  const ids: string[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const path = `lootSpawns[${i}]`;
+    const source = asObject(raw[i], path);
+    const id = text(source, 'id', path);
+    needUniqueId(ids, id, path, 'doppelte Beuteplatz-ID');
+    const x = num(source, 'x', path);
+    const z = num(source, 'z', path);
+    // `table` ist die ID einer Loot-Tabelle (M14). Geprüft wird in M4 NUR, dass sie nicht leer ist:
+    // ein Verweis auf eine noch nicht existierende Tabelle ist hier ausdrücklich kein Fehler.
+    const table = text(source, 'table', path);
+    if (!insideAnyRoom({ x, z }, rooms)) throw new LevelError(path, 'liegt in keinem Raum');
+    ids.push(id);
+    spawns.push({ id, x, z, table });
+  }
+  return spawns;
+}
+
+function loadNav(value: unknown, rooms: readonly LevelRoom[]): LevelNav {
+  if (value === undefined) return { points: [] };
+  const source = asObject(value, 'nav');
+  const raw = optionalArray(source, 'points', 'nav');
+  const points: LevelNavPoint[] = [];
+  const ids: string[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const path = `nav.points[${i}]`;
+    const point = asObject(raw[i], path);
+    const id = text(point, 'id', path);
+    needUniqueId(ids, id, path, 'doppelte Wegpunkt-ID');
+    const x = num(point, 'x', path);
+    const z = num(point, 'z', path);
+    // Jeder Wegpunkt MUSS in einem Raum liegen – nur deshalb darf `NavPoint.room` (T2) nie -1 sein,
+    // und nur deshalb ist die Erreichbarkeitsregel „ein Wegpunkt DESSELBEN Raums" (T3) formulierbar.
+    if (!insideAnyRoom({ x, z }, rooms)) throw new LevelError(path, 'liegt in keinem Raum');
+    ids.push(id);
+    points.push({ id, x, z });
+  }
+  return { points };
+}
+
+/**
+ * Das Mauseloch mit seinen vier Maßen. Die beiden Maßnamen `heightCm`/`thicknessCm` sind wörtlich
+ * die der Wand, damit der Autor sie aus dem Wandsegment abschreibt; dass das Ergebnis stimmt,
+ * beweist der Validator (T3). `rot` ist der Gierwinkel der WANDLINIE – ausgeschrieben, nie gesucht.
+ */
+function loadMouseHole(value: unknown): LevelMouseHole {
+  const source = asObject(value, 'mouseHole');
+  const x = num(source, 'x', 'mouseHole');
+  const z = num(source, 'z', 'mouseHole');
+  const widthCm = num(source, 'widthCm', 'mouseHole');
+  needPositive(widthCm, 'mouseHole.widthCm');
+  const heightCm = num(source, 'heightCm', 'mouseHole');
+  needPositive(heightCm, 'mouseHole.heightCm');
+  const thicknessCm = num(source, 'thicknessCm', 'mouseHole');
+  needPositive(thicknessCm, 'mouseHole.thicknessCm');
+  // `num` schließt NaN und ±Infinity bereits aus – ein nicht endliches `rot` ergäbe rc/rs = NaN
+  // und damit einen Sperrkörper, den keine Abfrage je trifft.
+  const rot = num(source, 'rot', 'mouseHole');
+  return { x, z, widthCm, heightCm, thicknessCm, rot };
+}
+
 function loadSpawns(value: unknown, rooms: readonly LevelRoom[]): LevelSpawns {
   const source = asObject(value, 'spawns');
   const raw = asArray(source, 'mice', 'spawns');
@@ -212,11 +332,14 @@ function loadSpawns(value: unknown, rooms: readonly LevelRoom[]): LevelSpawns {
 
 /**
  * Prüft Form, Endlichkeit, Bereiche und Verweise und liefert die NORMALISIERTE Form
- * (fehlendes `box.blocks` wird zu ALL_MASKS). REIN und liest keine Datei – der Aufrufer
- * reicht die Ausgabe von `JSON.parse` herein (D12). „Nav-Graph zusammenhängend" gehört zu M4.
- * Spawns (Mäuse, Katze) müssen in einem Raum liegen (`insideAnyRoom`, halboffene Grenzen) – ohne
- * Raum gäbe es später weder eine Raum-Maske noch eine Kamera dafür. Das Mauseloch wird bewusst NICHT
- * gegen die Räume geprüft: ein Portal sitzt in einer Wand, also auf der Grenze; M4 legt die Regel fest.
+ * (fehlendes `box.blocks` wird zu ALL_MASKS, fehlendes `box.kind` zu 'crate', fehlende
+ * `plants`/`lootSpawns`/`nav` werden leer). REIN und liest keine Datei – der Aufrufer
+ * reicht die Ausgabe von `JSON.parse` herein (D12). „Nav-Graph zusammenhängend" prüft der
+ * Validator (T3), nicht der Loader.
+ * Spawns (Mäuse, Katze), Pflanzen, Beuteplätze und Wegpunkte müssen in einem Raum liegen
+ * (`insideAnyRoom`, halboffene Grenzen) – ohne Raum gäbe es später weder eine Raum-Maske noch eine
+ * Kamera dafür. Das Mauseloch wird bewusst NICHT gegen die Räume geprüft: ein Portal sitzt in einer
+ * Wand, also auf der Grenze (M4-Festlegung, siehe docs/decisions.md).
  */
 export function loadLevel(json: unknown): LevelDef {
   const root = asObject(json, '');
@@ -231,7 +354,10 @@ export function loadLevel(json: unknown): LevelDef {
     walls: loadWalls(asArray(root, 'walls', '')),
     shelves: loadShelves(asArray(root, 'shelves', '')),
     boxes: loadBoxes(asArray(root, 'boxes', '')),
+    plants: loadPlants(optionalArray(root, 'plants', ''), rooms),
+    lootSpawns: loadLootSpawns(optionalArray(root, 'lootSpawns', ''), rooms),
+    nav: loadNav(root['nav'], rooms),
     spawns: loadSpawns(root['spawns'], rooms),
-    mouseHole: vec2(root['mouseHole'], 'mouseHole'),
+    mouseHole: loadMouseHole(root['mouseHole']),
   };
 }
