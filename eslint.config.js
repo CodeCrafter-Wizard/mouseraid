@@ -10,10 +10,21 @@ const BANNED_MATH = [
 ];
 const DETERMINISM_MSG = 'Im deterministischen Core verboten – src/core/math/* bzw. den Tick-Zähler benutzen.';
 
+// Reflexion über Feldnamen: `hashState`/`cloneState` laufen über eine handgeschriebene Feldfolge
+// (Schema-Ordnung). Käme die Reihenfolge aus `Object.keys`, änderte eine Feldumbenennung still den
+// Golden-Hash – ohne dass der Test die Ursache zeigt (M3).
+const BANNED_OBJECT = ['keys', 'values', 'entries', 'assign', 'fromEntries'];
+const SCHEMA_MSG = 'Im deterministischen Core verboten – Hash und Klon laufen über die handgeschriebene Feldfolge, nicht über Feldnamen.';
+// Daten kommen als `unknown` in die Loader; das Lesen und Parsen passiert außerhalb des Kerns (M3, D12).
+const JSON_MSG = 'Im deterministischen Core verboten – Daten werden injiziert (`unknown`), nie im Kern geparst oder serialisiert.';
+
 const corePropertyBans = [
   ...BANNED_MATH.map((property) => ({ object: 'Math', property, message: DETERMINISM_MSG })),
   { object: 'Date', property: 'now', message: DETERMINISM_MSG },
   { object: 'performance', property: 'now', message: DETERMINISM_MSG },
+  ...BANNED_OBJECT.map((property) => ({ object: 'Object', property, message: SCHEMA_MSG })),
+  { object: 'JSON', property: 'parse', message: JSON_MSG },
+  { object: 'JSON', property: 'stringify', message: JSON_MSG },
 ];
 
 const LEGACY_IMPORT = {

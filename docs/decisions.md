@@ -525,6 +525,302 @@ deshalb entfernt; `openTemporaryCamera` (Selbsttest) bleibt unverändert. Aus de
   Luft, aber keine Garantie. Fällt einer der beiden Smokes auf dem Linux-CI-Runner um, bekommt er dort
   `{ tag: '@local' }` und der Grund kommt hierher – der Test wird nicht abgeschwächt (C7).
 
+## M3 – Core I (2026-09-25)
+
+Der Spielkern entstand **headless**: keine Seite lädt `src/core/**`, `index.html` bleibt auf dem Stand M2.
+Nach dem letzten M3-Commit gemessen (`npm run build:pages` + `npm run check-dist`): **Spiel-JS 10.1 kB
+gzip** – genau der Wert vor M3 (Lab-JS 61.5 kB unverändert). Der Kern ist in M3 ausschließlich über Tests
+erreichbar (`npx vitest run tests/unit/core`: 22 Dateien, 515 Tests; `npm test` insgesamt 65 Dateien +
+1 übersprungener, 1330 Tests + 1 übersprungener – übersprungen ist genau der Messlauf `core-bench` ohne
+`MB_BENCH`); angeschlossen wird der Kern erst in M5.
+
+### Zahlenmodell: float64 mit eigenem Trig, kein Festkomma (D1)
+`+ − × ÷ %`, Vergleiche und `Math.sqrt/floor/ceil/round/trunc/abs/min/max/sign/imul/fround/clz32` schreibt
+ECMA-262 **exakt** vor – `Math.sqrt` ist dort als „the square root of n" definiert und korrekt gerundet,
+nicht als Näherung. `Math.sin/cos/atan2/pow` und `**` dagegen sind ausdrücklich
+„implementation-approximated" – für `Math.pow(10, 208)` liefert Firefox belegbar einen anderen Wert als
+Chrome. Deshalb: `number` (float64) und eigenes Trig aus genau den exakten
+Operationen. Festkomma wurde verworfen (eigene Multiplikation mit Sättigung, jede Balance-Zahl würde zum
+Skalierungsproblem); „Integer-Ticks" der Spec meint den Zeitschritt, nicht die Ortskoordinaten.
+
+Gemessen (Node 24 / V8, Windows 11 x64, je 20 Mio. Aufrufe nach dem Aufwärmen):
+
+| Variante | max. Fehler | Kosten |
+|---|---|---|
+| `Math.sin` (Referenz) | – | 6,72 ns |
+| Tabelle 4096 + lineare Interpolation | 2,94e-7 | 12,24 ns |
+| **Polynom Grad 13, Horner, Reduktion `k = Math.round(x/π)`** | **6,63e-10** | **7,73 ns** |
+| `atan2`: Oktanten-Reduktion + ungerades Polynom Grad 17 | **≤ 1,36e-8 rad zugesichert, 9,73e-9 gemessen** | 7,59 ns (`Math.atan2`: 8,95 ns) |
+
+Das Polynom ist damit gleichzeitig **~440× genauer und ~1,6× schneller** als die Tabelle – die Tabelle
+kostet einen `Float64Array`-Zugriff mit Bereichsprüfung, das Polynom ist reine Registerarbeit. Die
+Schranke gilt auch bei ±100 Umdrehungen. Die Tests liegen außerhalb von `src/core` und vergleichen gegen
+`Math.sin/cos/atan2` mit der gemessenen Schranke ×2 als Toleranz (1,4e-9 für `sin`/`cos`, 2,0e-8 für
+`atan2`). **Keine Tabelle, kein Nachschlagewerk.** `sin` ist auf `[-1, 1]` geklemmt: das Polynom liegt bei
+`PI/2` genau um die Schranke **über** 1, und ohne Klemme bekäme ein Aufrufer, der daraus eine Wurzel zieht,
+`NaN`. Damit sind `sin(0) = 0` und `cos(0) = 1` **exakt**; `cos(HALF_PI)` ist dagegen `-0` (folgenlos, weil
+der Hasher `-0` auf `+0` normalisiert – aber kein `toBe(0)` darauf ansetzen). `normalizeAngle` braucht nach
+der Subtraktion zwei Nachkorrekturen: ohne sie fielen an den Nahtstellen (Vielfache von `TAU` bis ±200 000)
+121 149 Werte aus `[-PI, PI)` heraus – der Nahttest ist deshalb Teil des Vertrags (T1-Review).
+
+**Die ESLint-Linie ist in M3 enger geworden** (`eslint.config.js`, nur `src/core/**`): zusätzlich zu den 23
+`Math.*`-Namen, `Date.now`, `performance.now`, `new Date()`, `**`/`**=` und den Browser-Globals sind jetzt
+`Object.keys/values/entries/assign/fromEntries` und `JSON.parse/stringify` gesperrt. Grund: `hashState` und
+`cloneState` laufen über eine **handgeschriebene** Feldfolge – käme die Reihenfolge aus `Object.keys`,
+änderte eine Feldumbenennung still den Golden-Hash, ohne dass der Test die Ursache zeigt; `JSON.*` im Kern
+unterliefe die Injektionsregel (D12). Verschärfen ist erlaubt, Lockern nie.
+`tests/node/eslint-boundaries.test.ts` prüft beide neuen Verbote und ausdrücklich, dass
+`Math.sqrt/imul/fround/clz32`, `DataView` und Typed Arrays durchkommen. `structuredClone` und
+`TextEncoder` scheitern schon am Typecheck (`tsconfig.core.json`: lib `ES2022`, `types: []`) – der ist hier
+**schärfer** als ESLint; `tests/node/es-library-guard.test.ts` sperrt `structuredClone` zusätzlich per
+Textscan.
+
+### PRNG: sfc32, vier uint32 im Zustand (D2)
+`RngState { a, b, c, d }` liegt **im** `WorldState`, damit `cloneState` und `hashState` ihn automatisch
+mitnehmen; `nextU32/nextFloat/nextInt/nextRange` mutieren ihn in place (ein zurückgegebener neuer Zustand
+müsste an jeder Aufrufstelle zurückgeschrieben werden – genau das vergisst man einmal). Gemessen: die
+JS-Fassung mit `|0`/`>>>` ist **bitgleich** mit einer BigInt-Referenz, die sfc32 exakt in uint32 rechnet
+(3 Saaten × 100 000 Werte, kein Unterschied); `nextU32` kostet 1,49 ns. Eingefrorener Testvektor
+`sfc32(1, 2, 3, 4)` nach 12 Verwurfrunden (PractRand-Saatregel): `417285410, 1196253302, 123583739,
+800524041, 903873393, 3641854082`. `nextInt` verwirft statt Modulo (Sicherheitszähler ≤ 64): die
+Verzerrung wäre bei n = 3 nur 2,33e-8 %, aber die faire Fassung kostet nichts und macht die Eigenschaft
+beweisbar. Bei `n > 2^32` **wirft** `nextInt` (T1-Review): ohne den Wurf lief der Sicherheitszähler still
+aus – 65 verbrauchte Rohwerte und ein Ergebnis nur aus der unteren Bereichshälfte. Die Saat kommt über
+FNV-1a-32 aus Zahl oder Text.
+
+### Zustandshash: FNV-1a 32 über einen kanonischen Bytestrom (D3)
+Startwert `0x811c9dc5`, Schritt `h = Math.imul(h ^ byte, 16777619) >>> 0`; Testvektoren reproduziert
+(`""` = 0x811c9dc5, `"a"` = 0xe40c292c, `"foobar"` = 0xbf9cf968). **Nicht** FNV-1a-64: über BigInt kostet
+er für einen `WorldState` mit 2188 Feldern **294 µs** gegen **15,7 µs** – 18,7× teurer, und einem
+Golden-Test bringt die doppelte Breite nichts.
+
+Der Strom ist kanonisch, weil drei Dinge sonst plattformabhängig wären:
+- **Reihenfolge der Bytes:** Zahlen gehen ausschließlich über `DataView.setFloat64(…, true)` hinein. Die
+  Typed-Array-Sicht folgt der **Plattform** (ECMA-262 9.6 nennt `[[LittleEndian]]` „implementation-defined"),
+  `DataView` folgt dem **Flag**. Gemessen: `new Uint8Array(new Float64Array([1.5]).buffer)` ergibt hier
+  `00 … f8 3f`, big-endian wäre `3f f8 …`.
+- **`NaN`/`±Infinity`:** ECMA-262 25.1.3.17 erlaubt für `NaN` „any implementation chosen … encoding" – der
+  Hasher **wirft** deshalb `NaNError` mit dem Feldpfad, statt irgendwelche Bytes zu schlucken. Das ist
+  zugleich der NaN-Wächter der Spec.
+- **`-0`:** hat andere Bytes als `+0` (`… 00 80` gegen `… 00 00`) und wird vor dem Schreiben auf `+0`
+  normalisiert.
+
+Strings gehen als Längenpräfix + UTF-16-Code-Einheiten LE hinein (`TextEncoder` fehlt in der Core-lib),
+Arrays immer mit `hashLen` davor, Aufzählungen als Byte eines festen Index – nie als Text. Die beiden
+Index-Listen `PHASES = ['day','night']` und
+`CAT_STATES = ['sleeping','patrol','alert','chase','lurk','search','return']` (in `src/core/sim/hash.ts`)
+werden deshalb **nur hinten erweitert, nie umsortiert**: eine Umbenennung des Textes kostet keinen neuen
+Golden-Wert, eine Umsortierung ändert **jeden** – dann braucht es eine Re-Baseline mit Begründung.
+Der Vertauschungs-Schutz steckt im Typ: `hashEnum` nimmt `value: NoInfer<T>`, sonst verbreitert der
+Übersetzer `T` auf `CatState | Phase` und eine vertauschte Liste übersetzt fehlerfrei (gemessen, T4-Review).
+Aus demselben Grund tragen leere Lärmproben `tick = -1` **und** `slot = -1` (`0` wäre ein gültiger Slot);
+beide Zahlen kleben am Golden-Hash. Array-Löcher werden in **jedem** Blatt gleich behandelt (übersprungen),
+damit eine dünn besetzte Liste nicht je nach Blatt anders in den Strom läuft. Gemessen:
+eine 1-ULP-Änderung (`12.5` → `12.500000000000002`) und das Vertauschen zweier Felder ändern den Hash,
+**die Laufordnung ist also Teil des Vertrags**. Ein **Kodierungs-Vektor-Test**
+(`tests/unit/core/sim/stateHash.test.ts`) pinnt den Hash eines handgebauten Zustands für alle sieben
+Katzenzustände: ändert sich dort eine Zahl, ist das eine bewusste Re-Baseline mit Grund im Commit, kein
+Rauschen. `cloneState` kopiert aus demselben Grund schema-getrieben:
+2,92 µs gegen 134 µs für einen `JSON`-Rundlauf (45,8×), und `structuredClone` ist ohnehin gesperrt.
+
+### Kollider-Modell: fünf Kollider je Regal – die Beine blocken `CAT` nicht (D5)
+Ein Kollider ist ein gedrehter Kasten im Grundriss mit Höhenband (`cx, cz, hx, hz, y0, y1, rot`) plus
+`rc`/`rs` (= `cos`/`sin` des Winkels, **einmal beim Erzeugen** gerechnet – so kommt in keiner Abfrage zur
+Laufzeit Trig vor), einer Bitmaske `blocks` (`MOUSE 1 | CAT 2 | SIGHT 4 | CAMERA 8`) und der
+`occluderGroup` der Quelle. Ein Regal wird zu **vier Beinen** (`y 0…gapCm`, `blocks = MOUSE|SIGHT`) und
+**einem Baldachin** über der ganzen Grundfläche (`y gapCm…topCm`, `blocks = CAT|SIGHT|CAMERA`).
+
+Die Beine blocken `CAT` **ausdrücklich nicht**, und das ist keine Feinheit: Bein und Baldachin überlappen
+sich zwar nicht in der Höhe, treffen aber beide das Höhenband der Katze – ihre Grundflächen liegen
+übereinander und drücken sie in widersprüchliche Richtungen. **Gemessen: 483 eingedrungene Ticks je
+10 000; nach der Trennung 0.** Gestoppt wird die Katze vom Baldachin. Die Überlappungsregel gilt also je
+**Bewegtem**, nicht je Kollider-Paar. Gemessen mit Maus (y 0…1,9) und Katze (y 0…3,0): die Maus läuft
+geradeaus durch alle drei Regalreihen, die Katze bleibt an der Baldachinkante stehen (Kante 2,5 +
+Katzenradius 1,2 = z 3,70). Dass die Maus unter das Regal passt und die Katze nicht, prüft ein Test aus
+**Level und Balance** zusammen (`mouse.yRange.y1 < gapCm/10 < cat.yRange.y1`); `balance.json` trägt
+deshalb kein `shelfGapCm` mehr – die Spalthöhe steht am Regal.
+
+### `moveCircle` ist durchgehend (TOI + Gleiten), nicht „bewegen + herausdrücken" (D5)
+Drei Varianten, je 10 000 Ticks gegen ein Struktur-Level aus 71 Kollidern. Die Invariante lautet: nie
+**tiefer als `SKIN`** in einen blockierenden Kasten geraten, nie hindurch, nie aus dem Laden.
+
+| Variante | Ergebnis |
+|---|---|
+| A – bewegen + herausdrücken (3 Iterationen) | **gescheitert**: die Maus ist ab Tick 689 dauerhaft außerhalb (9311 von 10 000 Ticks), die Katze 220 Ticks in Kästen |
+| B – Teilschritte (`maxStep = r`) + A | besser, aber weiter ~0,2 u Eindringen, doppelte Kosten |
+| C – exakter TOI + Gleiten (≤ 3 Schritte) | **0 Verstöße** in 20 Saaten × 10 000 = 200 000 Ticks |
+
+A scheitert **herleitbar**: sie springt auf `p + d` und drückt zur *nächsten* Fläche heraus – liegt
+`p + d` jenseits der Mittelebene, zeigt die Normale auf die falsche Seite. Bedingung `|d| > hz + r`, für
+Maus (r 0,4) gegen ein Regalbein (hz 0,3) also ab 0,7 u/Tick: schon der vorgesehene Sprint (0,80 u/Tick)
+geht in **einem** Schritt hindurch (gemessene z-Folge `2.200 → 1.400 → 0.700 → −0.700 → −1.500`).
+Zweiter Befund: Herausdrücken erzeugt Positionen, die kein Bewegungspfad je erreicht hat – so fiel die
+Maus durch einen 0,05 u breiten Spalt zwischen zwei Wänden aus dem Laden. **C hat denselben Spalt in
+200 000 Ticks nie gefunden**, weil sein Sweep die Wand sieht, bevor die Position entsteht. Tempo-Sweep
+0,80 / 1,60 / 6,40 / **20,0** u/Tick und Wände der Halbdicke 0,05 bis 1,0 gegen Tempo bis **100** u/Tick:
+jeweils 0 Verstöße. `MAX_SLIDES = 3` ist gemessen: 1 Gleitschritt hält die Invariante, klemmt aber 4992
+von 10 000 Ticks fest; 2 und 3 liefern je 281, 4 bringt nichts mehr.
+
+**Die Invariante lautet „nicht tiefer als `SKIN`", nicht „nie im Kasten"** (T3-Review): `moveCircle` legt
+den Bewegten je aufgelöstem Treffer `SKIN` vor **genau eine** Fläche. Drücken beim Gleiten in eine Ecke
+zwei Flächen gleichzeitig, bleibt in der jeweils anderen bis zu `SKIN` Eindringung stehen – gemessen
+0,988 × `SKIN` als tiefster Wert über 1475 Keil-Konfigurationen, und der Wert wächst über 20 000 Ticks
+nicht. Die Toleranz im Fuzz ist deshalb `radius − SKIN − 1e-9`; die Gegenprobe (Eckkreise abgeschaltet)
+fällt damit weiterhin um, die Schranke ist also nicht zu weich.
+
+**Falle, die in jedem Test steht:** ein reiner Slab-Test gegen das um `r` aufgeblähte Rechteck liefert
+kein `t > 0`, wenn der Start in der **Eckzone** liegt (`|lx| < hx+r` und `|lz| < hz+r`, Abstand trotzdem
+> r). Der Kollider würde für den ganzen Schritt ignoriert – das war die Quelle aller Rest-Tunnel
+(11–22 je 10 000 Ticks). Deshalb prüft der Sweep 2 Flächen- und 4 Eck-Kandidaten einzeln (Minkowski-Körper
+= abgerundetes Rechteck) und liefert bei echter Eindringtiefe `t = 0` mit Herausdrück-Normale.
+
+**Keine Broadphase** (so auch die Spec): brute force kostet bei 196 Kollidern 5,42 µs je `moveCircle`,
+bei 200 Kollidern 0,46 µs (`segmentBlocked`), 0,31 µs (`sweepCircle`), 4,11 µs (`rayCast3`) und 0,94 µs
+(`checkSupport`) – das trägt weit über 200 Kollider hinaus.
+
+Die Fuzz-Invariante „die Strecke alt→neu kreuzt keinen Kasten" wird nur bei `hits === 0` geprüft: mit
+Gleitschritten ist der gelaufene Weg ein Polygonzug, und die Sehne schneidet Außenecken ab (gemessen
+5 Fehlalarme in 45 Ticks bei 20 u/Tick, Endlage jedes Mal sauber). Genau der Fall **ohne** Treffer ist aber
+der, in dem Tunneln aufträte – ein übersprungener Kasten meldet sich nicht als Treffer. Zusätzlich wird in
+JEDEM Tick die Arena-Grenze geprüft.
+
+Fünf Konventionen der Abfragen, die der Vertrag offen lässt (T3 legt sie fest, M4/M5/M9 verlassen sich
+darauf): eine Bewegung von genau `(0,0)` fragt **gar nichts** ab – ein stehender Bewegter kostet keine
+Rechnung, und eingedrungene Lagen erzeugt der Kern nicht (herausgedrückt wird beim nächsten Schritt **mit**
+Bewegung, mit voller Restbewegung danach). `MoveResult.hits` zählt **aufgelöste Treffer je Aufruf**
+(0 … `MAX_SLIDES`), nicht berührte Kollider. `blockedX`/`blockedZ` melden, dass in dieser Achse Bewegung
+**verworfen** wurde – eine Auskunft, keine Zusicherung über die Endlage; seit Ruling U6 wertet
+`playerMove` sie aus (siehe unten). Ein nicht endliches `delta` läuft **still** durch (`hits 0`, nicht
+endliche Endlage): der Aufrufer ist verantwortlich, und `hashState` wirft im selben Tick mit dem Feldpfad.
+`radius ≤ 0` schaltet die Eckkreise ab – das ist für Punkt-Abfragen gedacht, nicht für Bewegte.
+
+### `InputFrame`: 8 Byte, verifiziertes Layout (D7)
+`tick u32 LE (0..3) | mx i8 (4) | mz i8 (5) | buttons u8 (6) | seq u8 (7)`. Das ist die **einzige**
+8-Byte-Lösung mit allen fünf Spec-Feldern: `seq u16` ergäbe 9 Byte, also faktisch 12. `tick u32` reicht bei
+30 Hz für 4,5 Jahre, `seq u8` deckt 8,5 s Flugzeit ab; vier Spieler kosten roh 960 Byte/s. Die Bytes werden
+einzeln geschrieben und gelesen (kein `DataView`), damit die Reihenfolge im Quelltext steht und nicht an
+einem Flag hängt; `unpackInput` macht aus Werten > 127 wieder negative. Flanken liegen **nicht** im Frame,
+sondern als `player.prevButtons` im Zustand.
+
+### Konventionen der Simulation
+- **`step()` erhöht `state.tick` am ENDE**, nach allen Systemen. Innerhalb eines Ticks sehen also alle
+  Systeme dieselbe Nummer, und `inputs` sind die Eingaben **zu** diesem Tick. Diese Konvention steht hier,
+  weil sie an jedem Golden-Hash klebt: wer sie umdreht, verschiebt jeden Fixture-Wert um einen Tick.
+- **Das Spiel beginnt nachts** (`clock.phase = 'night'`, `phaseTick = 0`, `dayCount = 1`): der Beutezug ist
+  der Nachtteil, der Tag ist die Kolonie-Phase. Tag und Nacht dauern je 300 s = 9000 Ticks und enden
+  vorzeitig, wenn **alle aktiven** Spieler ihre `skipVotes` gesetzt haben.
+- **Reihenfolge der zehn Systeme** (gepinnt durch einen Test über `SYSTEMS.map(s => s.name)`):
+  clock → playerIntent → playerMove → interaction → noise → catPerception → catBrain → catMove → catch →
+  colony. Sechs davon sind in M3 **leere** Stümpfe (M7/M13/M16); ein Stumpf, der die Katze „schon mal
+  etwas" bewegte, würde jeden Golden-Hash festschreiben, den M7 sofort wieder umwirft.
+- **Ereignisse landen im Puffer des Aufrufers**, nicht im Zustand; M3 kennt genau `phase-changed`,
+  `day-started` und `noise` (nur laute Ereignisse; der leise Rest steht im Ringpuffer für M7).
+- **Sprint ist Button ODER Außenring** – zwei Wege, keine Bedingung; `cat.targetSlot` ist `-1` statt `null`
+  (ein `null` bräuchte im Hash-Lauf eine eigene Kodierungsregel).
+- **Spielerbewegung ist beschleunigungsbegrenzt, kein Lerp:** `dv = vZiel − v`; ist `|dv| ≤ accel`,
+  wird das Zieltempo **exakt zugewiesen** (nicht `v += dv` – in IEEE-754 ist das nicht bitgleich und ergäbe
+  einen 1-ULP-Grenzzyklus statt eines Fixpunkts), sonst geht es um genau `accel` in Richtung Ziel. `accel`
+  ist u/Tick² (aus `accelCmPerS2`) – ein Lerp-Faktor hätte diese Einheit zur Lüge gemacht: mit 600 cm/s²
+  hätte die Maus ~1,4 s bis Gehtempo gebraucht. Mit den Startwerten unten steht Gehtempo nach 5, Sprint
+  nach 9 Ticks. Ohne Eingabe gilt weiter `v *= frictionPerTick` (Faktor je Tick).
+- **Ruling U6 – eine blockierte Geschwindigkeitskomponente wird genullt:** nach `moveCircle` setzt
+  `playerMove` `vel.x = 0` bei `blockedX` (analog z), und zwar **vor** Tempo, `facing` und Lautstärke.
+  Ohne das behielt ein gegen die Wand gedrückter Spieler Sprinttempo: gemessen im T5-Review 40 Lärmproben
+  und 38 `noise`-Ereignisse mit Lautstärke 0,9 in 40 Ticks, obwohl er stand. Das **Gleiten** entlang der
+  Wand bleibt unberührt – `moveCircle` kappt nur den Anteil, der in die Fläche hineinzeigt, nicht die
+  tangentiale Komponente.
+
+### Balance: jede Zahl ist provisorisch (D10/R1) – Spaß-GATE nach M14
+Belegt sind nur `tickRate = 30` und „Tag/Nacht je 5 min = 9000 Ticks". **Tempi, Beschleunigung, Reibung und
+die Lautstärkekurve stehen in keinem Dokument** – die Werte in `src/data/balance.json` sind geraten und
+tragen ihre Einheit im Feldnamen (`walkCmPerS`, `accelCmPerS2`, `frictionPerTick`, `radiusCm`). Startwerte:
+Gehen 100 cm/s (0,33 u/Tick), `sprintMul` 1,8 (0,6 u/Tick), Beschleunigung 600 cm/s², `frictionPerTick`
+0,85, `sneakBelowRatio` 0,4, `weakenedMul` 0,7, Lautstärke 0,2 / 0,5 / 1,0, Maus r 4 cm / h 6 cm, Katze
+r 12 cm / h 30 cm. Der Loader rechnet **einmal** um; die Formeln sind Vertrag und von Tests gepinnt:
+`u/Tick = cmPerS / (10 · tickRate)` (60 cm/s → 0,2), `u/Tick² = cmPerS2 / (10 · tickRate²)`,
+`u = cm / 10`, `Ticks = s · tickRate` (muss ganzzahlig sein).
+
+**Kein Test hängt an diesen Zahlen.** Tests benutzen `tests/fixtures/core/test-balance.json` mit bewusst
+anderen Werten (u. a. 2 s Tag / 3 s Nacht, damit ein Phasenwechsel in 60 bzw. 90 Ticks prüfbar ist); ein
+Test vergleicht beide Dateien und schlägt fehl, wenn sie gleich werden. Wer die Balance ändert, ändert
+also keine Zusicherung – entschieden wird sie am Spaß-GATE nach M14, mit dem Regler-Panel aus M6.
+
+### Daten werden injiziert, nicht importiert (D12)
+Gemessen: ein `import balance from '../../data/balance.json'` aus `src/core` **wäre erlaubt** – ESLint
+listet `data` nicht unter den fremden Schichten, und `resolveJsonModule` greift. Trotzdem ist es verboten:
+ein fester Import unterliefe die Regel „Golden-Tests laufen gegen eingefrorene Fixtures, nicht gegen die
+echten Balance-Daten". Jeder Loader nimmt `unknown` (`loadBalance`, `loadLevel`), wirft bei jedem Fehler
+mit dem **Feldpfad** (`shelves[1].gapCm`) und liefert die normalisierte Form; das Lesen der Dateien und
+die Komposition passieren außerhalb des Kerns (M5, `soloSession`). Seit M3 sperrt ESLint zusätzlich
+`JSON.parse`/`JSON.stringify` in `src/core/**`, damit der Umweg „Datei als Text hereinreichen und im Kern
+parsen" gar nicht erst entsteht.
+
+Zwei Prüfungen des Level-Loaders sind bewusst asymmetrisch (T2-Review): **Spawns** müssen in einem Raum
+liegen, geprüft gegen **halboffene** Grenzen (`x0 ≤ x < x1`, `z0 ≤ z < z1`) – dieselbe Regel, nach der
+`playerMove` einen Punkt einem Raum zuordnet; sonst gehörte ein Spawn genau auf der oberen Kante zu keinem
+Raum und hätte später weder Raum-Maske noch Kamera. Das **Mauseloch** wird dagegen **nicht** gegen Räume
+geprüft: es ist ein Portal in der Wand und liegt damit per Bauart auf der Grenze. Die Regel dafür legt M4
+fest, zusammen mit dem Level-Validator.
+
+### Golden-Hash, Fixtures und das Re-Baseline-Verfahren (D13)
+Die Eingaben kommen nicht aus aufgezeichneten Frames, sondern aus einem **reinen** Generator
+(`tests/helpers/scriptedInputs.ts`: Saat × Muster × Tick → `InputFrame[]`, Muster `idle`, `walk-circle`,
+`sprint-bursts`, `wall-hugger`). `tests/fixtures/core/golden.json` hält je Fall Name, Saat, Muster,
+Tickzahl, Hash und die Endlagen der Spieler – die Endlagen zeigen beim Vergleich, **was** sich geändert
+hat, nicht nur **dass** sich etwas geändert hat. Fälle laufen über 1, 30, 300 und 3000 Ticks.
+
+Verfahren, wenn ein Golden-Wert sich ändert:
+1. **Erst verstehen.** Ein geänderter Hash ohne geänderte Absicht ist ein Fehler, keine neue Baseline.
+2. `npm run core:rebaseline` schreibt die Fixture neu und druckt je Fall alt → neu.
+3. In **diesen** Abschnitt kommt eine Zeile der Form `Rebaseline: <Grund>` (Datum, Fall, Ursache).
+4. `tests/node/golden-guard.test.ts` erzwingt Schritt 3: er vergleicht den Arbeitsbaum mit
+   `git show HEAD:tests/fixtures/core/golden.json` und verlangt bei einer Abweichung, dass
+   `docs/decisions.md` **mehr** Zeilen mit diesem Präfix enthält als die `HEAD`-Fassung. Bewusst **keine**
+   Commit-Nachricht: die wäre bei Amend und Rebase falsch-rot, und der Index wäre vor `git add` falsch-grün.
+   Ohne `git` oder ohne die Datei in `HEAD` meldet der Wächter das und geht durch.
+
+Re-Baselines (chronologisch, jeweils eine Zeile mit dem Präfix aus Schritt 3): bisher keine. Die **erste**
+Baseline ist selbst keine Re-Baseline – `golden.json` stand vorher nicht in `HEAD`, der Wächter startet
+also bei null Zeilen. Eingefroren wurde sie in T6 gegen den Kern **nach** Ruling U6; die Zahlen des
+Plan-Trockenlaufs (vor U6) sind damit Geschichte: `ruhe-1` blieb bei `0x8db4fa20` (im ersten Tick greift
+noch keine Wand), `kreis-30` ging von `0x3b2610b0` auf `0x286097f8`, `gemischt-300` von `0x6c59058e` auf
+`0x62fcb233` und `gemischt-3000` von `0x95fd841b` auf `0xb539ff54`.
+
+### Gemessene Kosten
+Prototyp-Messungen (Node 24 / V8, Faktenblatt): `step()` mit 4 Spielern, Katze und 300 Loot kostet bei
+71 Kollidern 6,96 µs, bei 200 Kollidern 21,62 µs, bei 400 Kollidern 44,07 µs; mit `hashState` je Tick
+36,6 µs. Ein voller Golden-Lauf über 9000 Ticks (eine Nacht) mit Hash je Tick: 328,5 ms.
+
+Umsetzung, gemessen mit `npm run core:bench` auf dem Entwicklungsrechner:
+
+- `step()`: **38,25 µs je Tick** (4 Spieler, 200 Kollider, 300 Loot)
+- `hashState()`: **144,67 µs je Zustand** (`step()` + `hashState()` zusammen 182,92 µs)
+
+`hashState` kostet damit rund das Neunfache der 15,7 µs des Prototyps – der Prototyp baute keine Feldpfade.
+Die Vertragsfassung setzt je Zahl einen Pfad wie `players[2].vel.z` zusammen; das macht `NaNError`
+brauchbar und ist in M3 belanglos, weil der Hash nicht je Tick läuft, sondern im Golden-Test. Falls er je
+stört, ist der Ausweg ein schneller Lauf ohne Pfade und ein zweiter Lauf mit Pfaden, sobald ein `NaN`
+auffällt – nicht eine schwächere Diagnose.
+
+Auf dem Handy ist mit dem 4- bis 8-fachen zu rechnen (kein Gerät zum Messen) – immer noch weit unter dem
+Ziel von 2 ms/Tick.
+**In keinem Test steht eine Zeitzusicherung**: „< 2 s" wäre auf fremder Hardware falsch-rot. Die einzige
+Zeitschranke ist Vitests globales `testTimeout: 30_000`.
+
+### Bekannte Grenzen von M3
+- **Cross-Engine-Determinismus ist lokal nicht prüfbar.** Installiert ist nur Chromium (Playwright 1.63.0,
+  kein `firefox-*`, kein `webkit-*`), Vitest läuft in Node – beides V8. M3 zeigt **V8 gegen V8** und nennt
+  es auch so; der Drei-Engine-Vergleich ist M20. Nichts wird dafür nachinstalliert.
+- **Die sechs Katzen-/Kolonie-Systeme sind leere Stümpfe.** Reihenfolge, Zustandsfelder und die Naht
+  `SystemFn` entstehen jetzt, das Verhalten in M7 (Kolonie: M16, Interaktion: M13). Jeder Golden-Hash gilt
+  nur für diesen Stand.
+- **Das Mini-Level ist kein Laden.** `tests/fixtures/core/mini-level.json` (1 Raum, 4 Wände, 2 Regale,
+  1 Kiste) beweist Loader, Kollider-Erzeugung und Kollision – sonst nichts. Erreichbarkeit, Engpässe
+  („kein Durchgang schmaler als 2r"), Nav-Graph und `src/data/levels/feinkost.json` gehören zu M4.
+- **Der Hash beweist Gleichheit, nicht Richtigkeit.** Er fängt Drift, sagt aber nichts über richtige
+  Bewegung – deshalb hat jedes System eigene Verhaltenstests neben dem Golden-Lauf.
+- **Der Golden-Wächter greift nur im Git-Arbeitsbaum** und ersetzt nicht das Lesen des Diffs.
+
 ## Offene Punkte
 
 - **Update-Suche offline:** Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).
@@ -543,6 +839,12 @@ deshalb entfernt; `openTemporaryCamera` (Selbsttest) bleibt unverändert. Aus de
 - **Wake Lock nach `pagehide` ungeklärt:** wird die Seite weggeschaltet (Zurück-Taste, iOS-Seitencache), fordert `src/platform/wakeLock.ts` die Sperre nicht erneut an – am Gerät hilft nur ein Neuladen. Ob das auf dem iPhone in der Praxis stört, zeigt erst ein echter Sperrtest.
 - **`lock:reconnect` erreicht praktisch keinen gespeicherten Report:** der Eintrag landet in der Zeitleiste der gerade geschlossenen Verbindung. Wer auswerten will, ob neu verbunden wurde, liest `lockTest.runs[].reconnected`. Ob der Eintrag überhaupt bleiben soll, wird nach Sitzung A entschieden.
 - **Fake-Kamera-Smokes auf dem Linux-CI-Runner ungemessen:** beide Specs laufen bisher nur lokal auf Windows-Chromium (je 3× stabil). Der fremde Smoke baut dabei eine echte `RTCPeerConnection` auf. Fällt einer in der CI um, bekommt er dort `{ tag: '@local' }` und der Grund kommt hierher (C7) – der Test wird nicht abgeschwächt.
+- **Balance-Zahlen sind geraten (M3):** Tempi, Beschleunigung, Reibung und die Lautstärkekurve stehen in keinem Dokument. Sie gehen mit dem Regler-Panel aus M6 ans Spaß-GATE nach M14; kein Test hängt an ihnen, wer sie ändert, ändert keine Zusicherung.
+- **Cross-Engine-Hash ungeprüft:** lokal ist nur Chromium installiert, Vitest läuft in Node – beides V8. Ob Firefox und Safari denselben Zustandshash liefern, entscheidet M20. Bis dahin behauptet kein Text und kein Testname „cross-engine".
+- **`npm run core:bench` misst nur diesen Rechner:** auf dem Handy ist mit dem 4- bis 8-fachen zu rechnen (kein Gerät zum Messen). Die Zahlen im Abschnitt „M3 – Core I" tragen diesen Vorbehalt.
+- **`hashState` kostet ~145 µs statt der ~16 µs des Prototyps:** der Unterschied ist der Feldpfad, den die Vertragsfassung je Zahl für die NaN-Diagnose zusammensetzt. In M3 belanglos (der Hash läuft nicht je Tick). Wird er je zum Engpass, ist der Ausweg ein schneller Lauf ohne Pfade plus ein zweiter Lauf mit Pfaden bei `NaN` – nicht eine schwächere Diagnose.
+- **Die sechs Katzen-/Kolonie-Systeme sind leere Stümpfe:** jeder Golden-Hash aus M3 gilt nur bis zum ersten echten Verhalten (M7, M13, M16). Der Umbau braucht dann eine Re-Baseline mit Begründung – das ist erwartet, kein Fehler.
+- **Level-Validator und `feinkost.json` fehlen (M4):** das Mini-Level prüft nur Loader, Kollider-Erzeugung und Kollision. „Kein Durchgang schmaler als 2r" und „keine zwei wirksamen Kollider überlappen sich im Grundriss" (je Bewegten-Art) sind in M4 fällig – im Entwurfs-Level fand die Probe für die Katze 12 zu enge Paare, also echte Layout-Fehler. Dort fällt auch die Regel für das Mauseloch, das der Loader heute bewusst nicht gegen Raumgrenzen prüft.
 
 ## Beobachten (vor jedem Release prüfen)
 - Chrome „Local Network Access Restrictions for WebRTC" (WebRTC ins lokale Netz nur noch nach Berechtigungsabfrage): chromestatus.com/feature/5065884686876672

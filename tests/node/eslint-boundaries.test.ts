@@ -58,6 +58,67 @@ describe('ESLint-Leitplanken', () => {
     expect(ids).not.toContain('no-restricted-properties');
   });
 
+  // M3: Hash und Klon laufen über eine handgeschriebene Feldfolge. Object.keys/entries/… würde die
+  // Laufordnung an die Feldnamen binden – eine Umbenennung änderte still den Golden-Hash.
+  it('core darf Object.keys/values/entries/assign/fromEntries nicht benutzen', async () => {
+    const ids = await ruleIds(
+      `const o = { a: 1 };\nexport const a = Object.keys(o);\nexport const b = Object.values(o);\n` +
+        `export const c = Object.entries(o);\nexport const d = Object.assign({}, o);\nexport const e = Object.fromEntries(c);\n`,
+      'src/core/sim/hash.ts',
+    );
+    expect(ids.filter((id) => id === 'no-restricted-properties')).toHaveLength(5);
+  });
+
+  // M3/D12: Daten werden injiziert, nicht geparst – die Loader nehmen `unknown`.
+  it('core darf JSON.parse und JSON.stringify nicht benutzen', async () => {
+    const ids = await ruleIds(
+      `export const a = JSON.parse('1');\nexport const b = JSON.stringify(a);\n`,
+      'src/core/data/balanceLoad.ts',
+    );
+    expect(ids.filter((id) => id === 'no-restricted-properties')).toHaveLength(2);
+  });
+
+  it('ausserhalb von src/core bleiben Object.keys und JSON.parse erlaubt', async () => {
+    const ids = await ruleIds(
+      `const o = { a: 1 };\nexport const a = Object.keys(o);\nexport const b = JSON.parse('1');\n`,
+      'src/lab/report.ts',
+    );
+    expect(ids).not.toContain('no-restricted-properties');
+  });
+
+  // Die exakt spezifizierten Math-Operationen und die kanonische Byte-Sicht sind der Werkzeugkasten
+  // von src/core/math – sie müssen ausdrücklich durchkommen.
+  it('core darf Math.imul, Math.fround, Math.clz32 und DataView benutzen', async () => {
+    const ids = await ruleIds(
+      `const view = new DataView(new ArrayBuffer(8));\nview.setFloat64(0, 1.5, true);\n` +
+        `export const a = Math.imul(3, 5) + Math.fround(1.5) + Math.clz32(7) + Math.sqrt(2) + view.getUint8(0);\n` +
+        `export const b = new Uint8Array(4);\nexport const c = Number.isFinite(a) && Number.isInteger(a);\n`,
+      'src/core/math/hash.ts',
+    );
+    expect(ids).not.toContain('no-restricted-properties');
+    expect(ids).not.toContain('no-restricted-syntax');
+    expect(ids).not.toContain('no-restricted-globals');
+  });
+
+  it.each(['src/core/math/trig.ts', 'src/core/world/collision.ts', 'src/core/data/balanceLoad.ts', 'src/core/systems/clock.ts'])(
+    '%s darf keine fremde Schicht importieren',
+    async (filePath) => {
+      const render = await ruleIds(`import { a } from '../../render/engine';\nexport const b = a;\n`, filePath);
+      const ui = await ruleIds(`import { a } from '../../ui/strings';\nexport const b = a;\n`, filePath);
+      expect(render).toContain('no-restricted-imports');
+      expect(ui).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['src/core/math/trig.ts', 'src/core/world/collision.ts', 'src/core/data/balanceLoad.ts', 'src/core/systems/clock.ts'])(
+    '%s darf Math.sin, den Potenz-Operator und new Date() nicht benutzen',
+    async (filePath) => {
+      const ids = await ruleIds(`export const a = Math.sin(1) + 2 ** 3;\nexport const b = new Date();\n`, filePath);
+      expect(ids).toContain('no-restricted-properties');
+      expect(ids.filter((id) => id === 'no-restricted-syntax')).toHaveLength(2);
+    },
+  );
+
   it('core darf keine Browser-Globals und kein new Date() benutzen', async () => {
     const ids = await ruleIds(`export const w = window;\nexport const t = new Date();\nexport const p = performance;\n`, 'src/core/sim/y.ts');
     expect(ids).toContain('no-restricted-globals');
