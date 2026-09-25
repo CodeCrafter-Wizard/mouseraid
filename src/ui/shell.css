@@ -75,6 +75,16 @@ html, body {
   -webkit-user-select: text; user-select: text;
 }
 
+/* Bühne der Entwickler-Ansicht `?view=2d`. Das CSS steht HIER und nicht in src/render/view2d:
+   die Ansicht importiert kein Stylesheet, damit die CSS-Prüfung des Haken-Wächters für sie
+   trivial grün bleibt. lab.html bezahlt dafür zwei ungenutzte Selektoren. */
+/* `flex: 0 0 auto`: ohne das staucht die Flex-Spalte von `#app` die Leinwand und ein Screenshot
+   zeigt ein verkleinertes Bild statt der gesetzten 960 x 720 Pixel. */
+.shell-stage { display: flex; justify-content: center; flex: 0 0 auto; }
+.shell-stage canvas {
+  max-width: 100%; height: auto; border-radius: 12px; background: #10131c; image-rendering: pixelated;
+}
+
 /* Ausnahme von der Touch-Härtung oben: Eingabefelder und kopierbare Texte (Labor-Codes, Reports). */
 .selectable {
   -webkit-user-select: text;

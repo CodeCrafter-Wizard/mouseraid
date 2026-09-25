@@ -18,3 +18,14 @@ shell = mountShell(root, {
   links: [{ href: `${import.meta.env.BASE_URL}lab.html`, label: S.shell.linkLab }],
 });
 initPwa(shell);
+
+// Entwickler-Ansicht `?view=2d` (Canvas 2D, kein Babylon). NACH `mountShell`, nicht davor: die
+// Hülle ruft `root.replaceChildren()` und löschte ein früher eingehängtes Element. Der Import ist
+// DYNAMISCH – so bleiben Kern und Level aus dem Einstiegs-Chunk der Spielseite.
+const params = new URLSearchParams(location.search);
+if (params.get('view') === '2d') {
+  const stage = document.createElement('div');
+  stage.className = 'shell-stage';
+  root.append(stage);
+  void import('./render/view2d/main').then((module) => { module.mountView2d(stage, params); });
+}
