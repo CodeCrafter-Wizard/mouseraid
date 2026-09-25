@@ -214,8 +214,9 @@ function loadSpawns(value: unknown, rooms: readonly LevelRoom[]): LevelSpawns {
  * Prüft Form, Endlichkeit, Bereiche und Verweise und liefert die NORMALISIERTE Form
  * (fehlendes `box.blocks` wird zu ALL_MASKS). REIN und liest keine Datei – der Aufrufer
  * reicht die Ausgabe von `JSON.parse` herein (D12). „Nav-Graph zusammenhängend" gehört zu M4.
- * Spawns (Mäuse, Katze) UND das Mauseloch müssen in einem Raum liegen (`insideAnyRoom`,
- * halboffene Grenzen) – ohne Raum gäbe es später weder eine Raum-Maske noch eine Kamera dafür.
+ * Spawns (Mäuse, Katze) müssen in einem Raum liegen (`insideAnyRoom`, halboffene Grenzen) – ohne
+ * Raum gäbe es später weder eine Raum-Maske noch eine Kamera dafür. Das Mauseloch wird bewusst NICHT
+ * gegen die Räume geprüft: ein Portal sitzt in einer Wand, also auf der Grenze; M4 legt die Regel fest.
  */
 export function loadLevel(json: unknown): LevelDef {
   const root = asObject(json, '');
@@ -223,8 +224,6 @@ export function loadLevel(json: unknown): LevelDef {
   const scale = num(root, 'scale', '');
   if (scale !== CM_PER_UNIT) throw new LevelError('scale', `muss ${CM_PER_UNIT} sein`);
   const rooms = loadRooms(asArray(root, 'rooms', ''));
-  const mouseHole = vec2(root['mouseHole'], 'mouseHole');
-  if (!insideAnyRoom(mouseHole, rooms)) throw new LevelError('mouseHole', 'liegt in keinem Raum');
   return {
     id,
     scale,
@@ -233,6 +232,6 @@ export function loadLevel(json: unknown): LevelDef {
     shelves: loadShelves(asArray(root, 'shelves', '')),
     boxes: loadBoxes(asArray(root, 'boxes', '')),
     spawns: loadSpawns(root['spawns'], rooms),
-    mouseHole,
+    mouseHole: vec2(root['mouseHole'], 'mouseHole'),
   };
 }

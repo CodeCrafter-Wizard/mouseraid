@@ -169,13 +169,14 @@ describe('loadLevel – jede Wurf-Bedingung mit ihrem Feldpfad', () => {
     },
     { name: 'mouseHole fehlt', json: variant((l) => { delete l['mouseHole']; }), path: 'mouseHole' },
     { name: 'mouseHole.x ist NaN', json: variant((l) => { sub(l, 'mouseHole')['x'] = Number.NaN; }), path: 'mouseHole.x' },
-    { name: 'mouseHole liegt außerhalb jedes Raums', json: variant((l) => { l['mouseHole'] = { x: 999, z: 0 }; }), path: 'mouseHole' },
-    {
-      name: 'mouseHole genau auf x1 liegt in keinem Raum (halboffen: x < x1)',
-      json: variant((l) => { l['mouseHole'] = { x: 20, z: -14 }; }),
-      path: 'mouseHole',
-    },
   ];
+
+  it('das Mauseloch darf auf einer Raumgrenze liegen (Portal in der Wand – M4 legt die Regel fest)', () => {
+    // Bewusst KEINE Raumprüfung fürs Mauseloch: ein Portal sitzt in einer Wand, also genau auf der
+    // (halboffenen) Grenze; erst das echte Level in M4 entscheidet, wie das Loch verortet wird.
+    const onEdge = variant((l) => { l['mouseHole'] = { x: 20, z: -14 }; });
+    expect(loadLevel(onEdge).mouseHole).toEqual({ x: 20, z: -14 });
+  });
 
   it.each(CASES)('$name -> LevelError auf "$path"', ({ json, path }) => {
     expect(() => loadLevel(json)).toThrow(LevelError);
