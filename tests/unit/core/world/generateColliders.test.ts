@@ -219,6 +219,26 @@ describe('generateColliders – Kiste', () => {
     expect(box.rot).toBe(0);
     expect(box.blocks).toBe(MOUSE | CAT | SIGHT | CAMERA);
   });
+
+  it('eine nicht-quadratische, erhöhte Kiste: y0Cm rechnet mit CM_PER_UNIT um, hx/hz landen unvertauscht', () => {
+    // Die Fixture-Kiste ist quadratisch (hx = hz = 1.5) und steht auf dem Boden (y0Cm = 0) –
+    // damit fallen ein fehlendes "/ CM_PER_UNIT" bei y0 (0 = 0) UND ein Tausch hx<->hz (1.5 = 1.5)
+    // nicht auf (Review Minor 2). Diese Variante mit unterschiedlichen Halbmaßen und y0Cm > 0
+    // deckt beides auf.
+    const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
+    const box = (raw['boxes'] as Record<string, unknown>[])[0] as Record<string, unknown>;
+    box['y0Cm'] = 5;
+    box['y1Cm'] = 40;
+    box['hx'] = 2;
+    box['hz'] = 1;
+    const variantColliders = generateColliders(loadLevel(raw));
+    const variantBox = variantColliders[variantColliders.length - 1];
+    if (variantBox === undefined) throw new Error('Kiste fehlt');
+    expect(variantBox.y0).toBe(0.5); // y0Cm 5 / CM_PER_UNIT
+    expect(variantBox.y1).toBe(4); // y1Cm 40 / CM_PER_UNIT
+    expect(variantBox.hx).toBe(2);
+    expect(variantBox.hz).toBe(1);
+  });
 });
 
 describe('colliderTypes – die beiden Helfer', () => {

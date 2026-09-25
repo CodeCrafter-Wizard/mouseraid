@@ -50,6 +50,12 @@ function legCollider(
  *
  * KEIN Balance-Argument: die Spalthöhe steht als `gapCm` am Regal, die Körperhöhen der
  * Bewegten kommen erst bei der Abfrage aus der Balance (`mouse.yRange` / `cat.yRange`).
+ *
+ * ERWARTET ein von `loadLevel` geprüftes `LevelDef`: jede Wand hat eine Länge > 0, jedes
+ * Regal/jede Kiste hat `hx > 0` und `hz > 0` – `loadLevel` bürgt dafür (`walls[i]`: „Wand ohne
+ * Länge", `shelves[i].hx`/`hz`, `boxes[i].hx`/`hz`: „muss größer als 0 sein"). Diese Funktion
+ * prüft das NICHT erneut: eine Wand der Länge 0 ergäbe `hx = 0` und `rc = rs = NaN` (0/0),
+ * still und ohne Fehler. Von Hand gebaute Testgeometrie muss dieselbe Vorbedingung einhalten.
  */
 export function generateColliders(level: LevelDef): Collider[] {
   const out: Collider[] = [];

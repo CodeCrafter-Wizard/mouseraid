@@ -100,6 +100,13 @@ describe('loadLevel – erlaubte Sonderfälle', () => {
     const level = loadLevel(variant((l) => { at(l, 'rooms', 0)['cameraMode'] = 'diorama'; }));
     expect(level.rooms[0]?.cameraMode).toBe('diorama');
   });
+
+  it('ein Spawn genau auf der unteren Raumkante (x0, z0) wird angenommen (halboffen: x0 <= x, z0 <= z)', () => {
+    const level = loadLevel(variant((l) => {
+      list(sub(l, 'spawns'), 'mice')[0] = { x: -20, z: -15 };
+    }));
+    expect(level.spawns.mice[0]).toEqual({ x: -20, z: -15 });
+  });
 });
 
 describe('loadLevel – jede Wurf-Bedingung mit ihrem Feldpfad', () => {
@@ -148,10 +155,26 @@ describe('loadLevel – jede Wurf-Bedingung mit ihrem Feldpfad', () => {
     { name: 'spawns.mice ist leer', json: variant((l) => { sub(l, 'spawns')['mice'] = []; }), path: 'spawns.mice' },
     { name: 'Maus-Spawn ohne z', json: variant((l) => { delete (list(sub(l, 'spawns'), 'mice')[0] as Json)['z']; }), path: 'spawns.mice[0].z' },
     { name: 'Maus-Spawn außerhalb jedes Raums', json: variant((l) => { list(sub(l, 'spawns'), 'mice')[2] = { x: 999, z: 0 }; }), path: 'spawns.mice[2]' },
+    {
+      name: 'Maus-Spawn genau auf x1 liegt in keinem Raum (halboffen: x < x1)',
+      json: variant((l) => { list(sub(l, 'spawns'), 'mice')[0] = { x: 20, z: -5 }; }),
+      path: 'spawns.mice[0]',
+    },
     { name: 'Katzen-Spawn fehlt', json: variant((l) => { delete sub(l, 'spawns')['cat']; }), path: 'spawns.cat' },
     { name: 'Katzen-Spawn außerhalb jedes Raums', json: variant((l) => { sub(l, 'spawns')['cat'] = { x: 0, z: -40 }; }), path: 'spawns.cat' },
+    {
+      name: 'Katzen-Spawn genau auf z1 liegt in keinem Raum (halboffen: z < z1)',
+      json: variant((l) => { sub(l, 'spawns')['cat'] = { x: 0, z: 15 }; }),
+      path: 'spawns.cat',
+    },
     { name: 'mouseHole fehlt', json: variant((l) => { delete l['mouseHole']; }), path: 'mouseHole' },
     { name: 'mouseHole.x ist NaN', json: variant((l) => { sub(l, 'mouseHole')['x'] = Number.NaN; }), path: 'mouseHole.x' },
+    { name: 'mouseHole liegt außerhalb jedes Raums', json: variant((l) => { l['mouseHole'] = { x: 999, z: 0 }; }), path: 'mouseHole' },
+    {
+      name: 'mouseHole genau auf x1 liegt in keinem Raum (halboffen: x < x1)',
+      json: variant((l) => { l['mouseHole'] = { x: 20, z: -14 }; }),
+      path: 'mouseHole',
+    },
   ];
 
   it.each(CASES)('$name -> LevelError auf "$path"', ({ json, path }) => {

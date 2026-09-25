@@ -178,11 +178,18 @@ function loadBoxes(raw: readonly unknown[]): LevelBox[] {
   return boxes;
 }
 
+/**
+ * Ergänzung zum Vertrag: Raumgrenzen sind HALBOFFEN, `[x0, x1) × [z0, z1)` – dieselbe Regel,
+ * mit der T5 (`playerMove`, Ruling R11) zur Laufzeit den Raum eines Punkts bestimmt. Eine
+ * geschlossene Prüfung (`<=`) würde einen Spawn genau auf `x1`/`z1` hier annehmen, obwohl er
+ * zur Laufzeit in KEINEM Raum läge – ein vom Loader abgesegneter Spawn, der sofort NO_ROOM
+ * meldet.
+ */
 function insideAnyRoom(point: Vec2, rooms: readonly LevelRoom[]): boolean {
   for (let i = 0; i < rooms.length; i += 1) {
     const bounds = rooms[i]?.bounds;
     if (bounds === undefined) continue;
-    if (point.x >= bounds.x0 && point.x <= bounds.x1 && point.z >= bounds.z0 && point.z <= bounds.z1) return true;
+    if (point.x >= bounds.x0 && point.x < bounds.x1 && point.z >= bounds.z0 && point.z < bounds.z1) return true;
   }
   return false;
 }
@@ -207,6 +214,8 @@ function loadSpawns(value: unknown, rooms: readonly LevelRoom[]): LevelSpawns {
  * Prüft Form, Endlichkeit, Bereiche und Verweise und liefert die NORMALISIERTE Form
  * (fehlendes `box.blocks` wird zu ALL_MASKS). REIN und liest keine Datei – der Aufrufer
  * reicht die Ausgabe von `JSON.parse` herein (D12). „Nav-Graph zusammenhängend" gehört zu M4.
+ * Spawns (Mäuse, Katze) UND das Mauseloch müssen in einem Raum liegen (`insideAnyRoom`,
+ * halboffene Grenzen) – ohne Raum gäbe es später weder eine Raum-Maske noch eine Kamera dafür.
  */
 export function loadLevel(json: unknown): LevelDef {
   const root = asObject(json, '');
@@ -214,6 +223,8 @@ export function loadLevel(json: unknown): LevelDef {
   const scale = num(root, 'scale', '');
   if (scale !== CM_PER_UNIT) throw new LevelError('scale', `muss ${CM_PER_UNIT} sein`);
   const rooms = loadRooms(asArray(root, 'rooms', ''));
+  const mouseHole = vec2(root['mouseHole'], 'mouseHole');
+  if (!insideAnyRoom(mouseHole, rooms)) throw new LevelError('mouseHole', 'liegt in keinem Raum');
   return {
     id,
     scale,
@@ -222,6 +233,6 @@ export function loadLevel(json: unknown): LevelDef {
     shelves: loadShelves(asArray(root, 'shelves', '')),
     boxes: loadBoxes(asArray(root, 'boxes', '')),
     spawns: loadSpawns(root['spawns'], rooms),
-    mouseHole: vec2(root['mouseHole'], 'mouseHole'),
+    mouseHole,
   };
 }

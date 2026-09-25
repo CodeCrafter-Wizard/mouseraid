@@ -73,6 +73,46 @@ describe('loadBalance – Umrechnung (gepinnt, Vertrag)', () => {
   });
 });
 
+describe('loadBalance – Feldverwechslungen zwischen gleichwertigen Rohwerten', () => {
+  // Die Fixture setzt mehrere Rohfelder absichtlich auf denselben Wert (0.5 bzw. 0.9, siehe
+  // Kommentar oben in der Fixture), damit ist ein stiller Tausch zweier Ausgabefelder im
+  // Rueckgabeobjekt (z. B. `friction: weakenedMul` statt `friction: frictionPerTick`) fuer die
+  // obigen Tests unsichtbar: beide Ausgabefelder blieben bei 0.5 bzw. 0.9 stehen. Jeder Test
+  // hier variiert GENAU EIN Rohfeld eines Paars und prueft, dass NUR das dazugehoerige
+  // Ausgabefeld sich aendert, waehrend das gleichwertige Feld unveraendert bleibt.
+
+  it('weakenedMul aendert sich, friction (frictionPerTick) bleibt stehen', () => {
+    const mouse = loadBalance(variant((b) => { sub(b, 'mouse')['weakenedMul'] = 0.25; })).mouse;
+    expect(mouse.weakenedMul).toBe(0.25);
+    expect(mouse.friction).toBe(0.5);
+  });
+
+  it('frictionPerTick aendert sich, weakenedMul bleibt stehen', () => {
+    const mouse = loadBalance(variant((b) => { sub(b, 'mouse')['frictionPerTick'] = 0.75; })).mouse;
+    expect(mouse.friction).toBe(0.75);
+    expect(mouse.weakenedMul).toBe(0.5);
+  });
+
+  it('sneakBelowRatio wirkt nur auf sneakSpeed, friction und weakenedMul bleiben stehen', () => {
+    const mouse = loadBalance(variant((b) => { sub(b, 'mouse')['sneakBelowRatio'] = 0.25; })).mouse;
+    expect(mouse.sneakSpeed).toBeCloseTo(0.05, 12); // walkSpeed 0.2 * 0.25
+    expect(mouse.friction).toBe(0.5);
+    expect(mouse.weakenedMul).toBe(0.5);
+  });
+
+  it('sprintRingMag aendert sich, loudSprint (loudness.sprint) bleibt stehen', () => {
+    const mouse = loadBalance(variant((b) => { sub(b, 'mouse')['sprintRingMag'] = 0.85; })).mouse;
+    expect(mouse.sprintRingMag).toBe(0.85);
+    expect(mouse.loudSprint).toBe(0.9);
+  });
+
+  it('loudness.sprint (loudSprint) aendert sich, sprintRingMag bleibt stehen', () => {
+    const mouse = loadBalance(variant((b) => { sub(sub(b, 'mouse'), 'loudness')['sprint'] = 0.6; })).mouse;
+    expect(mouse.loudSprint).toBe(0.6);
+    expect(mouse.sprintRingMag).toBe(0.9);
+  });
+});
+
 describe('loadBalance – die echte (provisorische) Balance', () => {
   const balance = loadBalance(realBalance);
 
