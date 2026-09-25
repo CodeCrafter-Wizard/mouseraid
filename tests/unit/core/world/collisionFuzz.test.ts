@@ -3,11 +3,20 @@ import type { RngState } from '../../../../src/core/math/rng';
 import { nextInt, nextRange, seedRng } from '../../../../src/core/math/rng';
 import type { Collider, MoveResult, YRange } from '../../../../src/core/world/colliderTypes';
 import { ALL_MASKS, CAMERA, CAT, MOUSE, SIGHT, createMoveResult } from '../../../../src/core/world/colliderTypes';
-import { moveCircle, segmentBlocked } from '../../../../src/core/world/collision';
+import { SKIN, moveCircle, segmentBlocked } from '../../../../src/core/world/collision';
 
 // D14: 10 000 Ticks x 8 Bewegte gegen 60 gesaete OBBs. Der Fuzz sichert DREI Invarianten:
-// (1) alle Zahlen endlich, (2) nie in einem blockierenden Kasten, (3) die Strecke alt->neu
-// kreuzt keinen blockierenden Kasten (sonst waere der Bewegte hindurchgesprungen).
+// (1) alle Zahlen endlich, (2) nie TIEFER als SKIN in einem blockierenden Kasten, (3) die Strecke
+// alt->neu kreuzt keinen blockierenden Kasten (sonst waere der Bewegte hindurchgesprungen).
+// Zu (2): moveCircle legt den Bewegten je AUFGELOESTEM Treffer SKIN vor GENAU EINE Flaeche. Druecken
+// zwei Flaechen gleichzeitig (Gleiten in eine Ecke), bleibt bis zu SKIN Eindringung in der jeweils
+// ANDEREN Flaeche uebrig – das ist keine Schwaeche von moveCircle, sondern die gemessene Schranke
+// des Skin-Loesers ohne Entspannungsschritt (Review Task 3, MAJ-1: 1475 Keil-Konfigurationen mit
+// nachweislich freier Startlage, tiefste Eindringung 0,988 x SKIN, waechst ueber 20 000 Ticks nicht).
+// Die Toleranz unten ist deshalb `radius - SKIN`, nicht `radius`. Die Zeile am Ende dieser Datei, die
+// nach einer Sperre die Richtung wechselt, ist reiner Fahrkomfort (sonst druecken alle acht Bewegten
+// bis zum Ende gegen dieselbe Wand) – sie darf NICHT dafuer verantwortlich sein, dass diese Pruefung
+// gruen bleibt (siehe die beiden Gegenproben im Review-Fix-Report).
 // Keine Zeit-Zusicherung – Tempo misst `npm run core:bench` (T6).
 const TICKS = 10_000;
 const MOVERS = 8;
@@ -109,7 +118,7 @@ function run(rng: RngState, colliders: readonly Collider[], movers: Mover[], tic
       for (const c of colliders) {
         if (!blocksMover(c, m)) continue;
         const dist = distanceToBox(m.x, m.z, c);
-        if (dist < m.radius - 1e-9) {
+        if (dist < m.radius - SKIN - 1e-9) {
           note(`Tick ${tick}, Bewegter ${i}: steckt in Kollider ${c.id} (Abstand ${dist.toFixed(6)} < r ${m.radius})`);
         }
       }

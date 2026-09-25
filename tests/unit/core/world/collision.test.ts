@@ -158,6 +158,23 @@ describe('moveCircle: Grundfaelle', () => {
     expect(res.hits).toBe(0);
   });
 
+  it('yRange ist halboffen: buendige Baender wirken nicht, ein winziger Ueberstand schon', () => {
+    // affects() (collision.ts:38) schreibt dieselbe Halboffen-Regel wie overlapsY ein zweites Mal in
+    // den Baum; der Test oben benutzt ein DISJUNKTES Band (2..3 gegen 0..1,9), keine Beruehrung. Hier
+    // beruehren sich die Baender GENAU an MOUSE_Y.y0/y1 - eine Kollision waere die Drift, gegen die
+    // die Verdopplung eigentlich absichern soll (Review Task 3, MIN-1: `<` -> `<=` in affects()
+    // ueberlebt sonst alle Tests).
+    const flushAbove = box({ id: 0, cx: 0, cz: 5, hx: 10, hz: 0.5, y0: 1.9, y1: 3, blocks: ALL_MASKS });
+    const flushBelow = box({ id: 1, cx: 0, cz: 5, hx: 10, hz: 0.5, y0: -2, y1: 0, blocks: ALL_MASKS });
+    const none = moveCircle({ x: 0, z: 3 }, { x: 0, z: 4 }, MOUSE_R, MOUSE_Y, MOUSE, [flushAbove, flushBelow], createMoveResult());
+    expect(none.hits).toBe(0);
+    expect(none.z).toBeCloseTo(7, 12);
+
+    const overlapping = box({ id: 2, cx: 0, cz: 5, hx: 10, hz: 0.5, y0: -1, y1: 0.0001, blocks: ALL_MASKS });
+    const some = moveCircle({ x: 0, z: 3 }, { x: 0, z: 4 }, MOUSE_R, MOUSE_Y, MOUSE, [overlapping], createMoveResult());
+    expect(some.hits).toBe(1);
+  });
+
   it('bleibt in einer Innenecke stehen, ohne in eine der Waende zu geraten', () => {
     const walls = [
       box({ id: 0, cx: 3, cz: 0, hx: 0.5, hz: 6, y0: 0, y1: 3, blocks: ALL_MASKS }),
@@ -321,6 +338,61 @@ describe('moveCircle: Falle 2 – die Ueberlappungsregel gilt je BEWEGTEM', () =
   });
 });
 
+describe('moveCircle: Rest nach MAX_SLIDES wird verworfen', () => {
+  it('meldet blockedX und blockedZ fuer eine Restbewegung, die kein Gleitschritt je geschnitten hat', () => {
+    // Drei zentrierte 1x1-Kisten hintereinander: der Bewegte startet in JEDER von ihnen GENAU im
+    // Mittelpunkt (Fall A, Gleichstand overX === overZ -> Herausdruecken in +x) und die Restbewegung
+    // (5,5) zeigt in dieselbe Richtung wie jeder der drei Schuebe (into >= 0) - der Gleiten-Zweig
+    // schneidet deshalb in KEINER der drei Iterationen etwas von rx/rz ab, und weder blockedX noch
+    // blockedZ werden innerhalb der Schleife je gesetzt. Erst die Zeilen am Ende von moveCircle
+    // (collision.ts:257-258) melden nach MAX_SLIDES die volle Ausgangsbewegung als Sperre (Review
+    // Task 3, MIN-2: ohne die beiden Zeilen ueberleben alle 46 Tests).
+    const step = 1 + MOUSE_R + SKIN; // hx(1) + radius + SKIN
+    const boxA = box({ id: 0, cx: 0, cz: 0, hx: 1, hz: 1, y0: 0, y1: 3, blocks: ALL_MASKS });
+    const boxB = box({ id: 1, cx: step, cz: 0, hx: 1, hz: 1, y0: 0, y1: 3, blocks: ALL_MASKS });
+    const boxC = box({ id: 2, cx: step * 2, cz: 0, hx: 1, hz: 1, y0: 0, y1: 3, blocks: ALL_MASKS });
+    const colliders = [boxA, boxB, boxC];
+    const res = moveCircle({ x: 0, z: 0 }, { x: 5, z: 5 }, MOUSE_R, MOUSE_Y, MOUSE, colliders, createMoveResult());
+    expect(res.hits).toBe(MAX_SLIDES);
+    expect(res.blockedX).toBe(true);
+    expect(res.blockedZ).toBe(true);
+    expect(res.x).toBeCloseTo(step * 3, 9);
+    expect(res.z).toBe(0);
+    for (const c of colliders) {
+      expect(distanceToBox(res.x, res.z, c)).toBeGreaterThan(MOUSE_R);
+    }
+  });
+});
+
+describe('moveCircle: Achsenwahl beim Herausdruecken aus dem Rechteck-Inneren', () => {
+  // Der Zweig "Mittelpunkt IM Rechteck" (collision.ts:83-91) waehlt die Achse der GERINGEREN
+  // Eindringtiefe; bei Gleichstand entscheidet `overX <= overZ` zugunsten von x. Alle drei Faelle
+  // pruefen exakt das (Review Task 3, MIN-3: `overX <= overZ` -> `overX > overZ` ueberlebt sonst
+  // alle 46 Tests).
+  const R = 0.5;
+
+  it('waehlt bei overX < overZ die x-Achse', () => {
+    const wall = box({ id: 0, cx: 0, cz: 0, hx: 1, hz: 2, y0: 0, y1: 3, blocks: ALL_MASKS });
+    const res = moveCircle({ x: 0.6, z: 0 }, { x: 0.01, z: 0 }, R, MOUSE_Y, MOUSE, [wall], createMoveResult());
+    expect(res.x).toBeCloseTo(1 + R + SKIN + 0.01, 9);
+    expect(res.z).toBe(0);
+  });
+
+  it('waehlt bei overZ < overX die z-Achse', () => {
+    const wall = box({ id: 0, cx: 0, cz: 0, hx: 2, hz: 1, y0: 0, y1: 3, blocks: ALL_MASKS });
+    const res = moveCircle({ x: 0, z: 0.6 }, { x: 0, z: 0.01 }, R, MOUSE_Y, MOUSE, [wall], createMoveResult());
+    expect(res.z).toBeCloseTo(1 + R + SKIN + 0.01, 9);
+    expect(res.x).toBe(0);
+  });
+
+  it('entscheidet den Gleichstand overX === overZ zugunsten von x', () => {
+    const wall = box({ id: 0, cx: 0, cz: 0, hx: 1, hz: 1, y0: 0, y1: 3, blocks: ALL_MASKS });
+    const res = moveCircle({ x: 0, z: 0 }, { x: 0.01, z: 0 }, R, MOUSE_Y, MOUSE, [wall], createMoveResult());
+    expect(res.x).toBeCloseTo(1 + R + SKIN + 0.01, 9);
+    expect(res.z).toBe(0);
+  });
+});
+
 describe('segmentBlocked', () => {
   const parts = shelf();
   const eye: YRange = { y0: 2.5, y1: 2.6 };
@@ -467,5 +539,19 @@ describe('checkSupport', () => {
     const crate = [box({ id: 0, cx: 0, cz: 0, hx: 3, hz: 0.5, rot, y0: 0, y1: 1, blocks: ALL_MASKS })];
     expect(checkSupport({ x: 1.5, z: 1.5 }, 1, SUPPORT_TOLERANCE, crate)).toBe(true);
     expect(checkSupport({ x: 1.5, z: -1.5 }, 1, SUPPORT_TOLERANCE, crate)).toBe(false);
+  });
+
+  it('schliesst die Toleranzgrenze ein (">" ist inklusiv), knapp dahinter nicht mehr', () => {
+    // SUPPORT_TOLERANCE (0,1) ist in Binaerkommazahlen nicht exakt: `TOP + SUPPORT_TOLERANCE` gerundet
+    // und dann wieder von TOP abgezogen landet schon einen Hauch VOR der eigentlichen Grenze und pint
+    // das `>` in checkSupport (collision.ts:372) deshalb nicht scharf. 0,5 ist exakt in Binaer (2^-1) -
+    // erst damit trifft `dy` die Grenze bit-genau (Review Task 3, MIN-4: `>` -> `>=` ueberlebt sonst
+    // alle 46 Tests, ebenso `<` -> `<=` auf der Unterseite).
+    const tol = 0.5;
+    const platform = [box({ id: 0, cx: 0, cz: 0, hx: 2, hz: 2, y0: 2, y1: TOP, blocks: ALL_MASKS })];
+    expect(checkSupport({ x: 0, z: 0 }, TOP + tol, tol, platform)).toBe(true);
+    expect(checkSupport({ x: 0, z: 0 }, TOP - tol, tol, platform)).toBe(true);
+    expect(checkSupport({ x: 0, z: 0 }, TOP + tol + 1e-9, tol, platform)).toBe(false);
+    expect(checkSupport({ x: 0, z: 0 }, TOP - tol - 1e-9, tol, platform)).toBe(false);
   });
 });
