@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { loadBalance } from '../../../../src/core/data/balanceLoad';
 import { NaNError } from '../../../../src/core/math/hash';
 import { hashState } from '../../../../src/core/sim/hash';
-import { NOISE_RING, createInitialState } from '../../../../src/core/sim/state';
-import type { WorldState } from '../../../../src/core/sim/state';
+import { NOISE_RING, NO_ROOM, createInitialState } from '../../../../src/core/sim/state';
+import type { CatState, PlayerIntent, WorldState } from '../../../../src/core/sim/state';
 import { loadLevel } from '../../../../src/core/world/levelLoad';
 import balanceJson from '../../../fixtures/core/test-balance.json';
 import levelJson from '../../../fixtures/core/mini-level.json';
@@ -16,6 +16,53 @@ function at<T>(list: readonly T[], index: number): T {
   const value = list[index];
   if (value === undefined) throw new Error(`Index ${index} fehlt`);
   return value;
+}
+
+/**
+ * Generischer Blattfinder für Minor 3 (Task-4-Review): läuft JEDEN Zustand ab und sammelt jedes
+ * Zahlenfeld mit dem Pfad, den `hash.ts` selbst dafür schreiben würde (`players[0].pos.x`,
+ * `cat.awareness[2]`, `noise[63].loudness`, …). `boolean`/`string`-Blätter fehlen absichtlich:
+ * die gehen in `hash.ts` durch `hashBool`/`hashStr`/`hashEnum`, nie durch `hashF64`, und können
+ * dort keinen `NaNError` auslösen. Dieser Test darf `Object.keys` benutzen (CLAUDE.md: nur
+ * `src/core` ist eingeschränkt) – `hash.ts` selbst tut das nie.
+ */
+interface NumericLeaf { path: string; segments: readonly (string | number)[] }
+
+function collectNumericLeaves(
+  node: unknown, path: string, segments: readonly (string | number)[], leaves: NumericLeaf[],
+): void {
+  if (typeof node === 'number') {
+    leaves.push({ path, segments });
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i += 1) {
+      collectNumericLeaves(node[i], `${path}[${i}]`, [...segments, i], leaves);
+    }
+    return;
+  }
+  if (typeof node === 'object' && node !== null) {
+    const obj = node as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      const childPath = path === '' ? key : `${path}.${key}`;
+      collectNumericLeaves(obj[key], childPath, [...segments, key], leaves);
+    }
+  }
+  // boolean, string, null: kein Blatt für diesen Test.
+}
+
+/** Setzt GENAU das Blatt, das `collectNumericLeaves` an diesem Pfad gefunden hat, auf `value`. */
+function setAtPath(root: WorldState, segments: readonly (string | number)[], value: number): void {
+  let node: unknown = root;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const seg = segments[i];
+    if (seg === undefined) throw new Error('Pfadsegment fehlt');
+    node = typeof seg === 'number' ? (node as unknown[])[seg] : (node as Record<string, unknown>)[seg];
+  }
+  const last = segments[segments.length - 1];
+  if (last === undefined) throw new Error('leerer Pfad');
+  if (typeof last === 'number') (node as number[])[last] = value;
+  else (node as Record<string, number>)[last] = value;
 }
 
 function fresh(): WorldState {
@@ -126,10 +173,12 @@ describe('hashState – jede einzelne Feldänderung ändern den Wert', () => {
   });
 
   it('die Tabelle deckt alle Felder ab, die im Zustand stehen', () => {
-    // Zählprobe gegen das Vergessen: 11 Kopffelder (version, tick, 4x rng, 4x clock, noiseHead,
-    // noiseCount) + 18 Spielerfelder + 6 Katzenfelder + 2 Raumfelder + 5 Lootfelder +
-    // 5 Lärmfelder = 47 Felder, dazu Längen und Sonderfälle.
-    expect(MUTATIONEN.length).toBeGreaterThanOrEqual(47);
+    // EXAKTE Zahl statt `>=` (Minor 5, Task-4-Review): `>=` schützt nicht vor dem Vergessen – ein
+    // neues WorldState-Feld, das weder hier noch in hash.ts landet, bliebe grün. Wer der
+    // MUTATIONEN-Tabelle ein WorldState-Feld hinzufügt (oder wegnimmt), muss diese Zahl mitziehen;
+    // der generische Blatt-Test unten ("deckt jedes Zahlenfeld ab") fängt ein VERGESSENES Feld
+    // zusätzlich automatisch ab, weil er den Zustand zur Laufzeit abläuft statt eine Liste zu tippen.
+    expect(MUTATIONEN.length).toBe(58);
   });
 
   it('unterscheidet vertauschte Feldwerte – die Laufordnung ist Teil des Vertrags', () => {
@@ -164,21 +213,25 @@ describe('hashState – Sonderfälle der Zahlen', () => {
     expect(hashState(minus)).toBe(hashState(plus));
   });
 
-  it.each([
-    { name: 'players[0].pos.x', pfad: 'players[0].pos.x', mutate: (s: WorldState) => { at(s.players, 0).pos.x = Number.NaN; } },
-    { name: 'players[2].vel.z', pfad: 'players[2].vel.z', mutate: (s: WorldState) => { at(s.players, 2).vel.z = Number.NaN; } },
-    { name: 'players[1].intent.mag', pfad: 'players[1].intent.mag', mutate: (s: WorldState) => { at(s.players, 1).intent.mag = Number.NaN; } },
-    { name: 'cat.awareness[2]', pfad: 'cat.awareness[2]', mutate: (s: WorldState) => { s.cat.awareness[2] = Number.NaN; } },
-    { name: 'cat.pos.z', pfad: 'cat.pos.z', mutate: (s: WorldState) => { s.cat.pos.z = Number.NaN; } },
-    { name: 'noise[7].loudness', pfad: 'noise[7].loudness', mutate: (s: WorldState) => { at(s.noise, 7).loudness = Number.POSITIVE_INFINITY; } },
-    { name: 'rooms[0].playerMask', pfad: 'rooms[0].playerMask', mutate: (s: WorldState) => { at(s.rooms, 0).playerMask = Number.NEGATIVE_INFINITY; } },
-    { name: 'loot[0].pos.z', pfad: 'loot[0].pos.z', mutate: (s: WorldState) => { at(s.loot, 0).pos.z = Number.NaN; } },
-    { name: 'tick', pfad: 'tick', mutate: (s: WorldState) => { s.tick = Number.NaN; } },
-    { name: 'rng.c', pfad: 'rng.c', mutate: (s: WorldState) => { s.rng.c = Number.NaN; } },
-    { name: 'clock.phaseTick', pfad: 'clock.phaseTick', mutate: (s: WorldState) => { s.clock.phaseTick = Number.NaN; } },
-  ])('wirft NaNError mit dem Feldpfad $pfad', ({ pfad, mutate }) => {
+  // Minor 3 (Task-4-Review): die getippte Liste prüfte nur 11 von 398 Pfaden – ein falsch
+  // geschriebener Pfad an einer der übrigen Stellen fiel keinem Test auf (Mutant überlebte).
+  // Hier läuft der Zustand generisch ab (`collectNumericLeaves`), jedes gefundene Zahlenfeld wird
+  // auf einer FRISCHEN Kopie einzeln auf NaN gesetzt, und der gemeldete Pfad wird gegen genau den
+  // Pfad geprüft, den der Walker für dasselbe Feld gebildet hat – das deckt automatisch auch ein
+  // künftig hinzugefügtes Feld ab, ohne dass jemand die Liste nachpflegen muss.
+  const NUMERISCHE_BLAETTER = ((): NumericLeaf[] => {
+    const leaves: NumericLeaf[] = [];
+    collectNumericLeaves(fresh(), '', [], leaves);
+    return leaves;
+  })();
+
+  it('findet mehr als die getippten 11 Zahlenblätter (Wächter gegen einen kaputten Walker)', () => {
+    expect(NUMERISCHE_BLAETTER.length).toBeGreaterThan(390);
+  });
+
+  it.each(NUMERISCHE_BLAETTER)('wirft NaNError mit dem Feldpfad $path', ({ path, segments }) => {
     const state = fresh();
-    mutate(state);
+    setAtPath(state, segments, Number.NaN);
     let gefangen: unknown = null;
     try {
       hashState(state);
@@ -186,6 +239,107 @@ describe('hashState – Sonderfälle der Zahlen', () => {
       gefangen = error;
     }
     expect(gefangen).toBeInstanceOf(NaNError);
-    expect((gefangen as NaNError).path).toBe(pfad);
+    expect((gefangen as NaNError).path).toBe(path);
   });
+});
+
+/**
+ * Minor 2 (Task-4-Review): die bisherigen Tests prüfen nur, DASS sich der Hash ändert, nie WELCHEN
+ * Wert er hat – fünf Mutanten (vertauschte `PHASES`/`CAT_STATES`, Text statt Index, vertauschte
+ * Hash-Reihenfolge, ein fehlendes Längenpräfix) überlebten alle 164 T4-Tests. Dieser Block friert
+ * `hashState` gegen einen NICHT-trivialen, von Hand gebauten Zustand ein: Tag-Phase mit
+ * `phaseTick`/`dayCount` ungleich 0, ein unregelmäßiges `skipVotes`-Muster, verschiedene
+ * `cat.awareness`-Werte je Platz, ein gesetzter `targetSlot`, zwei Loot-Einträge, sechs
+ * beschriebene Lärmproben mit fortgeschrittenem `noiseHead`/`noiseCount` und vier Spieler mit
+ * unterschiedlichem `intent`/`prevButtons`/`sprinting`/`weakened`/`room` – und das für JEDEN der
+ * sieben `CAT_STATES`-Werte einzeln, weil nur ein Katzenzustand ungleich dem ersten (`sleeping`)
+ * die Reihenfolge der Liste wirklich prüft.
+ *
+ * WARNUNG: diese sieben Zahlen ändern sich, sobald `PHASES`/`CAT_STATES` umsortiert werden, ein
+ * Feld im Hash-Lauf hinzukommt/die Reihenfolge wechselt, oder sich die Kodierung ändert (FNV-Werte,
+ * Bytefolge). Eine solche Änderung ist eine ABSICHTLICHE Rebaseline (wie ein Golden-Test) – die
+ * neuen Werte gehören dann zusammen mit dem Grund in den Commit, nicht stillschweigend ersetzt.
+ */
+describe('hashState – Kodierungsvektor (Minor 2, Task-4-Review)', () => {
+  const ALLE_KATZENZUSTAENDE: readonly CatState[] =
+    ['sleeping', 'patrol', 'alert', 'chase', 'lurk', 'search', 'return'];
+
+  function buildVectorState(catState: CatState): WorldState {
+    const state = createInitialState(level, balance, 'vektor');
+
+    state.clock.phase = 'day';
+    state.clock.phaseTick = 17;
+    state.clock.dayCount = 3;
+    state.clock.skipVotes = [true, false, false, true];
+
+    const intents: readonly PlayerIntent[] = [
+      { moveX: 0.6, moveZ: 0.8, mag: 1, sprint: true, interact: false },
+      { moveX: -0.5, moveZ: 0.2, mag: 0.7, sprint: false, interact: true },
+      { moveX: 0, moveZ: -1, mag: 0.4, sprint: false, interact: false },
+      { moveX: 0.3, moveZ: -0.3, mag: 0.2, sprint: true, interact: true },
+    ];
+    const rooms = [0, NO_ROOM, 0, NO_ROOM];
+    const prevButtons = [1, 2, 0, 3];
+    const sprinting = [true, false, true, false];
+    const weakened = [false, true, false, true];
+    const loudness = [0.9, 0.1, 0.5, 0.75];
+    const facing = [0.1, -1.2, 2.5, -0.4];
+    const vel = [{ x: 0.2, z: 0.1 }, { x: -0.1, z: 0.05 }, { x: 0, z: 0 }, { x: 0.15, z: -0.15 }];
+
+    for (let i = 0; i < state.players.length; i += 1) {
+      const p = at(state.players, i);
+      const intent = at(intents, i);
+      p.intent = { moveX: intent.moveX, moveZ: intent.moveZ, mag: intent.mag, sprint: intent.sprint, interact: intent.interact };
+      p.room = at(rooms, i);
+      p.prevButtons = at(prevButtons, i);
+      p.sprinting = at(sprinting, i);
+      p.weakened = at(weakened, i);
+      p.loudness = at(loudness, i);
+      p.facing = at(facing, i);
+      p.vel.x = at(vel, i).x;
+      p.vel.z = at(vel, i).z;
+    }
+
+    state.cat.state = catState;
+    state.cat.awareness = [0.1, 0.2, 0.3, 0.4];
+    state.cat.targetSlot = 2;
+
+    state.loot = [
+      { id: 1, kind: 2, pos: { x: 3, z: 4 }, carriedBy: -1 },
+      { id: 5, kind: 1, pos: { x: -2, z: 6 }, carriedBy: 0 },
+    ];
+
+    for (let i = 0; i < 6; i += 1) {
+      const sample = at(state.noise, i);
+      sample.tick = i;
+      sample.slot = i % 4;
+      sample.x = i * 0.5;
+      sample.z = -i * 0.3;
+      sample.loudness = 0.1 * i + 0.05;
+    }
+    state.noiseHead = 6;
+    state.noiseCount = 6;
+
+    return state;
+  }
+
+  // Einmal gemessen (siehe task-4-5-fix-report.md) und als Literal eingefroren – wie ein
+  // Golden-Hash. Ändert sich einer dieser Werte unerwartet, ist das der Kodierungsvektor, der
+  // greift: eine Rebaseline gehört dann bewusst und dokumentiert in den Commit, nicht "einfach grün".
+  const ERWARTETE_HASHES: Readonly<Record<CatState, number>> = {
+    sleeping: 0x3fcb7f66,
+    patrol: 0x118775a1,
+    alert: 0x1bad962c,
+    chase: 0xd495e78f,
+    lurk: 0x3cf5a3da,
+    search: 0xbde548b5,
+    return: 0x66ea37e0,
+  };
+
+  it.each(ALLE_KATZENZUSTAENDE.map((catState) => ({ catState })))(
+    'pinnt hashState für cat.state = $catState',
+    ({ catState }) => {
+      expect(hashState(buildVectorState(catState))).toBe(ERWARTETE_HASHES[catState]);
+    },
+  );
 });

@@ -18,7 +18,18 @@ import type { CatState, Phase, WorldState } from './state';
 const PHASES: readonly Phase[] = ['day', 'night'];
 const CAT_STATES: readonly CatState[] = ['sleeping', 'patrol', 'alert', 'chase', 'lurk', 'search', 'return'];
 
-function hashEnum(hasher: Hasher, values: readonly string[], value: string, path: string): void {
+/**
+ * `T extends string` statt `readonly string[]`: `PHASES` und `CAT_STATES` sind beide auf
+ * `readonly string[]` zuweisbar, eine vertauschte Liste (`hashEnum(h, CAT_STATES, state.clock.phase, ...)`)
+ * fiele damit ERST zur Laufzeit als `RangeError` auf.
+ *
+ * `NoInfer<T>` auf `value` ist hier NICHT nur Zierde: ein einfaches `value: T` ließe den Übersetzer
+ * `T` aus BEIDEN Stellen ableiten und würde bei einer vertauschten Liste still zu
+ * `T = CatState | Phase` verbreitern (geprüft: ohne `NoInfer` übersetzt die Vertauschung
+ * fehlerfrei). Mit `NoInfer<T>` kommt `T` NUR aus `values`, und `value` wird danach dagegen
+ * geprüft – die Vertauschung wird so zu einem echten Übersetzungsfehler.
+ */
+function hashEnum<T extends string>(hasher: Hasher, values: readonly T[], value: NoInfer<T>, path: string): void {
   const index = values.indexOf(value);
   if (index < 0) throw new RangeError(`${path}: unbekannter Wert '${value}'`);
   hasher.hashU8(index);
@@ -44,7 +55,13 @@ export function hashState(state: WorldState): number {
   h.hashF64(state.clock.phaseTick, 'clock.phaseTick');
   h.hashF64(state.clock.dayCount, 'clock.dayCount');
   h.hashLen(state.clock.skipVotes.length);
-  for (const vote of state.clock.skipVotes) h.hashBool(vote);
+  // Dieselbe Form wie players/rooms/loot/noise: ein Loch im Array ist NICHT dasselbe wie `false`
+  // und darf nicht still als eine echte Stimme durchgehen.
+  for (let i = 0; i < state.clock.skipVotes.length; i += 1) {
+    const vote = state.clock.skipVotes[i];
+    if (vote === undefined) continue;
+    h.hashBool(vote);
+  }
 
   h.hashLen(state.players.length);
   for (let i = 0; i < state.players.length; i += 1) {
@@ -77,8 +94,11 @@ export function hashState(state: WorldState): number {
   hashEnum(h, CAT_STATES, state.cat.state, 'cat.state');
   h.hashF64(state.cat.stateTick, 'cat.stateTick');
   h.hashLen(state.cat.awareness.length);
+  // Dieselbe Form wie players/rooms/loot/noise: `?? 0` würde ein Loch still als echte 0 hashen.
   for (let i = 0; i < state.cat.awareness.length; i += 1) {
-    h.hashF64(state.cat.awareness[i] ?? 0, `cat.awareness[${i}]`);
+    const value = state.cat.awareness[i];
+    if (value === undefined) continue;
+    h.hashF64(value, `cat.awareness[${i}]`);
   }
   h.hashF64(state.cat.targetSlot, 'cat.targetSlot');
 
