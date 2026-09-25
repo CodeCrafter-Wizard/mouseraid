@@ -13,7 +13,7 @@ Sammelstelle für alle Messläufe des Verbindungs-Testlabors (`lab.html`): Selbs
 7. **Handbeobachtungen gehören dazu.** System- und Browser-Dialoge sieht der Report nicht – die testende Person trägt sie von Hand ein, mit Zeitpunkt und Häufigkeit.
 8. **Schnellläufe zählen nicht.** Läufe mit `?quick=1` (20 statt 200 Pings je Kanal) sind Testläufe der Entwicklung und gehören nicht in diese Tabellen.
 9. **QR-Läufe bringen zwei weitere Tabellen mit.** Ein Lauf mit Pfad `qr` bekommt zusätzlich zur Hauptzeile eine Zeile in „QR und Paarung" – verknüpft über Datum, Gerät und Rolle. Fehlt im Report das Feld `qr` oder `pairing` (alter Build, Lauf ohne QR), steht in der Zeile `–`.
-10. **Sperrtest-Läufe sind eigene Zeilen.** Jeder Eintrag in `lockTest.runs[]` wird eine Zeile in „Sperrbildschirm-Test" – drei Zeilen je Durchgang (10 s, 30 s, 60 s). Ein Report ohne `lockTest` liefert keine Zeile.
+10. **Sperrtest-Läufe sind eigene Zeilen.** Jeder Eintrag in `lockTest.runs[]` des **neuesten** Reports eines Geräts wird eine Zeile in „Sperrbildschirm-Test" – drei Zeilen je Gerät (10 s, 30 s, 60 s). Ältere Reports desselben Platzes tragen dieselben Läufe noch einmal (die Liste wächst je Platz) und werden nicht zusätzlich gezählt. Ein Report ohne `lockTest` liefert keine Zeile.
 11. **Handbeobachtungen aus dem Runbook.** Die Notizblätter aus `docs/runbook-zwei-handys.md` (Abschnitt 7) sind die Quelle der Spalten „Dialoge gesehen" und „QR von Hand". Ohne sie ist eine Zeile unvollständig, nicht falsch – dann steht dort `nicht notiert`.
 
 ## Vorlage je Lauf

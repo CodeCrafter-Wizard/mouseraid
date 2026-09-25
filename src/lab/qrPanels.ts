@@ -147,7 +147,7 @@ export function createQrExchange(deps: QrExchangeDeps): QrExchange {
   let offerChars = 0;
   let answerChars = 0;
   let decodeLatencyMs = 0;
-  /** Zählt JEDEN Versuch über alle Scan-Läufe dieses Platzes – auch die einer Zeitüberschreitung. */
+  /** Zählt JEDEN Versuch über alle Scan-Läufe dieses Austauschs (bis `clear()`) – auch die einer Zeitüberschreitung. */
   let attempts = 0;
   let shownText = '';
   let running: AbortController | null = null;

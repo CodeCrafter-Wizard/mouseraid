@@ -260,13 +260,18 @@ Je Durchgang (10 s, dann 30 s, dann 60 s):
 3. Die genannte Zeit warten, dann entsperren und die Seite wieder in den Vordergrund holen.
 4. Die Seite misst selbst: Dunkelzeit, Zustand der Verbindung, Zustand der Kameraspur, danach eine kurze
    Ping-Serie (20 Pings je Kanal). Das dauert ein paar Sekunden – abwarten. Währenddessen ist
-   „Ping-Test starten" gesperrt.
+   „Ping-Test starten" gesperrt. **Am Client** speichert die Seite danach von selbst einen Report
+   (volle Ping-Serie, ≈ 13 s): die Dauer-Knöpfe bleiben so lange gesperrt – **„Report gespeichert ✓"
+   abwarten**, erst dann den nächsten Durchgang starten. Am Host schreibt erst „Ping-Test starten" den
+   Report (einmal nach dem letzten Durchgang genügt – die Läufe sammeln sich je Platz).
 5. Notieren: Stand die Verbindung noch? Meldete die Kamerakarte einen Spurverlust? Wie war der Ping
    danach?
 6. **Das Signal steht in der Ergebniszeile**, nicht am Knopf: endet sie auf
-   „Verbindung oder Kamera ist weg." (statt „Verbindung steht weiterhin ✓"), ist die Verbindung
-   endgültig zu; darunter erscheint dann der Hinweis „Der Host legt für denselben Platz einen frischen
-   Code an; der Mitspieler scannt oder fügt ihn erneut ein."
+   „Verbindung oder Kamera ist weg." (statt „Verbindung steht weiterhin ✓"), ist entweder die Verbindung
+   zu oder nur die Kameraspur weg. Sagt die Kamerakarte „Spurverlust" und der Zustands-Chip weiter
+   „verbunden", genügt dort **„Kamera neu starten"** – nichts neu verbinden. Steht der Chip nicht mehr
+   auf „verbunden", ist die Verbindung endgültig zu; darunter erscheint dann der Hinweis „Der Host legt
+   für denselben Platz einen frischen Code an; der Mitspieler scannt oder fügt ihn erneut ein."
    Dann **„Neu verbinden" auf BEIDEN Geräten tippen** – es gibt keinen Kanal, über den das eine Gerät
    das andere benachrichtigen könnte:
    - am **Host** legt der Tipp auf demselben Platz ein frisches Angebot an und zeigt es sofort als

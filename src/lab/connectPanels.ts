@@ -300,13 +300,16 @@ function createRunBox(ctx: ConnectContext, { autoReportLock = false }: { autoRep
         lockRuns.push(finished);
         showLockRun(finished);
         bindLock(false);
-        setLockButtons(true);
         lockPhase.hidden = true;
         lockStatus.textContent = '';
         onLockBusyChange?.(false);
         // Der Client speichert die Messung selbst (siehe `autoReportLock`); ist die Verbindung nicht
-        // mehr offen, hat `transport:failed` den Report längst geschrieben.
-        if (autoReportLock && link.transport.state === 'open') void run(link);
+        // mehr offen, hat `transport:failed` den Report längst geschrieben. Die Dauer-Knöpfe bleiben
+        // gesperrt, bis dieser Report steht (≈ 13 s bei 200 Pings je Kanal): ein nächster Durchgang
+        // mitten in der Serie würde seinen eigenen Report verlieren (`run` ist re-entrant gesichert)
+        // und die Ping-Zeile des vorigen über die dunkle Zeit hinweg messen.
+        if (autoReportLock && link.transport.state === 'open') void run(link).finally(() => { setLockButtons(true); });
+        else setLockButtons(true);
       });
   }
 

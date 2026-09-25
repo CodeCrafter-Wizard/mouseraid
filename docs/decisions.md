@@ -293,7 +293,9 @@ Die Reviews der Tasks 1–6 haben den Plantext an diesen Stellen überholt. **Ma
   `qr:fallback-text` je Austausch und lässt „Erneut scannen" stehen. Ohne Kamera erscheint die Zeile
   `S.lab.qr.noCamera`. Nach „Neu verbinden" setzen beide Seiten `userLeftScan`/`fellBackToText` zurück,
   der Client verwirft seinen veralteten Antwort-Code und scannt erneut, der Host zeigt sofort ein frisches
-  Angebot. `QrExchange.clear()` und `liveExchangeCount` (Test-Haken) sind Erweiterungen des Vertrags.
+  Angebot. `QrExchange.clear()` (räumt beim Neuverbinden den veralteten Antwort-Code weg, schreibt `qr:backend` neu
+  und setzt die Zähler `offerChars`/`answerChars`/`attempts`/`decodeLatencyMs` je Austausch zurück) und
+  `liveExchangeCount` (Test-Haken) sind Erweiterungen des Vertrags.
 - **Fremde QR-Codes (T4, D7 nachgeschärft).** Ein Code, der kein `MB1.`-Payload ist, wird **übersprungen**
   und als `qr:skipped` (Detail `not-a-payload`) notiert – **nie** als `qr:error`, also nie als F9. Sonst
   trüge jeder Lauf in einem Raum mit Werbeplakat ein F9, das über das Labor nichts aussagt. Bewiesen vom
@@ -302,7 +304,10 @@ Die Reviews der Tasks 1–6 haben den Plantext an diesen Stellen überholt. **Ma
   Spur-Beobachter wird je scharfgestelltem Lauf neu angemeldet (sonst bliebe `trackAfter` nach einem
   Kamera-Neustart für immer `ended`); ein scharfgestellter Lauf lässt sich vor dem Dunkelwerden noch
   ändern; `lock:start` wird genau einmal je gemessenem Lauf geschrieben; „Ping-Test starten" ist während
-  der Sperrtest-Ping-Serie gesperrt.
+  der Sperrtest-Ping-Serie gesperrt. Der **Client** hat keinen Ping-Knopf und speichert deshalb nach
+  jedem gemessenen Lauf von selbst einen Report (`autoReportLock`, volle Serie ≈ 13 s); solange bleiben
+  die Dauer-Knöpfe gesperrt, damit kein zweiter Durchgang in die Serie fällt. Ein „Neu verbinden“ während
+  der Messung markiert den entstehenden Lauf als `reconnected` (`pendingReconnect`).
 - **Ereignisse (T3–T5).** Genau **ein** Seiten-Puffer (`src/lab/labEvents.ts`, 200 Einträge plus Zähler
   `dropped`) wird in jede Lauf-Zeitleiste kopiert. `createRelayTimeline` gibt jeder **neuen** Zeitleiste
   die volle noch ungesehene Vorgeschichte (ein Wiederholungsversuch behält sie, D7); `reset()` beginnt bei
