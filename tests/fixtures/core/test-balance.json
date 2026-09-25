@@ -1,0 +1,24 @@
+{
+  "_hinweis": "EINGEFROREN. Absichtlich ANDERE Zahlen als src/data/balance.json - kein Test darf an der echten Balance haengen (CLAUDE.md). Die Werte sind auf glatte Tick-Einheiten gewaehlt: 60 cm/s -> 0.2 u/Tick, 900 cm/s2 -> 0.1 u/Tick2, 2 s -> 60 Ticks, 3 s -> 90 Ticks.",
+  "tickRate": 30,
+  "dayLengthS": 2,
+  "nightLengthS": 3,
+  "noiseEventMinLoudness": 0.5,
+  "mouse": {
+    "radiusCm": 5,
+    "heightCm": 8,
+    "walkCmPerS": 60,
+    "sprintMul": 2,
+    "accelCmPerS2": 900,
+    "frictionPerTick": 0.5,
+    "sneakBelowRatio": 0.5,
+    "weakenedMul": 0.5,
+    "deadZone": 0.2,
+    "sprintRingMag": 0.9,
+    "loudness": { "sneak": 0.1, "walk": 0.4, "sprint": 0.9 }
+  },
+  "cat": {
+    "radiusCm": 10,
+    "heightCm": 25
+  }
+}

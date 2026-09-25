@@ -1,0 +1,36 @@
+{
+  "_hinweis": "EINGEFROREN. Kein Laden, sondern die kleinste Geometrie, an der Loader, Kollider-Erzeugung und (ab T3) Kollision pruefbar sind: 1 Raum 40x30 Einheiten, 4 Waende auf den Raumkanten, 2 Regale (eines gedreht), 1 Kiste OHNE blocks (prueft die Vorgabe ALL_MASKS), 4 Maus-Spawns, 1 Katzen-Spawn, Mauseloch in der Suedwest-Ecke.",
+  "id": "mini",
+  "scale": 10,
+  "rooms": [
+    {
+      "id": "verkaufsraum",
+      "name": "Verkaufsraum",
+      "bounds": { "x0": -20, "z0": -15, "x1": 20, "z1": 15 },
+      "cameraMode": "follow"
+    }
+  ],
+  "walls": [
+    { "x0": -20, "z0": -15, "x1": 20, "z1": -15, "heightCm": 200, "thicknessCm": 10 },
+    { "x0": 20, "z0": -15, "x1": 20, "z1": 15, "heightCm": 200, "thicknessCm": 10 },
+    { "x0": 20, "z0": 15, "x1": -20, "z1": 15, "heightCm": 200, "thicknessCm": 10 },
+    { "x0": -20, "z0": 15, "x1": -20, "z1": -15, "heightCm": 200, "thicknessCm": 10 }
+  ],
+  "shelves": [
+    { "cx": 0, "cz": 5, "hx": 6, "hz": 1.5, "rot": 0, "gapCm": 20, "topCm": 60, "legHalfCm": 3 },
+    { "cx": -8, "cz": -6, "hx": 2, "hz": 4, "rot": 0.7853981633974483, "gapCm": 18, "topCm": 55, "legHalfCm": 4 }
+  ],
+  "boxes": [
+    { "cx": 10, "cz": -8, "hx": 1.5, "hz": 1.5, "rot": 0, "y0Cm": 0, "y1Cm": 40 }
+  ],
+  "spawns": {
+    "mice": [
+      { "x": -18, "z": -13 },
+      { "x": -16, "z": -13 },
+      { "x": -18, "z": -11 },
+      { "x": -16, "z": -11 }
+    ],
+    "cat": { "x": 12, "z": 10 }
+  },
+  "mouseHole": { "x": -19, "z": -14 }
+}
