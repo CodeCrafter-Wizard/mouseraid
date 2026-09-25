@@ -280,6 +280,7 @@ describe('loadLevel – jede Wurf-Bedingung mit ihrem Feldpfad', () => {
     { name: 'mouseHole.widthCm fehlt', json: variant((l) => { delete sub(l, 'mouseHole')['widthCm']; }), path: 'mouseHole.widthCm' },
     { name: 'mouseHole.widthCm ist 0', json: variant((l) => { sub(l, 'mouseHole')['widthCm'] = 0; }), path: 'mouseHole.widthCm' },
     { name: 'mouseHole.heightCm ist negativ', json: variant((l) => { sub(l, 'mouseHole')['heightCm'] = -5; }), path: 'mouseHole.heightCm' },
+    { name: 'mouseHole.thicknessCm ist 0', json: variant((l) => { sub(l, 'mouseHole')['thicknessCm'] = 0; }), path: 'mouseHole.thicknessCm' },
     { name: 'mouseHole.thicknessCm fehlt', json: variant((l) => { delete sub(l, 'mouseHole')['thicknessCm']; }), path: 'mouseHole.thicknessCm' },
     { name: 'mouseHole.rot fehlt', json: variant((l) => { delete sub(l, 'mouseHole')['rot']; }), path: 'mouseHole.rot' },
     { name: 'mouseHole.rot ist nicht endlich', json: variant((l) => { sub(l, 'mouseHole')['rot'] = Number.POSITIVE_INFINITY; }), path: 'mouseHole.rot' },

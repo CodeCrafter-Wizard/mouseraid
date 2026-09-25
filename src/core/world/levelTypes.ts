@@ -68,7 +68,12 @@ export interface LevelNav { points: readonly LevelNavPoint[] }
 export interface LevelMouseHole {
   /** Mittelpunkt der lichten Öffnung, auf der Wandlinie (darf auf einer Raumgrenze liegen). */
   x: number; z: number;
-  /** Lichte Weite: > 2*mouseRadius UND < 2*catRadius – beides prüft der Validator (T3). */
+  /**
+   * Lichte Weite der Öffnung. Der Validator prüft sie GEOMETRISCH (Sweep der Länge 0 gegen den
+   * Stopfen: Maus frei, Katze blockiert) – nicht als Zahlenvergleich: mit der eingefrorenen
+   * Testbalance ist 2*catRadius = 2,0 u = 20 cm, ein `<` wäre dort falsch, obwohl die Katze
+   * geometrisch nicht durchpasst (R7).
+   */
   widthCm: number;
   /** Höhe des Sperrkörpers = Höhe der Wand (sonst rutscht der Kamera-Boom aus M5 darüber). */
   heightCm: number;
