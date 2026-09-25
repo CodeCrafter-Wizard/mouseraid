@@ -96,8 +96,11 @@ export function stepPlayerMovement(player: Player, intent: PlayerIntent, ctx: St
     const dvz = intent.moveZ * targetSpeed - player.vel.z;
     const dv = sqrt(dvx * dvx + dvz * dvz);
     if (dv <= mouse.accel) {
-      player.vel.x += dvx;
-      player.vel.z += dvz;
+      // Ziel EXAKT setzen statt `+= dv` (Minor 2, Task-5-Review): in IEEE-754 ist
+      // `v + (vZiel − v)` nicht in jedem Fall bitgleich vZiel – ein möglicher 1-ULP-Grenzzyklus
+      // statt eines Fixpunkts. Buchstabengetreu zum Vertrag (Plan Zeile 577: |dv| ≤ accel -> v = vZiel).
+      player.vel.x = intent.moveX * targetSpeed;
+      player.vel.z = intent.moveZ * targetSpeed;
     } else {
       const share = mouse.accel / dv;
       player.vel.x += dvx * share;
@@ -116,6 +119,14 @@ export function stepPlayerMovement(player: Player, intent: PlayerIntent, ctx: St
     ctx.colliders, scratchMove);
   player.pos.x = moved.x;
   player.pos.z = moved.z;
+  // Minor 1 (Task-5-Review, Ruling U6): eine gesperrte Komponente bleibt nicht auf Zieltempo
+  // stehen – sonst hält ein an die Wand gedrückter Spieler Sprinttempo UND Sprintlautstärke,
+  // obwohl er sich nicht mehr bewegt. Die TANGENTIALE Komponente (Gleiten an der Wand) bleibt
+  // erhalten: `moveCircle` kappt nur den Anteil, der IN die Fläche hineinzeigt (`blockedX`/`blockedZ`
+  // in collision.ts), nicht die Komponente längs der Wand. Muss VOR `speed`/`facing`/`loudness`
+  // stehen, damit beide die verbleibende (genullte) Geschwindigkeit widerspiegeln.
+  if (moved.blockedX) player.vel.x = 0;
+  if (moved.blockedZ) player.vel.z = 0;
 
   const speed = sqrt(player.vel.x * player.vel.x + player.vel.z * player.vel.z);
   // Nur bei echtem Tempo drehen: sonst springt die Figur beim Anhalten in eine Zufallsrichtung.

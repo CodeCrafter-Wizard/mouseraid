@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { hashState } from '../../../../src/core/sim/hash';
 import { BUTTON_INTERACT, BUTTON_SPRINT } from '../../../../src/core/sim/input';
 import { playerIntent } from '../../../../src/core/systems/playerIntent';
 import type { TestWorld } from '../testWorld';
@@ -128,5 +129,27 @@ describe('playerIntent', () => {
     const w = makeWorld();
     drive(w, 127, 0, BUTTON_INTERACT);
     expect(w.events).toHaveLength(0);
+  });
+
+  it('schreibt AUSSCHLIESSLICH intent und prevButtons (Minor 4, Task-5-Review, Hash-Beweis)', () => {
+    // Der Kommentar in playerIntent.ts behauptet das schon; bewacht war bisher nur, dass ein
+    // INAKTIVER Platz unberührt bleibt (siehe Test oben) – ein Schreibzugriff auf pos/vel/facing/
+    // loudness/die Uhr fiel in keinem der Fälle auf. hashState() deckt den GESAMTEN Zustand ab
+    // (T4): läuft playerIntent, setzt intent/prevButtons von Hand auf den Ausgangswert zurück,
+    // und der Hash muss wieder exakt der Ausgangshash sein.
+    const w = makeWorld();
+    const vorher = hashState(w.state);
+    playerIntent(w.state, w.ctx, [
+      frame(w.state.tick, 127, 64, BUTTON_INTERACT | BUTTON_SPRINT),
+      frame(w.state.tick, -80, 20, BUTTON_SPRINT),
+      frame(w.state.tick, 10, -10, 0),
+      frame(w.state.tick, 0, 0, BUTTON_INTERACT),
+    ], w.events);
+    for (let i = 0; i < w.state.players.length; i += 1) {
+      const p = player(w.state, i);
+      p.intent = { moveX: 0, moveZ: 0, mag: 0, sprint: false, interact: false };
+      p.prevButtons = 0;
+    }
+    expect(hashState(w.state)).toBe(vorher);
   });
 });

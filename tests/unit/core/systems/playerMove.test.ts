@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { NO_ROOM } from '../../../../src/core/sim/state';
 import type { Player } from '../../../../src/core/sim/state';
+import { noise } from '../../../../src/core/systems/noise';
 import { playerMove, stepPlayerMovement } from '../../../../src/core/systems/playerMove';
+import { CAT, MOUSE } from '../../../../src/core/world/colliderTypes';
 import type { TestWorld } from '../testWorld';
-import { activate, makeStage, makeWorld, player, room, setIntent, speedOf } from '../testWorld';
+import { activate, box, makeStage, makeWorld, player, room, setIntent, speedOf } from '../testWorld';
 
 /**
  * Gemessene Schranke des eigenen `atan2` (1,36e-8 rad, Faktenblatt §1.3) mal zwei – dieselbe
@@ -168,6 +170,11 @@ describe('stepPlayerMovement – Kollision und Blickrichtung', () => {
     // Schräg: dieselbe Wandgrenze in x, aber weit an ihr entlang in z.
     expect(diagonal.p.pos.x).toBeCloseTo(straight.p.pos.x, 6);
     expect(diagonal.p.pos.z - (diagonal.z0 + 5)).toBeGreaterThan(8);
+    // Minor 1 (Task-5-Review): die BLOCKIERTE Komponente (x, gegen die Wand) steht am Ende auf 0 –
+    // ein an die Wand gedrückter Spieler hält kein Sprinttempo mehr. Die TANGENTIALE Komponente
+    // (z, das Gleiten an der Wand entlang) bleibt dagegen ungebremst erhalten.
+    expect(diagonal.p.vel.x).toBe(0);
+    expect(diagonal.p.vel.z).toBeGreaterThan(0);
   });
 
   it('setzt facing aus der Geschwindigkeit – dieselbe Zahl wie Math.atan2', () => {
@@ -187,6 +194,95 @@ describe('stepPlayerMovement – Kollision und Blickrichtung', () => {
     setIntent(p, 0, 0, 0);
     drive(w, p, 5);
     expect(p.facing).toBe(1.25);
+  });
+});
+
+describe('playerMove – Wandkontakt bremst (Minor 1, Task-5-Review)', () => {
+  /**
+   * VOR dem Fix blieb `vel` auf Zieltempo stehen, obwohl `moveCircle` die Bewegung an der Wand
+   * auf 0 gekürzt hatte (`blockedX`/`blockedZ` wurden nie gelesen) – ein an die Wand gedrückter
+   * Sprinter blieb dadurch eine Dauerschallquelle auf Sprintlautstärke (gemessen: 40 Proben /
+   * 38 Ereignisse über 40 Ticks, obwohl der Spieler längst stand). Dieser Test treibt
+   * `playerMove` UND `noise` denselben Weg wie `step()` (playerMove vor noise, Spec Zeile 109)
+   * gegen die Ostwand des Mini-Levels.
+   */
+  it('zerrt vel und loudness an der Wand auf 0 – danach kein Dauerlärm mehr', () => {
+    const w = makeWorld();
+    activate(w.state, 1);
+    const bounds = w.ctx.level.rooms[0]?.bounds;
+    if (bounds === undefined) throw new Error('Mini-Level ohne Raum');
+    const p = player(w.state, 0);
+    p.pos.x = bounds.x1 - 5;
+    p.pos.z = bounds.z0 + 5;
+    setIntent(p, 1, 0, 1, true); // Sprint direkt auf die Ostwand zu, geradeaus (kein Gleiten)
+
+    // Erste 35 Ticks: Anlauf + Aufprall. Ein Teil davon bewegt sich wirklich – hier entstehen
+    // echte Proben, das ist KEIN Fehlverhalten und wird unten gegengeprüft.
+    for (let i = 0; i < 35; i += 1) {
+      playerMove(w.state, w.ctx, [], w.events);
+      noise(w.state, w.ctx, [], w.events);
+      w.state.tick += 1;
+    }
+    expect(p.vel.x).toBe(0);
+    // loudnessFor(0, ...) ist der Wert für |v| = 0 – die Figur steht, also gilt der leiseste Fall.
+    expect(p.loudness).toBe(0);
+
+    const samplesAtWall = w.state.noiseCount;
+    const eventsAtWall = w.events.length;
+    expect(samplesAtWall).toBeGreaterThan(0); // die ersten Ticks WAREN Bewegung – sonst wäre der Test leer
+
+    // Weitere 5 Ticks am Anschlag: sobald die Wand erreicht ist, darf `noise` weder eine neue
+    // Probe noch ein Ereignis erzeugen.
+    for (let i = 0; i < 5; i += 1) {
+      playerMove(w.state, w.ctx, [], w.events);
+      noise(w.state, w.ctx, [], w.events);
+      w.state.tick += 1;
+    }
+    expect(w.state.noiseCount).toBe(samplesAtWall);
+    expect(w.events.length).toBe(eventsAtWall);
+  });
+});
+
+describe('stepPlayerMovement – Maske und Höhenband (Minor 3, Task-5-Review)', () => {
+  /**
+   * Der einzige bisherige Kollisionstest drückt gegen die Mini-Level-Außenwand
+   * (`blocks = MOUSE|CAT|SIGHT|CAMERA`, 200 cm hoch) – ein vertauschtes Argument
+   * (`CAT` statt `MOUSE`, oder `balance.cat.yRange` statt `mouse.yRange`) ließe alle diese
+   * Fälle unbemerkt grün. Drei gezielte Fälle statt der Mini-Level-Wand:
+   */
+  const feld = room('feld', -1000, -1000, 1000, 1000);
+
+  it('läuft durch einen Kollider, der nur CAT blockiert – die MOUSE-Maske greift nicht', () => {
+    const catOnly = box(1, 5, 0, 1, 1, CAT);
+    const w = makeStage([feld], [catOnly]);
+    const p = player(w.state, 0);
+    setIntent(p, 1, 0, 1, true);
+    drive(w, p, 200);
+    expect(p.pos.x).toBeGreaterThan(catOnly.cx + catOnly.hx);
+  });
+
+  it('läuft unter einem Kollider durch, dessen Höhenband über mouse.yRange liegt (Baldachin)', () => {
+    const canopy = box(2, 5, 0, 1, 1, MOUSE, 2);
+    // Baldachin von y=1 bis y=2: liegt vollständig ÜBER dem Maus-Höhenband (0…mouse.height,
+    // hier 0.8) – nach `affects()` (collision.ts) überlappen sich die beiden Bänder dann nicht.
+    canopy.y0 = 1;
+    const w = makeStage([feld], [canopy]);
+    const p = player(w.state, 0);
+    expect(w.ctx.balance.mouse.yRange.y1).toBeLessThan(canopy.y0);
+    setIntent(p, 1, 0, 1, true);
+    drive(w, p, 200);
+    expect(p.pos.x).toBeGreaterThan(canopy.cx + canopy.hx);
+  });
+
+  it('stoppt an einem Kollider, der MOUSE im Höhenband der Maus blockiert', () => {
+    const wall = box(3, 5, 0, 1, 1, MOUSE);
+    const w = makeStage([feld], [wall]);
+    const p = player(w.state, 0);
+    setIntent(p, 1, 0, 1, true);
+    drive(w, p, 200);
+    const mouse = w.ctx.balance.mouse;
+    expect(p.pos.x).toBeLessThan(wall.cx - wall.hx);
+    expect(p.pos.x).toBeCloseTo(wall.cx - wall.hx - mouse.radius, 2);
   });
 });
 
