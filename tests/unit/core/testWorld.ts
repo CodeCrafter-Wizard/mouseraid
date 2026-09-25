@@ -1,0 +1,97 @@
+// Gemeinsame Bühne der System-Tests (T5). Liegt AUSSERHALB von src/core und darf deshalb
+// Math.* als Referenz benutzen. Die Fixtures sind eingefroren (T2) – kein Test liest
+// src/data/balance.json.
+import { loadBalance } from '../../../src/core/data/balanceLoad';
+import type { Balance } from '../../../src/core/data/balanceTypes';
+import type { GameEvent } from '../../../src/core/sim/events';
+import type { InputFrame } from '../../../src/core/sim/input';
+import { createInitialState } from '../../../src/core/sim/state';
+import type { Player, StepContext, WorldState } from '../../../src/core/sim/state';
+import type { Collider } from '../../../src/core/world/colliderTypes';
+import { generateColliders } from '../../../src/core/world/generateColliders';
+import { loadLevel } from '../../../src/core/world/levelLoad';
+import { CM_PER_UNIT } from '../../../src/core/world/levelTypes';
+import type { LevelDef, LevelRoom } from '../../../src/core/world/levelTypes';
+import balanceFixture from '../../fixtures/core/test-balance.json';
+import levelFixture from '../../fixtures/core/mini-level.json';
+
+/** Eine Testbühne: Zustand, injizierter Kontext, Ereignispuffer des Aufrufers. */
+export interface TestWorld { state: WorldState; ctx: StepContext; events: GameEvent[] }
+
+/** Balance aus der eingefrorenen Fixture. */
+export function testBalance(): Balance {
+  return loadBalance(balanceFixture);
+}
+
+/** Mini-Level aus der eingefrorenen Fixture. */
+export function miniLevel(): LevelDef {
+  return loadLevel(levelFixture);
+}
+
+/** Welt aus den Fixtures: vier aktive Spieler an den Maus-Spawns, alle Kollider erzeugt. */
+export function makeWorld(seed: number | string = 'T5'): TestWorld {
+  const level = miniLevel();
+  const balance = testBalance();
+  return {
+    state: createInitialState(level, balance, seed),
+    ctx: { balance, level, colliders: generateColliders(level) },
+    events: [],
+  };
+}
+
+/** Freie Bühne: selbst gewählte Räume und Kollider, damit Bewegungstests nicht an der Fixture hängen. */
+export function makeStage(rooms: readonly LevelRoom[], colliders: readonly Collider[],
+  balance: Balance = testBalance()): TestWorld {
+  const level: LevelDef = {
+    id: 'stage', scale: CM_PER_UNIT,
+    rooms, walls: [], shelves: [], boxes: [],
+    spawns: { mice: [{ x: 0, z: 0 }], cat: { x: 0, z: 0 } },
+    mouseHole: { x: 0, z: 0 },
+  };
+  return { state: createInitialState(level, balance, 'stage'), ctx: { balance, level, colliders }, events: [] };
+}
+
+/** Rechteckiger Raum. */
+export function room(id: string, x0: number, z0: number, x1: number, z1: number): LevelRoom {
+  return { id, name: id, bounds: { x0, z0, x1, z1 }, cameraMode: 'follow' };
+}
+
+/** Achsenparalleler Kasten als Kollider (rc/rs schon vorgerechnet). */
+export function box(id: number, cx: number, cz: number, hx: number, hz: number,
+  blocks: number, y1 = 100): Collider {
+  return { id, cx, cz, hx, hz, y0: 0, y1, rot: 0, rc: 1, rs: 0, blocks, occluderGroup: id + 1 };
+}
+
+/** Eingaberahmen bauen. */
+export function frame(tick: number, mx: number, mz: number, buttons = 0, seq = 0): InputFrame {
+  return { seq, tick, mx, mz, buttons };
+}
+
+/** Spieler eines Slots, ohne optionales Lesen im Test. */
+export function player(state: WorldState, slot: number): Player {
+  const p = state.players[slot];
+  if (p === undefined) throw new Error(`Slot ${slot} fehlt`);
+  return p;
+}
+
+/** Die ersten `count` Plätze aktiv schalten, alle anderen still. */
+export function activate(state: WorldState, count: number): void {
+  for (let i = 0; i < state.players.length; i += 1) {
+    const p = state.players[i];
+    if (p !== undefined) p.active = i < count;
+  }
+}
+
+/** Willen von Hand setzen (playerIntent wird in Bewegungstests nicht gebraucht). */
+export function setIntent(p: Player, moveX: number, moveZ: number, mag: number, sprint = false): void {
+  p.intent.moveX = moveX;
+  p.intent.moveZ = moveZ;
+  p.intent.mag = mag;
+  p.intent.sprint = sprint;
+  p.intent.interact = false;
+}
+
+/** Betrag der Geschwindigkeit. */
+export function speedOf(p: Player): number {
+  return Math.sqrt(p.vel.x * p.vel.x + p.vel.z * p.vel.z);
+}
