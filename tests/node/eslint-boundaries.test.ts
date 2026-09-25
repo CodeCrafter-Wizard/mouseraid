@@ -165,6 +165,66 @@ describe('ESLint-Leitplanken', () => {
     expect(ns).toContain('no-restricted-syntax');
   });
 
+  // M4/D1: zwei neue Schichtgrenzen, beide nur VERSCHAERFUNGEN.
+  // `src/render/**` hatte bisher gar keinen eigenen Block – render/ durfte also auch net/ und lab/
+  // importieren, und gefangen haette das erst `findLabSignatures` im gebauten Bundle, und auch nur,
+  // wenn eine der drei gesuchten Zeichenketten das Tree-Shaking ueberlebt.
+  // `src/input/**` ist neu (M4/T4) und darf ausschliesslich src/core sehen.
+  it.each([
+    '../../net/protocol',
+    '../../lab/report',
+    './../../net/protocol',
+    '..//..//lab/report',
+    '../.././net/protocol',
+    '../../../src/lab/report',
+  ])('render: der Weg %s nach net/ oder lab/ ist verboten', async (source) => {
+    const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/render/view2d/x.ts');
+    expect(ids).toContain('no-restricted-imports');
+  });
+
+  it.each(['../../core/sim/state', '../../ui/strings', '../../platform/buildInfo', './draw', './net', '../view2d/draw'])(
+    'render: %s bleibt erlaubt',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/render/view2d/x.ts');
+      expect(ids).not.toContain('no-restricted-imports');
+    },
+  );
+
+  it.each([
+    '../ui/strings',
+    '../render/view2d/draw',
+    '../net/protocol',
+    '../lab/report',
+    '../platform/buildInfo',
+    '../audio/audioBus',
+    '../modes/fixedLoop',
+    './../ui/strings',
+    '..//render/view2d/draw',
+    '.././net/protocol',
+    '../../src/lab/report',
+  ])('input: der Weg %s in eine fremde Schicht ist verboten', async (source) => {
+    const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/input/keyboard.ts');
+    expect(ids).toContain('no-restricted-imports');
+  });
+
+  it.each(['../core/sim/input', '../core/math/vec', './gamepad', './render', './net', '../input/touch'])(
+    'input: %s bleibt erlaubt',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/input/keyboard.ts');
+      expect(ids).not.toContain('no-restricted-imports');
+    },
+  );
+
+  it('input darf Babylon weder direkt noch als Legacy-Barrel importieren', async () => {
+    const babylon = await ruleIds(
+      `import { Engine } from '@babylonjs/core/Engines/engine';\nexport const e = Engine;\n`,
+      'src/input/keyboard.ts',
+    );
+    const legacy = await ruleIds(`import '@babylonjs/core/Legacy/legacy';\n`, 'src/input/x.ts');
+    expect(babylon).toContain('no-restricted-imports');
+    expect(legacy).toContain('no-restricted-imports');
+  });
+
   it('new AudioContext ist nur in src/audio/audioBus.ts erlaubt', async () => {
     const bad = await ruleIds(`export const c = new AudioContext();\n`, 'src/audio/sfx.ts');
     const good = await ruleIds(`export const c = new AudioContext();\n`, 'src/audio/audioBus.ts');

@@ -53,6 +53,19 @@ const NON_CORE_IMPORT = {
   regex: layerImportRegex(['render', 'ui', 'net', 'platform', 'input', 'audio', 'modes', 'lab']),
   message: 'core/ darf keine andere Schicht importieren.',
 };
+// M4: das Labor bleibt aus dem Spiel-Bundle. Bisher fing das erst `findLabSignatures` im gebauten
+// Bundle ab – und auch nur, wenn eine der drei gesuchten Zeichenketten das Tree-Shaking überlebt.
+const NET_LAB_IMPORT = {
+  regex: layerImportRegex(['net', 'lab']),
+  message: 'Spiel-Schichten duerfen net/ und lab/ nicht importieren – das Labor bleibt aus dem Spiel-Bundle.',
+};
+// M4/D5: die Tastatur ist ein reiner Reducer über `InputFrame`. Wer hier ein DOM-Ereignis, einen
+// String oder eine Kamera braucht, baut die Verdrahtung an die falsche Stelle (die steht in
+// `src/render/view2d/main.ts`, ab M5 in `src/modes/`).
+const INPUT_FOREIGN_IMPORT = {
+  regex: layerImportRegex(['render', 'ui', 'net', 'platform', 'audio', 'modes', 'lab']),
+  message: 'src/input darf nur src/core importieren.',
+};
 
 const NO_BABYLON_NAMESPACE = {
   selector: 'ImportDeclaration[source.value=/^@babylonjs\\u002F/] > ImportNamespaceSpecifier',
@@ -101,6 +114,19 @@ export default tseslint.config(
   {
     files: ['src/net/**/*.ts', 'src/lab/**/*.ts'],
     rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, RENDER_IMPORT] }] },
+  },
+  {
+    // Babylon bleibt hier ERLAUBT – M5 braucht es. Verboten sind nur net/ und lab/.
+    // LEGACY_IMPORT steht noch einmal in der Liste: Flat Config ERSETZT die Optionen einer Regel je
+    // passendem Block, sie summiert sie nicht – ohne die Wiederholung fiele das Legacy-Verbot für
+    // render/ still weg.
+    files: ['src/render/**/*.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, NET_LAB_IMPORT] }] },
+  },
+  {
+    // `src/input/**` darf NUR `src/core` sehen – Babylon also auch nicht (anders als render/).
+    files: ['src/input/**/*.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, INPUT_FOREIGN_IMPORT] }] },
   },
   {
     files: ['src/core/**/*.ts'],
