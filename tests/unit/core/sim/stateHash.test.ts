@@ -229,17 +229,24 @@ describe('hashState – Sonderfälle der Zahlen', () => {
     expect(NUMERISCHE_BLAETTER.length).toBeGreaterThan(390);
   });
 
-  it.each(NUMERISCHE_BLAETTER)('wirft NaNError mit dem Feldpfad $path', ({ path, segments }) => {
-    const state = fresh();
-    setAtPath(state, segments, Number.NaN);
-    let gefangen: unknown = null;
-    try {
-      hashState(state);
-    } catch (error) {
-      gefangen = error;
+  // EIN Fall mit Schleife statt `it.each` über ~400 Blätter: gleiche Aussage, aber die Zählung von
+  // `npm test` bleibt lesbar. Bei einem Fehler nennt die Meldung das erste falsche Blatt.
+  it('wirft NaNError mit dem exakten Feldpfad – für jedes Zahlenblatt des Zustands', () => {
+    const falsch: string[] = [];
+    for (const { path, segments } of NUMERISCHE_BLAETTER) {
+      const state = fresh();
+      setAtPath(state, segments, Number.NaN);
+      let gefangen: unknown = null;
+      try {
+        hashState(state);
+      } catch (error) {
+        gefangen = error;
+      }
+      if (!(gefangen instanceof NaNError) || gefangen.path !== path) {
+        falsch.push(`${path} -> ${gefangen instanceof NaNError ? gefangen.path : 'kein NaNError'}`);
+      }
     }
-    expect(gefangen).toBeInstanceOf(NaNError);
-    expect((gefangen as NaNError).path).toBe(path);
+    expect(falsch, `Blätter mit falschem/fehlendem NaN-Pfad (${falsch.length}/${NUMERISCHE_BLAETTER.length})`).toEqual([]);
   });
 });
 
