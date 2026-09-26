@@ -5,11 +5,21 @@
 // LIEST und echtes Babylon gegen die `NullEngine` fährt – dieselbe Ablage wie der Bounds-Test in T3.
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+// T1-Review, Minor 2: `Engines/nullEngine` (ohne `.pure`) zieht `import "./engine.js"` UND
+// `AbstractEngine/abstractEngine.textureLoaders.js` mit – also genau die neun Registry-Erweiterungen,
+// die dieser Test eigentlich bewachen soll (`engine.alpha`, `dynamicBuffer`, `uniformBuffer`,
+// `abstractEngine.dom`/`states`/`stencil`/`renderPass`/`texture`, `thinEngine.scissor`). Über
+// `.pure` bleibt der NullEngine-Aufbau frei von jeder Registry-Nebenwirkung, und die drei Fälle
+// unten bleiben trotzdem beweiskräftig (GEMESSEN: alle drei THREW ohne die Registry-Importe oben).
+import { NullEngine } from '@babylonjs/core/Engines/nullEngine.pure';
 import { EngineInstrumentation } from '@babylonjs/core/Instrumentation/engineInstrumentation';
-import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight';
-import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
+// T1-Review, MAJOR: die Lichtklassen kommen aus den NICHT-registrierenden `.pure`-Pfaden – aus den
+// Sammel-Modulen `Lights/directionalLight`/`hemisphericLight` (die der Test vorher importierte)
+// hätte der Test die Registrierung selbst mitgebracht, egal was in der Registry steht.
+import { DirectionalLight } from '@babylonjs/core/Lights/directionalLight.pure';
+import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight.pure';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Node } from '@babylonjs/core/node';
 import { Scene } from '@babylonjs/core/scene.pure';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BABYLON_SIDE_EFFECT_IMPORTS } from '../../src/render/babylonRegistry';
@@ -62,8 +72,10 @@ describe('babylonRegistry', () => {
     // wird der GANZE Quellbaum, nicht nur `engine.ts` – der Fallname behauptet eine Aussage über
     // `src/**`, also muss sie über `src/**` geprüft sein (R20). Gezählt werden nur NACKTE Importe;
     // die Bindungs-Importe von T3–T5 (`import { CreateBox } from …`) sind davon nicht betroffen.
+    // T1-Review, Minor 6: `\s*` vor `import` und `['"]` statt nur `'` – ein eingerückter oder mit
+    // doppelten Anführungszeichen geschriebener Import rutschte durch den alten, zu engen Blick.
     const withBare = sourceFiles('src').filter((file) =>
-      /^import '@babylonjs\//m.test(readFileSync(file, 'utf8')));
+      /^\s*import\s*['"]@babylonjs\//m.test(readFileSync(file, 'utf8')));
     expect(withBare).toEqual([REGISTRY]);
     // Und die Registry wird wirklich gezogen: `engine.ts` importiert sie als erste Zeile.
     expect(readFileSync('src/render/engine.ts', 'utf8')).toContain("import './babylonRegistry';");
@@ -90,7 +102,16 @@ describe('Nebenwirkungen gegen Babylons NullEngine', () => {
     expect(scene.defaultMaterial).toBeTruthy();
   });
 
-  it('die beiden Licht-Importe hängen sich am Szenen-Komponentensystem ein', () => {
+  // T1-Review, MAJOR: der alte Fall brachte `new HemisphericLight(...)`/`new DirectionalLight(...)`
+  // aus genau den registrierenden Modulen mit, die er beweisen sollte – er blieb grün, selbst wenn
+  // die zwei Registry-Zeilen gelöscht würden. Geprüft wird jetzt die REGISTRIERUNG selbst:
+  // `Node.AddNodeConstructor` aus `Lights/hemisphericLight.js`/`directionalLight.js` trägt
+  // `Node.Construct` ein – ohne die Registry-Importe liefert das `null` (GEMESSEN), mit ihnen eine
+  // Funktion. Erst danach zeigt `new HemisphericLight(...)` (aus dem `.pure`-Import oben, der davon
+  // unberührt bleibt), dass das Licht auch am Scene-Komponentensystem hängt.
+  it('die beiden Licht-Importe registrieren ihren Node-Konstruktor', () => {
+    expect(typeof Node.Construct('Light_Type_3', 'hemi', scene)).toBe('function');
+    expect(typeof Node.Construct('Light_Type_1', 'dir', scene)).toBe('function');
     new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
     new DirectionalLight('dir', new Vector3(-0.4, -1, 0.25), scene);
     expect(scene.lights).toHaveLength(2);

@@ -14,6 +14,17 @@ describe('ESLint-Leitplanken', () => {
     expect(ids).toContain('no-restricted-imports');
   });
 
+  // T1-Review, Minor 5: `no-restricted-imports` sieht nur den STATISCHEN Weg – ein
+  // `await import('@babylonjs/core/Engines/engine.pure')` kam in core/ vorher durch (GEMESSEN),
+  // weil dort nur `BABYLON_IMPORT`/`NON_CORE_IMPORT` standen, aber kein `NO_BABYLON_DYNAMIC`.
+  it('core darf Babylon auch nicht dynamisch importieren', async () => {
+    const ids = await ruleIds(
+      `export async function load(): Promise<unknown> {\n  return await import('@babylonjs/core/Engines/engine.pure');\n}\n`,
+      'src/core/world/x.ts',
+    );
+    expect(ids).toContain('no-restricted-syntax');
+  });
+
   it('core darf keine anderen Schichten importieren', async () => {
     const ids = await ruleIds(`import { a } from '../../render/engine';\nexport const b = a;\n`, 'src/core/sim/x.ts');
     expect(ids).toContain('no-restricted-imports');
@@ -154,6 +165,15 @@ describe('ESLint-Leitplanken', () => {
     const lab = await ruleIds(`import { Engine } from '@babylonjs/core/Engines/engine';\nexport const e = Engine;\n`, 'src/lab/x.ts');
     expect(net).toContain('no-restricted-imports');
     expect(lab).toContain('no-restricted-imports');
+  });
+
+  // T1-Review, Minor 5: derselbe dynamische Weg wie oben, jetzt für net/ und lab/ – GEMESSEN vorher
+  // still, weil dieser Block gar kein `no-restricted-syntax` trug (nur vom allgemeinen
+  // `src/**/*.ts`-Block geerbt, ohne NO_BABYLON_DYNAMIC).
+  it('net und lab dürfen Babylon auch nicht dynamisch importieren', async () => {
+    const code = `export async function load(): Promise<unknown> {\n  return await import('@babylonjs/core/Engines/engine.pure');\n}\n`;
+    expect(await ruleIds(code, 'src/net/x.ts')).toContain('no-restricted-syntax');
+    expect(await ruleIds(code, 'src/lab/x.ts')).toContain('no-restricted-syntax');
   });
 
   // M5/Abweichung 4: das Beispiel steht jetzt auf `engine.pure`. `Engines/engine` ist ab M5
@@ -386,6 +406,16 @@ describe('ESLint-Leitplanken', () => {
     const legacy = await ruleIds(`import '@babylonjs/core/Legacy/legacy';\n`, 'src/input/x.ts');
     expect(babylon).toContain('no-restricted-imports');
     expect(legacy).toContain('no-restricted-imports');
+  });
+
+  // T1-Review, Minor 5: derselbe dynamische Weg wie in render/modes/core – GEMESSEN vorher still,
+  // weil `src/input/**` nur NO_INPUT_FOREIGN_DYNAMIC trug, aber kein NO_BABYLON_DYNAMIC.
+  it('input darf Babylon auch nicht dynamisch importieren', async () => {
+    const ids = await ruleIds(
+      `export async function load(): Promise<unknown> {\n  return await import('@babylonjs/core/Engines/engine.pure');\n}\n`,
+      'src/input/keyboard.ts',
+    );
+    expect(ids).toContain('no-restricted-syntax');
   });
 
   it('new AudioContext ist nur in src/audio/audioBus.ts erlaubt', async () => {

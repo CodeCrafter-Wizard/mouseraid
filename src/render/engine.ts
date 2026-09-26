@@ -33,12 +33,21 @@ export interface GameEngine {
 export function createEngine(canvas: HTMLCanvasElement, tier: QualityTier, dpr: number): GameEngine {
   // Kantenglättung AUS (die Graybox braucht sie nicht, M8 entscheidet neu) und
   // `adaptToDeviceRatio = false`: sonst rechnet Babylon eine zweite, eigene DPR-Politik gegen unsere.
-  const engine = new Engine(
-    canvas,
-    false,
-    { alpha: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' },
-    false,
-  );
+  let engine: Engine;
+  try {
+    engine = new Engine(
+      canvas,
+      false,
+      { alpha: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' },
+      false,
+    );
+  } catch (error) {
+    // GEMESSEN (`Engines/thinEngine.pure.js:232/236`): liefert der Browser WEDER `webgl2` NOCH
+    // `webgl`, wirft Babylon schon im Konstruktor seinen eigenen englischen Text („WebGL not
+    // supported") – VOR der webGLVersion-Prüfung unten. Derselbe deutsche Text wie beim
+    // WebGL1-only-Fall, die Ursache bleibt für die Diagnose erhalten.
+    throw new Error(S.render.webgl2Missing, { cause: error });
+  }
   if (engine.webGLVersion !== WEBGL_VERSION_REQUIRED) {
     engine.dispose();
     throw new Error(S.render.webgl2Missing);
@@ -87,9 +96,14 @@ export function createEngine(canvas: HTMLCanvasElement, tier: QualityTier, dpr: 
   // Einträge, darunter `GroundMesh`, obwohl `CreateGround` läuft – der Stub ist nur der Parser),
   // ist also kein Gate: KEIN Test darf eine leere Liste verlangen.
   if (import.meta.env.DEV) {
-    void import('@babylonjs/core/Misc/checkMissingImports').then((module) => {
-      module.CheckMissingImports();
-    });
+    // `.catch` wie in `src/net/rtcTransport.ts:55`: ohne ihn würde eine abgewiesene Zusage als
+    // `unhandledrejection` im SICHTBAREN Fehler-Panel landen – ein falscher Alarm über einem reinen
+    // Frühwarner, der nur in der Entwicklung läuft.
+    void import('@babylonjs/core/Misc/checkMissingImports')
+      .then((module) => {
+        module.CheckMissingImports();
+      })
+      .catch(() => undefined);
   }
 
   return gameEngine;

@@ -4,8 +4,10 @@
 // Registrierung. Ein FEHLENDER Nebenwirkungs-Import ist weder ein Build- noch ein Typfehler,
 // sondern ein Wurf zur Laufzeit oder eine schwarze Szene.
 
-// Engine-Erweiterungen EINZELN: die Liste aus `Engines/engine.js` OHNE
-// `abstractEngine.textureLoaders` (die zieht KTX2- und Basis-Chunks ins Bundle).
+// Engine-Erweiterungen EINZELN: eine TEILMENGE der Liste aus `Engines/engine.js` – 9 von deren 21
+// Nebenwirkungs-Zeilen, OHNE Textur-Lader (`abstractEngine.textureLoaders`, zieht KTX2- und
+// Basis-Chunks ins Bundle), Render-Targets, Ladeschirm und `loadFile` (11 Zeilen ausgelassen) –
+// plus die zwei Zeitabfrage-Module unten, die in `engine.js` GAR NICHT stehen.
 import '@babylonjs/core/Engines/Extensions/engine.alpha';
 import '@babylonjs/core/Engines/Extensions/engine.dynamicBuffer';
 import '@babylonjs/core/Engines/Extensions/engine.uniformBuffer';

@@ -165,8 +165,17 @@ export default tseslint.config(
     rules: { 'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE] },
   },
   {
+    // T1-Review, Minor 5: `no-restricted-imports` sieht nur den STATISCHEN Weg – ein
+    // `await import('@babylonjs/core/Engines/engine.pure')` kam hier bisher durch (GEMESSEN).
+    // SYNTAX_BANS steht mit in der Liste: Flat Config ERSETZT die Optionen einer Regel je passendem
+    // Block, sie summiert sie nicht – ohne die Wiederholung fiele das Babylon-Namespace-/
+    // AudioContext-Verbot für net/lab still weg (dieser Block hatte vorher GAR KEIN
+    // `no-restricted-syntax` und erbte es nur vom allgemeinen `src/**/*.ts`-Block).
     files: ['src/net/**/*.ts', 'src/lab/**/*.ts'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, RENDER_IMPORT] }] },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, RENDER_IMPORT] }],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_BABYLON_DYNAMIC],
+    },
   },
   {
     // Babylon bleibt hier ERLAUBT – M5 braucht es. Verboten sind nur net/ und lab/ und die drei
@@ -210,7 +219,8 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, INPUT_FOREIGN_IMPORT] }],
       'no-restricted-globals': ['error', ...DOM_GLOBALS],
-      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_INPUT_FOREIGN_DYNAMIC],
+      // T1-Review, Minor 5: NO_BABYLON_DYNAMIC ergänzt – derselbe dynamische Weg wie in render/modes.
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_INPUT_FOREIGN_DYNAMIC, NO_BABYLON_DYNAMIC],
     },
   },
   {
@@ -219,7 +229,8 @@ export default tseslint.config(
       'no-restricted-imports': ['error', { patterns: [BABYLON_IMPORT, NON_CORE_IMPORT] }],
       'no-restricted-properties': ['error', ...corePropertyBans],
       'no-restricted-globals': ['error', ...DOM_GLOBALS],
-      'no-restricted-syntax': ['error', ...CORE_SYNTAX_BANS],
+      // T1-Review, Minor 5: NO_BABYLON_DYNAMIC ergänzt – derselbe dynamische Weg wie in render/modes.
+      'no-restricted-syntax': ['error', ...CORE_SYNTAX_BANS, NO_BABYLON_DYNAMIC],
     },
   },
   {
