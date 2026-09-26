@@ -1,7 +1,19 @@
 // Reine Prüf-Funktionen für das Build-Ergebnis (von check-dist.mjs und Tests benutzt).
 
-/** Babylon trägt diese beiden Basis-URLs fest in `Tools` – harmlos, solange nichts davon geladen wird. */
-const ALLOWED_BABYLON_URLS = new Set(['https://cdn.babylonjs.com', 'https://assets.babylonjs.com', 'https://assets.babylonjs.com/core']);
+/**
+ * Babylon trägt diese URLs als Zeichenketten fest im Code – harmlos, solange keine davon geladen
+ * wird. Die ersten drei sind die CDN-Vorgaben in `Tools`; die vierte (M5/D1) steht in
+ * `Misc/devTools.js` wörtlich in einem `console.warn` – dem Gerüst hinter JEDEM
+ * Nebenwirkungs-Stub. GEMESSEN: sie kommt 1x im Spiel-Chunk vor, auch ohne
+ * `CheckMissingImports`, und wird nie geholt; OHNE diese Zeile meldet `check-dist` genau 1 Problem.
+ * Alle Decoder-, Legacy- und sonstigen CDN-Signaturen bleiben scharf.
+ */
+const ALLOWED_BABYLON_URLS = new Set([
+  'https://cdn.babylonjs.com',
+  'https://assets.babylonjs.com',
+  'https://assets.babylonjs.com/core',
+  'https://doc.babylonjs.com/setup/treeshaking',
+]);
 
 const SIGNATURES = [
   { pattern: /draco_(decoder|wasm_wrapper)/i, reason: 'Draco-Decoder (käme vom CDN → Offline-Bruch)' },

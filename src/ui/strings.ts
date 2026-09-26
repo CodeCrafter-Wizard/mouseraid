@@ -29,6 +29,11 @@ export const S = {
     phoneMode: 'Handy-Testmodus: Service Worker abgeschaltet.',
     registerError: 'Service Worker konnte nicht registriert werden.',
   },
+  // Sichtbare Diagnose der 3D-Ansicht. Sie steht hier und nicht als technische `Error.message`,
+  // weil der Nutzer sie im Fehler-Panel liest (Q3).
+  render: {
+    webgl2Missing: 'Dieses Gerät stellt kein WebGL2 bereit – die 3D-Ansicht kann nicht starten. Bitte einen aktuellen Browser benutzen.',
+  },
   errors: {
     title: 'Es ist ein Fehler aufgetreten',
     copy: 'Diagnose kopieren',

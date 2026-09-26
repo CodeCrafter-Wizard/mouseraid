@@ -156,13 +156,95 @@ describe('ESLint-Leitplanken', () => {
     expect(lab).toContain('no-restricted-imports');
   });
 
+  // M5/Abweichung 4: das Beispiel steht jetzt auf `engine.pure`. `Engines/engine` ist ab M5
+  // ueberall verboten (BABYLON_BARREL_PATHS) – der Sammel-Import zieht `abstractEngine.textureLoaders`
+  // mit und damit KTX2- und Basis-Chunks ins Bundle (gemessen: check-dist 5 Probleme).
   it('render darf Babylon importieren, aber nicht Legacy und nicht als Namespace', async () => {
-    const ok = await ruleIds(`import { Engine } from '@babylonjs/core/Engines/engine';\nexport const e = Engine;\n`, 'src/render/x.ts');
+    const ok = await ruleIds(`import { Engine } from '@babylonjs/core/Engines/engine.pure';\nexport const e = Engine;\n`, 'src/render/x.ts');
     const legacy = await ruleIds(`import '@babylonjs/core/Legacy/legacy';\n`, 'src/render/y.ts');
     const ns = await ruleIds(`import * as B from '@babylonjs/core';\nexport const e = B;\n`, 'src/render/z.ts');
     expect(ok).not.toContain('no-restricted-imports');
     expect(legacy).toContain('no-restricted-imports');
     expect(ns).toContain('no-restricted-syntax');
+  });
+
+  // M5/Abweichung 4: die drei SAMMEL-Einstiege sind ueberall verboten, und zwar als `paths` (exakter
+  // Vergleich des Spezifizierers). Als `group`-Muster traefe '@babylonjs/core' gitignore-artig JEDEN
+  // tiefen Pfad darunter – gemessen 41 Fehler an genau den erlaubten Importen.
+  it.each(['@babylonjs/core', '@babylonjs/core/pure', '@babylonjs/core/Engines/engine'])(
+    'der Sammel-Einstieg %s ist in render/ und ausserhalb verboten',
+    async (source) => {
+      const code = `import { Engine } from '${source}';\nexport const e = Engine;\n`;
+      expect(await ruleIds(code, 'src/render/engine.ts')).toContain('no-restricted-imports');
+      expect(await ruleIds(code, 'src/ui/shell.ts')).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each([
+    '@babylonjs/core/Engines/engine.pure',
+    '@babylonjs/core/scene.pure',
+    '@babylonjs/core/Meshes/Builders/boxBuilder',
+    '@babylonjs/core/Engines/AbstractEngine/abstractEngine.timeQuery',
+  ])('der tiefe Pfad %s bleibt in render/ erlaubt', async (source) => {
+    const ids = await ruleIds(`import '${source}';\n`, 'src/render/babylonRegistry.ts');
+    expect(ids).not.toContain('no-restricted-imports');
+  });
+
+  // M5/Q4: die neue Schicht `src/modes/**` orchestriert core + input + render + platform + ui ueber
+  // die oeffentliche API von render – sie kennt weder net/ und lab/ noch Babylon, und zwar weder
+  // statisch noch dynamisch. Genau deshalb sind `fixedLoop` und `soloSession` in Vitest ohne DOM
+  // pruefbar. Gemessen vorher: `npx eslint src/modes` beanstandete keine Schichtgrenze.
+  it.each(['@babylonjs/core/Engines/engine.pure', '@babylonjs/core/Maths/math.vector', '@babylonjs/core/Legacy/legacy'])(
+    'modes: Babylon (%s) ist verboten',
+    async (source) => {
+      const ids = await ruleIds(`import '${source}';\n`, 'src/modes/soloSession.ts');
+      expect(ids).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['../net/protocol', '../lab/report', './../net/protocol', '../../src/lab/report'])(
+    'modes: der Weg %s nach net/ oder lab/ ist verboten',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/modes/soloSession.ts');
+      expect(ids).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['@babylonjs/core/Engines/engine.pure', '../lab/report', '../net/protocol'])(
+    'modes: der DYNAMISCHE import(%s) ist verboten',
+    async (source) => {
+      const ids = await ruleIds(
+        `export async function load(): Promise<unknown> {\n  return await import('${source}');\n}\n`,
+        'src/modes/soloSession.ts',
+      );
+      expect(ids).toContain('no-restricted-syntax');
+    },
+  );
+
+  it.each(['../core/sim/views', '../input/keyboard', '../render/engine', '../platform/storage', '../ui/strings', './session'])(
+    'modes: %s bleibt erlaubt',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/modes/soloSession.ts');
+      expect(ids).not.toContain('no-restricted-imports');
+      expect(ids).not.toContain('no-restricted-syntax');
+    },
+  );
+
+  // M5/D11: die 2D-Ansicht ist der Babylon-FREIE Entwickler- und Rueckfallweg; ihr Chunk bleibt
+  // klein. Der engere view2d-Block muss den weiteren `src/render/**`-Block ueberschreiben – bei Flat
+  // Config gewinnt der SPAETERE Block, deshalb steht er dort unten.
+  it('view2d darf Babylon nicht importieren, der Rest von render/ schon', async () => {
+    const deep = `import { Engine } from '@babylonjs/core/Engines/engine.pure';\nexport const e = Engine;\n`;
+    expect(await ruleIds(deep, 'src/render/view2d/main.ts')).toContain('no-restricted-imports');
+    expect(await ruleIds(deep, 'src/render/engine.ts')).not.toContain('no-restricted-imports');
+  });
+
+  it('view2d darf Babylon auch nicht dynamisch importieren', async () => {
+    const ids = await ruleIds(
+      `export async function load(): Promise<unknown> {\n  return await import('@babylonjs/core/Engines/engine.pure');\n}\n`,
+      'src/render/view2d/draw.ts',
+    );
+    expect(ids).toContain('no-restricted-syntax');
   });
 
   // M4/D1: zwei neue Schichtgrenzen, beide nur VERSCHAERFUNGEN.

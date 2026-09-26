@@ -16,6 +16,16 @@ describe('findForbiddenSignatures', () => {
     expect(findForbiddenSignatures('a.js', 'u="https://cdn.babylonjs.com/babylon.ktx2Decoder.js"')).not.toEqual([]);
   });
 
+  // M5/D1: `Misc/devTools.js` schreibt diese Doku-URL woertlich in einen `console.warn` – das
+  // Geruest hinter JEDEM Nebenwirkungs-Stub. Gemessen: 1 Vorkommen im Spiel-Chunk (auch ohne
+  // `CheckMissingImports`), nie geholt; OHNE die Allowlist-Zeile meldet `check-dist` genau 1 Problem.
+  // Die Allowlist bleibt dabei EXAKT: jede andere doc.babylonjs.com-URL faellt weiter durch.
+  it('erlaubt Babylons Doku-URL aus dem Nebenwirkungs-Warner, aber keine andere doc.babylonjs.com-URL', () => {
+    expect(findForbiddenSignatures('a.js', 'console.warn("… See: https://doc.babylonjs.com/setup/treeshaking")')).toEqual([]);
+    expect(findForbiddenSignatures('a.js', 'u="https://doc.babylonjs.com/setup/tools"')).toHaveLength(1);
+    expect(findForbiddenSignatures('a.js', 'u="https://doc.babylonjs.com"')).toHaveLength(1);
+  });
+
   it('meldet Decoder-Signaturen, Legacy-Barrel und STUN/TURN-URLs', () => {
     expect(findForbiddenSignatures('a.js', 'load("draco_decoder_gltf.wasm")')).toHaveLength(1);
     expect(findForbiddenSignatures('a.js', 'meshopt_decoder')).toHaveLength(1);

@@ -43,6 +43,8 @@
     "workbox-window": "7.4.1"
   },
   "dependencies": {
+    "@babylonjs/core": "9.27.1",
+    "idb": "8.0.3",
     "qr-scanner": "1.4.2",
     "qrcode": "1.5.4"
   }

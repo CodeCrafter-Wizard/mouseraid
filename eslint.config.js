@@ -35,6 +35,21 @@ const BABYLON_IMPORT = {
   group: ['@babylonjs/*', '@babylonjs/**'],
   message: 'Diese Schicht darf Babylon nicht kennen.',
 };
+// M5/Abweichung 4: die drei SAMMEL-Einstiege sind überall verboten – und zwar als `paths`
+// (WÖRTLICHER Vergleich des Spezifizierers), NICHT als `patterns`. GEMESSEN: als `group`-Muster
+// trifft '@babylonjs/core' gitignore-artig AUCH jeden tiefen Pfad darunter; `npx eslint .` meldete
+// damit 41 Fehler an genau den erlaubten Importen.
+const BABYLON_BARREL_PATHS = [
+  { name: '@babylonjs/core', message: 'Kein Barrel – nur gezielte tiefe Importe.' },
+  {
+    name: '@babylonjs/core/pure',
+    message: 'Kein `pure`-Barrel (51 `export *`) – es überlässt das Tree-Shaking dem Bundler, statt es zu erzwingen.',
+  },
+  {
+    name: '@babylonjs/core/Engines/engine',
+    message: 'Nur `…/engine.pure` plus die Einzel-Erweiterungen aus src/render/babylonRegistry.ts – der Sammel-Import holt KTX2/Basis ins Bundle (gemessen).',
+  },
+];
 // Eine fremde Schicht erreicht man nur über den Weg nach oben (`../…`) oder über `src/` – daran wird
 // sie erkannt. Gitignore-artige Gruppen (`**/input`) würden auch core-INTERNE Module wie `./input`
 // oder `../sim/input` (src/core/sim/input.ts ist laut Design ein Core-Modul) verbieten.
@@ -92,6 +107,13 @@ const NO_BABYLON_NAMESPACE = {
   selector: 'ImportDeclaration[source.value=/^@babylonjs\\u002F/] > ImportNamespaceSpecifier',
   message: 'Kein `import * as` aus Babylon – verhindert Tree-Shaking.',
 };
+// M5: dieselbe Babylon-Grenze für den DYNAMISCHEN Weg. `no-restricted-imports` sieht nur statische
+// Importe – ein `await import('@babylonjs/core/Engines/engine.pure')` käme in `src/modes/**` und
+// `src/render/view2d/**` sonst durch, und Babylon landete in genau dem Chunk, der schlank bleiben soll.
+const NO_BABYLON_DYNAMIC = {
+  selector: 'ImportExpression[source.value=/^@babylonjs\\u002F/]',
+  message: BABYLON_IMPORT.message,
+};
 const NO_AUDIO_CONTEXT = {
   selector: 'NewExpression[callee.name=/^(AudioContext|webkitAudioContext)$/]',
   message: 'Genau ein AudioContext: nur src/audio/audioBus.ts darf ihn erzeugen.',
@@ -133,7 +155,7 @@ export default tseslint.config(
     files: ['src/**/*.ts'],
     languageOptions: { globals: globals.browser },
     rules: {
-      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT] }],
+      'no-restricted-imports': ['error', { paths: BABYLON_BARREL_PATHS, patterns: [LEGACY_IMPORT] }],
       'no-restricted-syntax': ['error', ...SYNTAX_BANS],
     },
   },
@@ -147,16 +169,38 @@ export default tseslint.config(
     rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, RENDER_IMPORT] }] },
   },
   {
-    // Babylon bleibt hier ERLAUBT – M5 braucht es. Verboten sind nur net/ und lab/.
+    // Babylon bleibt hier ERLAUBT – M5 braucht es. Verboten sind nur net/ und lab/ und die drei
+    // Sammel-Einstiege (BABYLON_BARREL_PATHS).
     // LEGACY_IMPORT steht noch einmal in der Liste: Flat Config ERSETZT die Optionen einer Regel je
     // passendem Block, sie summiert sie nicht – ohne die Wiederholung fiele das Legacy-Verbot für
     // render/ still weg.
     files: ['src/render/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, NET_LAB_IMPORT] }],
+      'no-restricted-imports': ['error', { paths: BABYLON_BARREL_PATHS, patterns: [LEGACY_IMPORT, NET_LAB_IMPORT] }],
       // SYNTAX_BANS steht wieder mit in der Liste: Flat Config ERSETZT die Optionen einer Regel je
       // passendem Block. Ohne die Wiederholung fiele das Babylon-Namespace-Verbot fuer render/ weg.
       'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_NET_LAB_DYNAMIC],
+    },
+  },
+  {
+    // M5/Q4: `src/modes/**` orchestriert core + input + render + platform + ui über die öffentliche
+    // API von render – es kennt weder net/ und lab/ noch Babylon. Genau deshalb sind `fixedLoop` und
+    // `soloSession` in Vitest ohne DOM prüfbar: die Grafik kommt als Rückruf `render(alpha)` herein.
+    // LEGACY_IMPORT und SYNTAX_BANS stehen wieder mit in der Liste (Flat Config ersetzt, summiert nicht).
+    files: ['src/modes/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, NET_LAB_IMPORT] }],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_NET_LAB_DYNAMIC, NO_BABYLON_DYNAMIC],
+    },
+  },
+  {
+    // M5/D11: die 2D-Ansicht ist der Babylon-FREIE Entwickler- und Rückfallweg; ihr Chunk bleibt
+    // klein. Dieser Block VERSCHÄRFT den `src/render/**`-Block und steht deshalb NACH ihm – bei
+    // Flat Config gewinnt der spätere Block.
+    files: ['src/render/view2d/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, NET_LAB_IMPORT] }],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_NET_LAB_DYNAMIC, NO_BABYLON_DYNAMIC],
     },
   },
   {
