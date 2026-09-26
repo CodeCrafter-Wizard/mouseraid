@@ -80,11 +80,15 @@ export interface BoomPose {
 /**
  * Eine Pose zum Wiederbeschreiben. `distance` startet auf `BOOM_DISTANCE` statt auf 0, damit eine
  * noch nie gerechnete Pose nicht in der Figur steckt.
+ *
+ * `yaw = 0` liest sich als Blick nach +x (`cos 0 = 1`, `sin 0 = 0`) – die Kamera steht also bei -x,
+ * `z` bleibt 0 (Task-4-Review, Minor 2: die frühere Lage `z = BOOM_DISTANCE * ARM_RUN` gehörte zu
+ * `yaw = -PI/2`, wie `dioramaPose` sie schreibt, und widersprach dem eigenen `yaw`-Feld).
  */
 export function createBoomPose(): BoomPose {
   return {
     mode: 'follow',
-    x: 0, y: BOOM_TARGET_HEIGHT + ARM_RISE * BOOM_DISTANCE, z: BOOM_DISTANCE * ARM_RUN,
+    x: -BOOM_DISTANCE * ARM_RUN, y: BOOM_TARGET_HEIGHT + ARM_RISE * BOOM_DISTANCE, z: 0,
     targetX: 0, targetY: BOOM_TARGET_HEIGHT, targetZ: 0,
     yaw: 0, distance: BOOM_DISTANCE,
   };

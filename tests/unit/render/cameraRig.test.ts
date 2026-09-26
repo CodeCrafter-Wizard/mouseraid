@@ -7,11 +7,16 @@ import { NO_ROOM } from '../../../src/core/world/levelTypes';
 import type { CameraMode, LevelBounds, LevelDef, LevelRoom } from '../../../src/core/world/levelTypes';
 import { CAT, SIGHT } from '../../../src/core/world/colliderTypes';
 import type { Collider } from '../../../src/core/world/colliderTypes';
+import { loadLevel } from '../../../src/core/world/levelLoad';
+import { buildLevelRuntime } from '../../../src/core/world/levelRuntime';
 import type { LevelRuntime } from '../../../src/core/world/levelRuntime';
-import { BOOM_DISTANCE, BOOM_TARGET_HEIGHT, createBoomPose, dioramaPose } from '../../../src/render/cameraBoom';
+import {
+  BOOM_DISTANCE, BOOM_TARGET_HEIGHT, BOOM_YAW_PER_S, createBoomPose, dioramaPose, smoothFactor, stepBoom,
+} from '../../../src/render/cameraBoom';
 import { CAMERA_SLOT, OCCLUDER_VISIBILITY, createCameraRig } from '../../../src/render/cameraRig';
 import type { LevelMeshes } from '../../../src/render/levelMeshes';
-import { collider, emptyLevel } from '../core/testWorld';
+import { collider, emptyLevel, testBalance } from '../core/testWorld';
+import feinkostJson from '../../../src/data/levels/feinkost.json';
 
 /**
  * Der Rig wird gegen ZWEI Attrappen geprüft: eine Kamera mit genau den beiden Feldern, die er
@@ -32,16 +37,30 @@ function cameraSpy(): CameraSpy {
   return { position, targets, camera: stub as unknown as TargetCamera };
 }
 
-interface MeshSpy { resets: number; set: [number, number][]; meshes: LevelMeshes }
+/**
+ * `calls` haelt BEIDE Aufrufarten in EINER Liste, in der Reihenfolge, in der der Rig sie ausloest.
+ * `resets`/`set` bleiben als Bequemlichkeit fuer die aelteren Faelle bestehen (Task-4-Review, Major
+ * 2): mit ZWEI getrennten Listen sieht kein Test, OB `resetVisibility()` vor oder nach den
+ * `setGroupVisibility`-Aufrufen eines Bildes lief – nur die gemeinsame Liste zeigt die Reihenfolge.
+ */
+type MeshCall = ['reset'] | ['set', number, number];
+interface MeshSpy { calls: MeshCall[]; resets: number; set: [number, number][]; meshes: LevelMeshes }
 
 function meshSpy(): MeshSpy {
   const spy: MeshSpy = {
+    calls: [],
     resets: 0,
     set: [],
     meshes: {
       boxes: [], floors: [], groupOf: [],
-      setGroupVisibility(group: number, visibility: number): void { spy.set.push([group, visibility]); },
-      resetVisibility(): void { spy.resets += 1; },
+      setGroupVisibility(group: number, visibility: number): void {
+        spy.set.push([group, visibility]);
+        spy.calls.push(['set', group, visibility]);
+      },
+      resetVisibility(): void {
+        spy.resets += 1;
+        spy.calls.push(['reset']);
+      },
       dispose(): void { /* nichts zu geben */ },
     },
   };
@@ -133,6 +152,11 @@ describe('cameraRig', () => {
     expect(rig.occluderCount()).toBe(1);
     expect(meshes.resets).toBe(1);
     expect(meshes.set).toEqual([[pflanze.occluderGroup, OCCLUDER_VISIBILITY]]);
+    // Task-4-Review, Major 2: ERST der Reset, DANN das Setzen dieses Bildes – sonst bliebe ein
+    // Kasten aus dem Vorbild durchsichtig. Die getrennten Zaehler oben koennen das nicht sehen (ein
+    // Reset NACH der Schleife liefe mit ihnen unbemerkt durch); nur die gemeinsame Aufrufliste zeigt
+    // die Reihenfolge.
+    expect(meshes.calls).toEqual([['reset'], ['set', pflanze.occluderGroup, OCCLUDER_VISIBILITY]]);
   });
 
   it('setzt eine Gruppe im naechsten Bild wieder auf voll sichtbar zurueck', () => {
@@ -196,5 +220,72 @@ describe('cameraRig', () => {
     expect(camera.targets[0]?.y).toBe(BOOM_TARGET_HEIGHT);
     expect(camera.targets[0]?.z).toBe(-2);
     expect(pose.targetY).toBe(BOOM_TARGET_HEIGHT);
+  });
+
+  it('gibt `initial` nach dem ersten Bild ab – der zweite Schritt zieht nach, er springt nicht', () => {
+    // Task-4-Review, Minor 1: der bisherige Fall ruft zwischen zwei `update`-Aufrufen IMMER `snap()`
+    // auf und sieht deshalb nie den nachziehenden Zweig. Mutant "initial bleibt immer true" (der Rig
+    // schnappt jedes Bild) muss HIER fallen.
+    const rig = createCameraRig(
+      cameraSpy().camera,
+      runtimeOf([room('laden', { x0: -20, z0: -20, x1: 20, z1: 20 }, 'follow')], []),
+      meshSpy().meshes,
+    );
+    rig.update(viewAt(0, 0, 0, slowView([0])), 16);
+    expect(rig.pose().yaw).toBe(0);
+    // KEIN `snap()` dazwischen: das zweite Bild muss nachziehen statt zu springen.
+    rig.update(viewAt(0, 0, 1, slowView([0])), 16);
+    const factor = smoothFactor(BOOM_YAW_PER_S, 16);
+    expect(rig.pose().yaw).toBeCloseTo(factor, 12);
+    expect(rig.pose().yaw).toBeGreaterThan(0);
+    expect(rig.pose().yaw).toBeLessThan(1);
+  });
+});
+
+describe('cameraRig: Moduswechsel diorama -> follow', () => {
+  /**
+   * Task-4-Review, Major 1: `pose.mode` traegt beim Verlassen des Baus noch 'diorama', und `initial`
+   * ist laengst `false` – der `else`-Zweig zieht die Diorama-Distanz (~30 u) deshalb ueber knapp eine
+   * halbe Sekunde auf ihr Ziel nach, statt sofort zu schnappen. Gepruft wird das am ECHTEN
+   * `feinkost`-Level (keine erfundenen Raumgrenzen): Platz 0 steht auf dem Maus-Spawn IM Bau, das
+   * naechste Bild loest den Raum auf den Laden auf, OHNE dass irgendwer `snap()` ruft – genau der
+   * Weg, auf dem `slow.players[…].room` den Modus zur Laufzeit umschaltet.
+   */
+  it('schnappt beim Verlassen des Baus – der erste Verfolger-Rahmen fliegt nicht durch die Suedwand', () => {
+    const balance = testBalance();
+    const level = loadLevel(feinkostJson);
+    const runtime = buildLevelRuntime(level, balance);
+    const bau = level.rooms.findIndex((r) => r.cameraMode === 'diorama');
+    const laden = level.rooms.findIndex((r) => r.cameraMode === 'follow');
+    expect(bau).toBeGreaterThanOrEqual(0);
+    expect(laden).toBeGreaterThanOrEqual(0);
+    const spawn = level.spawns.mice[0];
+    expect(spawn).toBeDefined();
+    if (spawn === undefined) return;
+
+    const rig = createCameraRig(cameraSpy().camera, runtime, meshSpy().meshes);
+    // Bild 1: Platz 0 steht auf dem Spawn im Bau – der Rig nimmt die Diorama-Pose (distance ~30 u).
+    rig.update(viewAt(spawn.x, spawn.z, 0, slowView([bau])), 16);
+    expect(rig.pose().mode).toBe('diorama');
+    expect(rig.pose().distance).toBeGreaterThan(20);
+
+    // Bild 2, OHNE snap(): der Raum loest sich auf den Laden auf. Die liegen gebliebene
+    // Diorama-Distanz darf NICHT nachziehen – der erste Verfolger-Rahmen muss sofort geklemmt sein.
+    rig.update(viewAt(spawn.x, spawn.z, 0, slowView([laden])), 16);
+    expect(rig.pose().mode).toBe('follow');
+    expect(rig.pose().distance).toBeLessThanOrEqual(BOOM_DISTANCE);
+
+    // Sollwert: GENAU das Ergebnis eines frischen, ungeglaetteten Schritts (initial = true) an
+    // derselben Stelle – keine abgeschriebene Zahl, sondern dieselbe reine Funktion, die der Rig
+    // selbst aufruft. Ohne den Fix liegt die Kamera weit daneben (vom Review gemessen: y ~ 11,65 /
+    // z ~ 18,26 – ausserhalb jeder Raumgeometrie, durch die Suedwand des Baus).
+    const erwartet = stepBoom(createBoomPose(), spawn.x, spawn.z, 0, 16, runtime.colliders, true);
+    expect(rig.pose().x).toBeCloseTo(erwartet.x, 9);
+    expect(rig.pose().y).toBeCloseTo(erwartet.y, 9);
+    expect(rig.pose().z).toBeCloseTo(erwartet.z, 9);
+    // Der Arm reicht hoechstens BOOM_DISTANCE Einheiten vom Blickpunkt weg – der 22 u weite Ausflug
+    // aus dem Review ist damit unmoeglich.
+    expect(Math.abs(rig.pose().z - spawn.z)).toBeLessThanOrEqual(BOOM_DISTANCE);
+    expect(rig.pose().y).toBeLessThan(BOOM_TARGET_HEIGHT + BOOM_DISTANCE);
   });
 });

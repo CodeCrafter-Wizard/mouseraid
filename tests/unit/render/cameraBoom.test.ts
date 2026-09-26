@@ -50,6 +50,20 @@ function wallAhead(distance: number, blocks: number = ALL_MASKS): Collider {
   return prop(0, 1, -2 * half, 0, { hx: half, hz: 20, blocks });
 }
 
+describe('cameraBoom: createBoomPose', () => {
+  it('liefert eine zu yaw = 0 konsistente Lage – Kamera hinter dem Blickpunkt bei -x', () => {
+    // Task-4-Review, Minor 2: die Startpose trug frueher `z = BOOM_DISTANCE * ARM_RUN` (die Lage zu
+    // yaw = -PI/2, wie `dioramaPose` sie schreibt) bei `yaw: 0` – ein Widerspruch zwischen den
+    // Feldern, bis der erste `stepBoom`/`dioramaPose`-Aufruf sie ueberschreibt. `yaw = 0` liest sich
+    // als Blick nach +x (`cos 0 = 1`, `sin 0 = 0`), die Kamera steht also bei -x und `z` bleibt 0.
+    const pose = createBoomPose();
+    expect(pose.yaw).toBe(0);
+    expect(pose.x).toBeCloseTo(-BOOM_DISTANCE * ARM_RUN, 12);
+    expect(pose.z).toBeCloseTo(0, 12);
+    expect(pose.y).toBeCloseTo(BOOM_TARGET_HEIGHT + ARM_RISE * BOOM_DISTANCE, 12);
+  });
+});
+
 describe('cameraBoom: angleDelta', () => {
   it('gibt den kurzen Weg mit Vorzeichen', () => {
     expect(angleDelta(0, 1)).toBe(1);
