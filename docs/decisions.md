@@ -1341,6 +1341,517 @@ im Test – das ist billiger als ein Playwright-Lauf und macht jede Layout-Ände
   jeden ausgelieferten Build und jede spätere Übersetzung. Will der Nutzer sie später doch, entsteht ein
   eigener Ast `S.dev.view2d.*` mit einer Notiz hier.
 
+## M5 – Graybox am Desktop (2026-09-26)
+
+Aus dem Level wird ein **Bild**: Babylon.js 9.27.1 mit ausdrücklichem WebGL2, eine Schleife mit festem
+30-Hz-Schritt und injizierter Uhr, eine Solo-Sitzung mit importfreiem Spiel-Haken, ein Kasten je Kollider
+und ein Boden je Raum, Kapsel-Figuren mit Interpolation zwischen zwei Ticks, ein Kamera-Boom als **reine**
+Funktion mit Wandklemmung und halbdurchsichtigen Okkludern, ein F3-Overlay mit den echten Zählern, ein
+Einstellungs-Speicher über `idb` und die Seite als Vollbild-Leinwand unter einem einklappbaren
+Hüllen-Streifen. **Kein Spielgefühl, keine Touch-Eingabe, kein Start-Gate, kein Regler-Panel** – das ist
+M6. Der Kern wurde an **einer** Stelle angefasst (`sim/views.ts`), die fünf Golden-Hashes blieben
+`5× (unveraendert)`.
+
+### Ein Babylon-Paket, tiefe Importe, EIN Ort für Nebenwirkungen (D1/D2)
+`@babylonjs/core@9.27.1` und `idb@8.0.3` sind **exakt** gepinnt (`npm install --save-exact`);
+`@babylonjs/materials`, `loaders` und `gui` gibt es nicht und sollen es nicht geben.
+
+- **`src/render/babylonRegistry.ts` ist die einzige Datei mit Nebenwirkungs-Importen** – 17 Zeilen,
+  dokumentiert, dazu die Konstante `BABYLON_SIDE_EFFECT_IMPORTS = 17` (ein **nackter** Import gilt zu
+  leicht als unbenutzt, ein benannter nicht, und die Zahl ist pinnbar). Jede andere Datei importiert nur
+  Bindungen aus tiefen Pfaden. Gemessen: alle 17 Pfade existieren in 9.27.1 **und** stehen in Babylons
+  `sideEffects`-Allowlist – Rolldown darf keinen wegkürzen.
+- **Die Registry ist eine TEILMENGE, keine Kopie.** Von den 21 Nebenwirkungs-Zeilen, die
+  `@babylonjs/core/Engines/engine.js` selbst zieht, sind **9** übernommen und **11** bewusst
+  weggelassen: Textur-Lader, Render-Targets, Ladebildschirm und `loadFile`. Die beiden Zeilen
+  `Engines/Extensions/engine.query` und `AbstractEngine/abstractEngine.timeQuery` kommen **nicht** aus
+  `engine.js`, sondern aus dem Instrumentierungsbedarf (Q2). Bewiesen wird die Registrierung im Test
+  über `Node.Construct('Light_Type_3', …)` – die Klassen aus den `.pure`-Pfaden registrieren sich
+  **nicht selbst**, ein Test, der nur importiert und `instanceof` prüft, bewiese also nichts. Aus
+  demselben Grund benutzen die Tests `nullEngine.pure`: das normale `nullEngine` zieht `engine.js`
+  samt Textur-Ladern nach und **maskiert neun** Registry-Zeilen.
+- **Nie `@babylonjs/core/Engines/engine`.** Der Sammel-Import zieht
+  `AbstractEngine/abstractEngine.textureLoaders` mit, und das registriert **alle** Texturlader.
+  Gemessen mit ihm: `check-dist` meldet **5 Probleme** (`basisTextureLoader-*.js`, `ktxTextureLoader-*.js`
+  zweimal, zwei Doku-URLs), Spiel-JS **371,9 kB gzip**, Precache **50 Dateien / 1753,1 kB**. Mit
+  `Engines/engine.pure` plus den 17 Einzel-Zeilen: **1** Problem, **318,9 kB gzip**, **26** Dateien.
+  Das ist kein Fehlalarm – Spec-Abweichung 3 verbietet KTX2/Basis. Im fertigen Build sind
+  KTX2-, Basis-, Draco- und Meshopt-Chunks **0**.
+- **Die Sperre steht als `paths`, nicht als `patterns`.** `no-restricted-imports` mit einem
+  `group`-Muster `'@babylonjs/core'` trifft gitignore-artig **jeden** tiefen Pfad darunter; gemessen
+  meldete `npx eslint .` damit **41 Fehler** an genau den erlaubten Importen. `paths` vergleicht den
+  Spezifizierer wörtlich. Verboten sind damit exakt drei Einstiege: `@babylonjs/core`,
+  `@babylonjs/core/pure` (51 `export *`-Zeilen – dieselbe Form wie das Legacy-Barrel) und
+  `@babylonjs/core/Engines/engine`. `import * as` und `Legacy/**` bleiben wie bisher gesperrt, und
+  Babylon ist in `src/core`, `src/input`, `src/net`, `src/lab`, `src/modes` und `src/render/view2d`
+  **statisch wie dynamisch** gesperrt.
+- **Eine Zeile Allowlist, und nur eine.** `Misc/devTools.js` – das `_WarnImport`-Gerüst hinter jedem
+  Nebenwirkungs-Stub – schreibt `https://doc.babylonjs.com/setup/treeshaking` wörtlich in einen
+  `console.warn`. Die URL steht **1×** im Spiel-Chunk, wird nie geholt, und ohne den Eintrag in
+  `ALLOWED_BABYLON_URLS` (`scripts/lib/distChecks.mjs`) ist jedes Babylon-Build rot: in beide Richtungen
+  nachgemessen, **genau 1 Problem** ohne die Zeile, grün mit ihr. Alle Decoder-, Legacy- und
+  CDN-Signaturen bleiben scharf; `scripts/check-dist.mjs` selbst ist unverändert.
+  `tests/node/dist-checks.test.ts` lernt **nur** diese Allowlist (zwei neue Fälle: die Doku-URL erlaubt,
+  eine **andere** `doc.babylonjs.com`-URL verboten) – **keine** Chunk- oder Precache-Zahlen: die Datei ist
+  ein reiner Unit-Test über `distChecks.mjs` und liest `dist/` nie; eine gepinnte Dateizahl machte
+  `npm test` von einem frischen Build abhängig und jede legitime Chunk-Teilung rot.
+- **`CheckMissingImports()` nur unter `import.meta.env.DEV` und dynamisch.** Statisch kostet sie
+  **8,0 kB gzip** und **36,4 kB Precache**; dynamisch ist die Zeichenkette
+  `side-effect modules have not been imported` im Pages-Build **abwesend**. Sie ist ein Frühwarner mit
+  Rauschen (gemessen **30** Einträge, darunter `GroundMesh`, obwohl `CreateGround` läuft – der Stub ist
+  nur der Parser), **kein Gate**: kein Test verlangt `missing.length === 0`.
+- **Das Labor bleibt Babylon-frei.** `check-dist` prüft jeden Lab-Chunk auf `/babylon/i` und meldete
+  nichts; Lab-JS **61,9 kB gzip** (Budget 150 kB).
+
+**Die teuerste Lehre des Meilensteins:** ein fehlender Nebenwirkungs-Import ist **kein** Build- und
+**kein** Typfehler. Der erste Prototyp-Lauf starb zur Laufzeit an
+`this.engine.captureGPUFrameTime is not a function`, und `CheckMissingImports()` hätte das **nicht**
+gefunden. Das Gegenmittel ist der Offline-Smoke **mit Pixelprobe** – wer einen neuen Babylon-Aufruf
+ergänzt, prüft, ob er einen Nebenwirkungs-Import verlangt, und **sieht sich das Bild an**.
+
+### Engine, WebGL2-Pflicht und die Stufen-Politik (D3)
+`new Engine(canvas, false, { alpha: false, stencil: false, preserveDrawingBuffer: false,
+powerPreference: 'high-performance' }, false)`. Vier Festlegungen mit Grund:
+
+- **`adaptToDeviceRatio = false` ist Pflicht** – sonst rechnet Babylon eine zweite, eigene DPR-Politik
+  gegen unsere.
+- **Kantenglättung aus** (Graybox; M8 entscheidet neu), **`preserveDrawingBuffer: false`** (der
+  Pixel-Prüfbefehl bündelt `render()` und `readPixels` ohnehin in **einem** Aufruf, siehe unten).
+- **WebGL2 ist Pflicht**, nicht Wunsch: `engine.webGLVersion !== 2` wirft mit dem Text aus
+  `src/ui/strings.ts` (`S.render.webgl2Missing`), `src/main.ts` fängt es und gibt es an das Fehler-Panel –
+  am Handy der einzige Rückkanal. Der Text ist **sichtbar**, gehört also nach `strings.ts` (Q3). Auch
+  Babylons **eigener** Wurf („WebGL not supported") wird abgefangen und als derselbe Text neu geworfen,
+  mit dem Original als `cause` – sonst stünde am Handy eine englische Engine-Meldung.
+- **Stufen in Gerätepixeln, rein gerechnet** (`src/render/quality.ts`): `low` = **hart 1,0**,
+  `medium` = `min(dpr, 1,5)`, `high` = `min(dpr, 2)`, danach
+  `setHardwareScalingLevel(1 / devicePixels)` + `engine.resize()`. Gemessen mit dpr 2,5: **1 / 1,5 / 2**;
+  mit dpr 1: **1 / 1 / 1**. `QualityTier` ist **`Settings['qualityTier']`** – genau **eine** Definition,
+  und sie steht auf der Plattformseite, weil `src/platform` `src/render` nicht kennen darf, umgekehrt
+  schon.
+
+**Der Stufen-Sweep ist an diesem Entwicklungsrechner nicht beweisbar.** `window.devicePixelRatio` ist
+hier **1,0000000149**; alle drei Stufen ergeben `hardwareScaling ≈ 1` und dieselbe Renderbreite. Geprüft
+wird deshalb **nur die reine Funktion**; dass die Engine sie umsetzt, zeigt erst das Handy (M6) oder ein
+erzwungener `deviceScaleFactor`. Ein Test, der hier „die Stufe wirkt" behauptete, wäre grün, ohne etwas zu
+beweisen. Genau dafür gibt es `?tier=low|medium|high`: ohne den Parameter ist der Sweep hier gar nicht
+auslösbar.
+
+### Kadenz: `floor`, nicht `round` – und `engine.getFps()` lügt (Q1)
+`renderDivider(panelHz) = max(1, floor(panelHz / 60))`, mit der 30-fps-Einstellung aus M17 **verdoppelt**.
+Gepinnte Tabelle:
+
+| Panel-Hz | 60 | 90 | 100 | 120 | 137 | 144 | 240 |
+|---|---|---|---|---|---|---|---|
+| Teiler | 1 | 1 | 1 | 2 | 2 | 2 | 4 |
+| Teiler mit `fpsLimit 30` | 2 | 2 | 2 | 4 | 4 | 4 | 8 |
+
+Mit `round` ergäbe **90 Hz den Teiler 2** (= 45 fps) – und die Spec will „90 ungedrosselt". Das ist der
+eine Punkt, an dem der Prototyp die Spec nicht erfüllte; `floor` ist die Antwort, nicht eine Toleranz.
+
+Die Panel-Rate ist der **Median** der rAF-Abstände über 60 Bilder nach 10 Aufwärmbildern, neu gemessen
+nach `visibilitychange` → sichtbar. Gemessen: dieser PC **136,99 Hz** (7,30 ms Median, 396 Bilder in 3 s),
+Headless **59,52 Hz** (311 Bilder in 3 s).
+
+**`engine.getFps()` wird nicht benutzt.** Gemessen: `getFps()` meldete **60**, während die Schleife in
+derselben Sekunde **132** Bilder zeichnete und die Panel-Rate 137 Hz war. Die fps im Overlay kommen aus
+den **eigenen** rAF-Zeitstempeln in `fixedLoop`.
+
+### Die Schleife: fester 30-Hz-Schritt mit injizierter Uhr (D4)
+`src/modes/fixedLoop.ts` ist rein im Sinne von „kein DOM": Uhr, rAF-Planer und Abbesteller kommen als
+`FixedLoopClock` herein. Akkumulator über `TICK_MS` (33,33…), **250-ms-Klammer**, höchstens **5 Schritte
+je Bild**, der Rest bleibt im Akkumulator (ein verworfener Rest liesse die Simulation dauerhaft hinter der
+Wanduhr zurückfallen), der **Überschuss oberhalb des Deckels** wird verworfen und in `dropped` **gezählt**.
+`alpha` ist der Rest **nach** den Schritten, geklemmt auf [0, 1].
+
+- **`pump()` liefert `FrameStats`, keine Zahl.** Deckel, Klammer, `alpha`, verworfene Ticks und CPU-Zeit
+  sind fünf Aussagen; ein Test, der nur die Tickzahl sieht, kann `alpha` nicht prüfen.
+- **`pause`/`resume` stehen neben `start`/`stop`.** `start()` setzt den Akkumulator zurück, `pause()`
+  behält ihn, `resume()` rebasiert nur die Uhr. Ohne diese Trennung wäre „nach dem Tab-Wechsel rechnet
+  nichts nach" gar nicht formulierbar.
+- **`advance(n)` zeichnet mit `alpha = 1`**, nicht mit 0 (der Prototyp nahm 0), und zeichnet **genau
+  ein** Bild. Nur so ist „Mesh == Zustand nach n Ticks" wahr – und genau so liest das E2E-Tor.
+- **`onFrame` läuft NACH `render` – und genau ein Feld hinkt deshalb.** `frameMs`, `drawCalls`,
+  `triangles` und `gpuMs` misst `gameMain` im Bild selbst – `drawFrame` liest die Zähler unmittelbar
+  nach `scene.render()` (Babylon stellt sie je Bild zurück) und ruft dann `overlay.update(stats())`.
+  Nur `steps` kommt aus `onFrame` und zeigt im Overlay damit den Wert des **vorigen** Bildes; unter
+  `?clock=manual` bleibt es **0**, weil dort nur `advance` rechnet und die rAF-Kette nie läuft.
+- **`visibilitychange` hängt an `document`, nicht an `window`.** Der Hörer in
+  `src/render/view2d/main.ts` hing an `window` und feuerte damit **nie**; in M5 ist er umgezogen, für die
+  2D-Ansicht **und** für die neue Schleife. Geprüft über die DOM-Attrappe, nicht über einen Browser-Lauf.
+- `src/render/view2d/loop.ts` ist **gelöscht**; die 2D-Ansicht benutzt dieselbe `fixedLoop`, ihre Tests
+  sind nach `tests/unit/modes/fixedLoop.test.ts` umgezogen – samt dem Altfall zum Schritt-Deckel, der
+  jetzt den **gezählten** Überschuss prüft statt des alten stillen Verwerfens.
+
+Gemessen bei laufender Uhr: **Tick 90 nach 3 s = 30,0 Ticks/s** (headed), 30,7/s headless.
+
+### `FastSnapshot`: die einzige Kern-Änderung, und sie ist eine Korrektheitsfrage (D5)
+`src/core/sim/views.ts` bekommt `SNAPSHOT_STRIDE`/`SNAPSHOT_ACTORS`/`SNAPSHOT_CAT`, den Typ
+`FastSnapshot` (x, z, `facing` je Maus und Katze, Sichtbarkeit, Tick), `createSnapshot()` und das reine
+`snapshotFast(state, out)`; `RenderView` trägt ab jetzt **zwei Schnappschüsse** statt zweier `WorldState`.
+Das ist **keine** Ergänzung, sondern eine Änderung – in `src/**` baut niemand einen `RenderView`, in
+`tests/unit/core/sim/views.test.ts` **schon**, und genau **ein** bestehender Fall wurde umgeschrieben.
+
+Der Grund ist nicht Tempo: eine Vollkopie kostet gemessen **2,05 µs**, also 0,006 % eines 33-ms-Ticks,
+und `snapshotFast` selbst rund **1,9 µs** je Tick. Der Grund ist, dass (a) ein `prev = cloneState(curr)`
+je Tick ein Objekt anlegt (GC-Druck über Stunden) und (b) ein `prev` als vollständiger `WorldState` die
+Renderschicht dazu verleitet, **langsame** Felder daraus zu lesen – die dürfen nur aus `slow` kommen.
+`soloSession` legt **zwei** Schnappschüsse beim Start an und **tauscht** sie je Tick; ab dann kostet die
+Interpolation keine Allokation mehr. `makeSlowView` wird weiterhin nur bei `ticks > 0` gerufen (sonst legt
+es je Bild ein Objekt mit vier Unterobjekten an). `hashState` und `cloneState` blieben unangetastet,
+`RenderView` wird nie gehasht und nie geklont: **5× `(unveraendert)`**.
+
+### Sitzung, importfreier Haken und die URL-Parameter (D6)
+`src/modes/**` ist eine **neue Schicht**: sie orchestriert Kern + Eingabe und kennt **kein Babylon**, kein
+`src/net` und kein `src/lab` (ESLint-Block, auch für `import()`). Genau deshalb ist die Sitzung in Vitest
+im Node-Umfeld prüfbar – sie importiert nichts aus `render/` oder `platform/`.
+
+- `createSoloSession({ levelJson, balanceJson, seed, keyboard, clock, render })`: laden → `LevelRuntime`
+  → Anfangszustand → `StepContext` → zwei Schnappschüsse → `createFixedLoop`. Die Schleife wird dabei
+  **gestartet**, außer bei `manual: true`; `?clock=manual` setzt genau das (und `DEFAULT_SEED`) in
+  `gameMain`. Je Tick klebende Rahmen für **alle vier** Plätze; die Tastatur überschreibt Platz 0
+  **nur**, wenn sie nicht ruht (`keyboard.idle()`) – sonst wischte sie in einem Playwright-Lauf jeden
+  `setInput(0, …)` im nächsten Tick weg. Das ist genau die Logik der 2D-Ansicht, nur ohne DOM.
+- **Der Ereignispuffer ist gedeckelt** (`EVENT_BUFFER_MAX = 256`, Überschuss in `droppedEvents()`).
+  Gemessen über 100 Sprint-Ticks: **360** Ereignisse erzeugt, **256** gehalten, **104** verworfen. In M5
+  liest ihn niemand (M11 Audio, M12 HUD); ohne Deckel legte ein `advance(100000)` im Tor hunderttausend
+  Objekte an.
+- **Der Haken gehört NICHT zum Rückgabewert der Sitzung.** `stats()` trägt die Babylon-Zähler
+  (`drawCalls`, `triangles`, `gpuMs`), die Panel-Rate, die Qualitätsstufe und die Build-ID – eine Sitzung,
+  die den Haken baut, zöge all das nach `src/modes`. Gebaut wird er in `src/render/gameMain.ts`, der
+  einzigen Stelle, die alles kennt.
+- **`src/modes/hook.ts` ist importfrei** – kein einziger Import, auch kein Typ. Gemessener Grund (jetzt
+  zum dritten Mal, nach M2 und M4): `tsconfig.node.json` umfasst `tests/e2e`; schreibt ein Spec
+  `import type { MbHook }`, zieht das den ganzen Haken-Graphen in den Node-Typecheck, und erreicht er
+  `src/platform/buildInfo.ts`, fehlt `__BUILD_ID__` (TS2552), erreicht er eine `.css`, bricht er mit
+  TS2882. Repariert wird das im **Modul**, nie in der tsconfig. `tests/node/labHook-graph.test.ts` bewacht
+  jetzt **vier** Einstiege. Die Build-ID wird deshalb von `src/main.ts` **injiziert**.
+- **`stats()`** liefert `tick, fps, panelHz, frameMs, cpuMsP95, gpuMs, drawCalls, triangles, tickRate,
+  steps, tier, storage, buildId` – alles Zahlen bzw. nackte Zeichenketten (`tier` ist **kein**
+  `QualityTier`, das wäre ein Import). `storage` steht dort, damit ein **stiller** Rückfall auf den
+  Speicher-Store auffällt.
+- **`cmd` hat genau fünf Befehle:** `pose(slot)`, `camera()`, `teleport(slot, x, z)`, `setInput(…)`
+  (dasselbe Funktionsobjekt wie `hook.setInput`) und `grid(step)`. `advance` und `setInput` werfen
+  `RangeError` bei nicht ganzzahligen, negativen oder zu großen Werten (`mx`/`mz` in [−127, 127],
+  `buttons` in [0, 255] – die Grenzen des Drahtformats); ein `setInput(0, NaN, 0, 0)` fiele sonst erst
+  Ticks später im Hash auf.
+- **`grid` ist der fünfte Befehl, und er muss einer sein.** Gemessen: `readPixels` aus einem **eigenen**
+  `page.evaluate` liefert rgb(0,0,0) – ohne `preserveDrawingBuffer` ist der Puffer nach dem Bild weg. Der
+  Befehl ruft deshalb `scene.render()` und liest **unmittelbar danach**. Er liest über
+  `canvas.getContext('webgl2')`, und dass das **Babylons** Kontext ist, wurde in M5 eigens **gemessen**
+  (Babylons `_gl` bleibt tabu); bei `null` meldet er `{ samples: 0 }`, damit das Tor **laut** fällt statt
+  still grün zu bleiben. Der FNV-1a-**Raster-Hash** ist ein Rückgabewert zur Diagnose, **keine**
+  Tor-Zusicherung – er hängt an Treiberversion und Fenstergröße.
+- **URL-Parameter (nur Entwicklung und Tests):** `?clock=manual` (rAF-Schleife wird gebaut, nie gestartet
+  – gerechnet wird nur über `__mb.advance`), `?seed=` (Vorgabe `1`), `?tier=low|medium|high` und
+  `?overlay=1` (beide überschreiben den gespeicherten Wert), `?view=2d` (die 2D-Ansicht, exklusiv).
+  **`?autostart=1` ist reserviert und tut nichts** – das Start-Gate ist M6, und ein Parameter, der etwas
+  vorgibt, was es nicht gibt, ist schlimmer als keiner.
+- **`?view=2d` und die Graybox teilen `window.__mb`, stehen aber nie zusammen auf einer Seite.**
+  `src/main.ts` entscheidet **exklusiv** und nimmt die Spielleinwand bei `?view=2d` aus dem DOM (sonst
+  fände Playwrights Strict-Mode-Locator zwei Leinwände). Zwei importfreie Haken-Module mit
+  **verschiedenen** `MbStats` – ein gemeinsamer Typ wäre der Anfang eines Sammelmoduls, das der Wächter
+  bewachen müsste.
+
+Gemessen als Gegenprobe zum Kern: der Zustandshash nach **300 neutralen Ticks** über die Sitzung ist
+**2695771223** – bitgleich zum Golden-Fall `mini-neutral-300`. Die Sitzung rechnet also denselben Kern.
+
+### Graybox aus dem Level: Farbe aus der REIHENFOLGE, Drehung LINKSHÄNDIG (D7)
+Ein `CreateBox` je Kollider, ein `CreateGround` je Raumgrenze, fünf Kapseln. Für `feinkost`:
+39 Kästen + 2 Böden + 5 Kapseln = **46 Meshes**, **13 Materialien** (Mini-Level: 16 + 1 + 5 = **22**
+Meshes, **8** Materialien).
+
+- **`rotationY = -collider.rot`, gemessen und nicht geraten.** Babylon ist linkshändig. Bewiesen wird das
+  **Ecke für Ecke durch die Weltmatrix** (`mesh.getWorldMatrix()` nach `computeWorldMatrix(true)`) gegen
+  die vier gedrehten Kollider-Ecken: größte Abweichung **7,63 · 10⁻⁷** über alle 39 `feinkost`-Kästen
+  (bei Kollider-ID 9) und **3,92 · 10⁻⁷** im Mini-Level. **Der erste Test war falsch und sah richtig
+  aus:** ein Vergleich der achsenparallelen Mesh-Weltbounds
+  (`getBoundingInfo().boundingBox.minimumWorld/maximumWorld`) mit Min/Max derselben Ecken ist unter
+  `rot → -rot` **invariant** – er beweist das Vorzeichen **nicht**. Mit `+rot` wären die gedrehte
+  Regalreihe und der Mauseloch-Stopfen (`rot = PI/2`) verdreht. Dasselbe Vorzeichen gilt für den
+  Gierwinkel der Figuren.
+- **Die Art kommt aus der `id`, also aus der Kollider-REIHENFOLGE** (Wände → Regale → Kisten → Pflanzen →
+  Stopfen), nicht aus der Maske und nicht aus einem neuen Level-Feld. Die Maske sieht man in `?view=2d`;
+  die Graybox soll zeigen, **was** ein Körper ist. Eine Ableitung aus der Maske wäre geraten (Theke,
+  Vitrine und Wand tragen dieselbe Maske 15), und ein `sourceKind` am Kollider änderte
+  `generateColliders`, also `src/core` – und damit den Datenweg jedes Golden-Hashes. `colliderKindOf`
+  ist damit **exakt** und rein, also ohne Babylon prüfbar; eine `id` außerhalb fällt auf `'crate'`
+  zurück, und ein Test pinnt das, damit ein künftiger Kollidertyp nicht **still** eine fremde Farbe
+  bekommt.
+- **Vierzehn Farben, eine Tafel, ein `StandardMaterial` je Farbe.** „Flach" entsteht über
+  `specularColor = (0, 0, 0)` plus ein leichtes `emissiveColor` (`EMISSIVE_SHARE` × Grundfarbe);
+  `disableLighting` wird **ausdrücklich nicht** benutzt: gemessen sind ohne Licht alle sechs Kastenseiten
+  gleich hell und die Form ist nicht lesbar – genau das, was die Graybox zeigen soll. Beleuchtet wird mit
+  **einem** Hemisphären- und **einem** Richtungslicht von oben-vorne-links, ohne Schatten (das ist M8);
+  `HEMI_GROUND_SHARE = 0,35` hält die abgewandten Seiten lesbar statt schwarz.
+- **Die Tafel ist Vertrag, der Farbwert nicht.** Die Zahlen sind ein erster Entwurf und werden am Bild
+  beurteilt; korrigiert werden dürfen sie, ein Test nie.
+- **Was ein Screenshot zeigt, ist die BELEUCHTETE Farbe, nicht der Tafelwert.** Gemessen an einem Boden:
+  `rendered ≈ base × (HEMI_INTENSITY + DIR_INTENSITY · cos θ + EMISSIVE_SHARE)`; für die waagerechte
+  Bodenebene ergibt das den Faktor **1,345** – aus dem Tafelwert rgb(140, 120, 102) wird im Bild
+  rgb(189, 162, 138). Eine Farbprobe im Tor darf deshalb **nicht** gegen den Tafelwert vergleichen; sie
+  normiert auf den **hellsten Kanal** und vergleicht Verhältnisse, mit einer Gegenprobe gegen eine zweite
+  Tafelzeile. Senkrechte Flächen, die vom Richtungslicht abgewandt sind, kommen umgekehrt auf **rund
+  30 %** ihres Tafelwerts: ihr Farbton bleibt unterscheidbar, ihre Helligkeit nicht. Ein
+  `litColor(kind, upFacing)` wird **ausdrücklich nicht** eingeführt – das wäre eine zweite
+  Beleuchtungswahrheit neben `StandardMaterial` und müsste bei jedem Lichtdreh nachgezogen werden.
+- **Die Böden gehen je Raum**, und der Bau ist heller (`floorBurrow`). Das ist im Bild der Beweis, dass er
+  `cameraMode: 'diorama'` trägt, ohne eine Zahl zu lesen. `FLOOR_Y = -0,02` liegt knapp unter 0, sonst
+  z-fightet der Boden mit `y0 = 0` der Kästen.
+- **Einzel-Meshes, keine Thin Instances.** Gemessen bei 844×390: **21–25** Zeichenaufrufe /
+  **1162–1976** aktive Dreiecke, bei 1920×1080 **15–19** / **1090–1904** (Budget 60 / 60 000) – Babylon
+  fasst nach Material zusammen und das Frustum-Culling lässt nur wenige Meshes aktiv. **Das breitere
+  Bild zeigt MEHR, nicht weniger:** Babylons senkrechtes Blickfeld ist fest, also wächst das Sichtfeld
+  mit dem Seitenverhältnis – 844×390 (2,16) sieht mehr Meshes als 1920×1080 (1,78), deshalb liegen die
+  Zahlen bei der kleinen Fenstergröße **höher**. Thin Instances kommen mit den Requisiten in M9.
+- **Kein `scene.freezeActiveMeshes` in M5.** Gemessen: eingefroren wie aufgetaut **identisch** (Raster-Hash
+  2036715620, 19 aktive Meshes), der Gewinn bei so wenigen Meshes nicht messbar – und die bekannte Falle
+  (ein nach dem Einfrieren sichtbar gemachtes Mesh erscheint nicht) liess sich gar nicht auslösen, weil
+  `feinkost` vier Spawns hat und alle vier Mäuse schon im ersten Bild aktiv sind. **Ungeprüft** heißt: M8.
+
+**`NullEngine` läuft unter Vitest im Node-Umfeld, ohne DOM.** `new NullEngine()` + `new Scene(engine)` +
+`CreateBox` + `computeWorldMatrix(true)` + `getBoundingInfo()` sind gemessen grün (Log
+`BJS - Babylon.js v9.27.1 - Null engine`). Zwei Einschränkungen, beide gemessen und beide im Test
+ausgeschrieben: `scene.render()` wirft ohne Kamera **„No camera defined"**, und
+**`scene.getActiveIndices()` bleibt 0** (die NullEngine rastert nicht). Zeichenaufrufe und Dreiecke sind
+deshalb **nur im Browser** messbar – der Bounds-Test dagegen läuft echt gegen Babylon.
+
+**Die Maus-Kapsel ist in M5 eine Kugel, und das ist die Balance, kein Fehler.** `CreateCapsule` verlangt
+`height >= 2 · radius`, sonst entsteht eine Kugel. Die Balance gibt der Maus `radiusCm 4 / heightCm 6`,
+also 0,4 u / 0,6 u – gebaut wird mit `capsuleHeight = max(height, 2 · radius + 0,01)` = **0,81 u**, und
+das ist per Konstruktion eine Kugel mit 0,01 u Zylinder. Im Bild hat die Maus damit **keine sichtbare
+Blickrichtung**. Die Katze (1,2 / 3,0) bleibt ungeklemmt bei **3,0 u** und ist in M5 statisch. Das ist eine
+echte **Datenspannung**, kein Rundungsfehler: eine Maus mit 4 cm Radius und 6 cm Höhe ist geometrisch keine
+Kapsel. Die Balance bleibt unangetastet – sie trägt das Kollisions-Höhenband –, die Frage geht an M10s
+Proportionsdurchgang und aufs Spaß-GATE nach M14.
+
+### Kamera: Boom, Okkluder, Diorama (D8)
+Die M5-Konstanten wohnen in `src/render/cameraBoom.ts`, nicht in einer Datendatei: M6s Regler-Panel zieht
+sie in Daten um, und bis dahin wäre eine Datei ohne Regler nur eine zweite Stelle.
+`BOOM_DISTANCE 6`, `BOOM_HEIGHT 3`, `BOOM_TARGET_HEIGHT 0,4`, `BOOM_MARGIN 0,25`,
+`BOOM_MIN_DISTANCE 1,5`, `BOOM_YAW_PER_S 6`, `BOOM_POS_PER_S 14`, `DIORAMA_PITCH_TAN 2,2`.
+
+**`BOOM_HEIGHT` ist die NEIGUNG des Arms, nicht die Kamerahöhe.** Ungeklemmt steigt die Kamera um
+`BOOM_HEIGHT · BOOM_DISTANCE / ARM_LENGTH` = **2,6833 u** über den Blickpunkt (Kamerahöhe damit
+**3,0833 u**), und `distance` läuft **längs** des Arms – sonst zerfällt die Klemmgleichung (`rayCast3`
+liefert `t` in derselben Einheit). Die Neigung ist damit `atan(3/6)` = **26,57°**. **Merkposten:**
+Babylons senkrechtes Blickfeld ist fest 0,8 rad, das halbe also 22,92° – der Horizont liegt 3,65° über
+der Bildoberkante, und geradeaus sieht man fast nur Boden. `BOOM_TARGET_HEIGHT 0,4` ist die **Mitte**
+der Maus-Kugel (0,81 u hoch), damit die Pixelprobe des Tors die Maus trifft.
+
+- **Verfolger:** Blickpunkt = Mausposition + `targetHeight`; Gier zieht zeitbasiert
+  (`1 − exp(−k · dt)`) an `facing` nach; `rayCast3` (Maske `CAMERA`) vom Blickpunkt zur Wunschposition,
+  Treffer klemmt auf `max(BOOM_MIN_DISTANCE, t − BOOM_MARGIN)`. Rein, gemessen **0,27 µs** je Aufruf, und
+  die Klemmung wirkt sichtbar: am Spawn (−60 / −4, direkt an der Westwand) klemmte der Boom auf
+  **3,6631 u** statt 6 u, Kamera bei (**−63,2764** / **2,0382** / **−4,0000**), 0 Okkluder. Das
+  Faktenblatt notierte dazu (−60 / 2,03 / −7,23) – **x und z getauscht**: der Prototyp las `yaw` als
+  `(sin, cos)` statt `(cos, sin)`; richtig ist die Klemmung an der **West**wand, nicht an der Nordwand.
+  **Maus-Drag/Orbit gibt es in M5 nicht** – das wäre ein zweiter Eingabeweg neben
+  `src/input/keyboard.ts` und gehört nach M6.
+- **Die Kamera SCHNAPPT bei jedem Moduswechsel**, nicht nur beim ersten Bild. Ohne das flog sie beim
+  Wechsel Diorama → Verfolger **24 Bilder lang** quer durch die Südwand des Baus (erstes Bild gemessen
+  `distance` **25,15 u**). `createBoomPose()` ist dabei konsistent zu `yaw` 0 – Pose und Gierwinkel
+  kommen aus derselben Rechnung.
+- **Okkluder:** die `occluderGroup`-Werte auf der Strecke Blickpunkt → Kamera, aufsteigend und ohne
+  Dopplung; ihre Kästen bekommen `visibility = 0.35`, alle anderen 1 (erst zurücksetzen, dann setzen –
+  sonst bleibt ein Kasten aus dem Vorbild durchsichtig). **Niedrige Requisiten** (`y1 <= targetHeight`)
+  werden nie durchsichtig. Gemessen **0,43 µs** für 39 Kollider (rund 0,001 % des Frame-Budgets), am
+  Spawn 0 Okkluder. **Die Maske ist `CAMERA | SIGHT`, nicht nur `CAMERA`** – und das hat einen Grund, den
+  man leicht übersieht: ein **Kamera**-Sperrer wird nie durchsichtig, weil der Boom `BOOM_MARGIN`
+  **vor** ihm klemmt und die Strecke Blickpunkt→Kamera damit davor endet. Der Fall, für den es die
+  Halbdurchsichtigkeit überhaupt gibt, ist die **Topfpflanze**: sie blockt `CAT | SIGHT` und bewusst
+  **kein** `CAMERA` (mit Kamerabit klemmte der Boom an jedem Busch). Während des Gier-Nachziehens ist
+  eine Wand kurzzeitig Okkluder – gemessen und **gepinnt**, damit es niemand für einen Fehler hält.
+- **Diorama:** feste, erhöhte Pose auf die Raummitte, kein Boom, keine Okkluder, keine Glättung.
+  `diag = sqrt(spanX² + spanZ²)`, `distance = 0,9 · diag + 4`. Für `feinkost`s `bau` (24 × 16 u):
+  `diag = sqrt(832) = 28,844410`, `distance = 29,959969`, `back = 12,397523`, `height = 27,274552`,
+  `yaw = -PI/2`. Das Tor vergleicht gegen **diese Funktion**, nie gegen ein Literal.
+
+**Platz 0 startet im BAU, also im Diorama – der Verfolger ist NICHT die Vorgabe.** Gemessen an
+`feinkost.json`: `spawns.mice[0]` = (−60, −4) liegt im Raum `bau` (x −64…−40 · z −8…8, Index 1) mit
+`cameraMode: 'diorama'`. Zwei Folgen: (a) das erste Bild des Spiels ist die Diorama-Pose des Baus, und der
+Verfolger-Boom ist in M5 erst nach `cmd.teleport` bzw. einem Raumwechsel zu sehen; (b) `player.room` ist
+zu **Tick 0** noch `NO_ROOM` (−1), weil `playerMove` den Raum je Tick auflöst – der Rig braucht einen
+ausgeschriebenen Rückfall auf `follow`, und jede Modusprobe rechnet vorher mindestens einen Tick.
+
+**Die teuerste Lehre der Kamera: eine Pose kann rechnerisch stimmen und das Bild trotzdem nichts
+zeigen.** Der 45°-Diorama-Blick (`leg = distance / SQRT2`) setzt die Kamera auf (−52 / 21,185 / 21,185)
+und blickt auf (−52 / 0 / 0); auf dieser Sichtlinie gilt **y = z**. Die Südwand des Baus (Wand 8,
+z 7,5…8,5) ist **12 u** hoch und damit höher als die 8,5 u, die der Strahl an ihrer Stelle erreicht –
+das Bild war eine bildfüllende Wandrückseite, der Raum **unsichtbar**. **Das E2E-Tor war dabei grün:**
+die Pose stimmte mit der reinen Funktion überein und das 16×16-Raster war zu **256/256** nicht-schwarz.
+Gefunden hat das nur das Auge.
+
+Die Antwort steht seit M5 im Code: `dioramaPose` rechnet mit `DIORAMA_PITCH_TAN` (Verhältnis Höhe zu
+Rückversatz), `back = distance / sqrt(1 + t²)`, `height = back · t`; mit `t = 1` ist das exakt die
+alte 45°-Form, die Änderung ist also eine Verallgemeinerung. Gemessen für den Bau: ab `t > 1,41` ist
+die Raummitte frei, bei **`t = 2,2`** (gewählt) sind alle vier Maus-Spawns zu sehen, bei `t = 3` fast der
+ganze Boden. Mit 2,2 liegt die Sichtlinie an der Wandebene (8,5 u von der Mitte) **18,70 u** hoch
+gegen **12 u** Wandhöhe. Der Bau erscheint dabei **seitenverkehrt zur 2D-Ansicht**: die Kamera blickt
+aus Süden nach −z, +x liegt damit links im Bild.
+
+**Jeder Meilenstein, der ein Bild erzeugt, braucht deshalb einen Schritt, in dem jemand hinsieht.**
+
+### Overlay, Zähler und der GPU-Timer (D9/Q2)
+Ein `<pre class="debug-overlay">` über der Leinwand, mit F3 geschaltet (Drei-Finger-Tipp ist M6),
+`pointer-events: none`. Die **Bezeichner** stehen in `src/ui/strings.ts` (Ast `S.debug.*`) – ein
+Bildschirm-Overlay im Spiel steht **nicht** in der Ausnahmeliste von `CLAUDE.md`, und die Regel lautet
+„alle sichtbaren Texte"; die **Zahlenformate** bleiben im Modul. Das Overlay hört selbst nichts ab:
+F3 verdrahtet `gameMain`.
+
+- Zeichenaufrufe kommen aus `SceneInstrumentation.drawCallsCounter.current`, die Dreiecke aus
+  `scene.getActiveIndices() / 3`. Die Zähler werden **je Bild zurückgesetzt** → nach `scene.render()`
+  lesen.
+- **CPU-p95** über die letzten 120 Bilder, gerechnet aus der Zeit **vor** `scene.render()`; `frameMs`
+  schließt das Bild ein. Gemessen headless bei 844×390: Mittel **0,12–0,17 ms**, p95 **0,30–0,50 ms**,
+  Maximum 1,1 ms; headed (Intel UHD) Mittel **0,0296 ms**. Das Budget (CPU-p95 ≤ 8–10 ms) ist in der
+  Graybox um zwei Größenordnungen unterboten – der **Aussagewert ist gering**, bis M8 die Budget-Last
+  dazulegt.
+- **Der GPU-Timer bleibt 0.** `EngineInstrumentation.captureGPUFrameTime = true` **wirft** ohne
+  `Engines/Extensions/engine.query` **und** `AbstractEngine/abstractEngine.timeQuery` (gemessen als
+  `TypeError: captureGPUFrameTime is not a function`) – daran starb der erste Prototyp-Lauf, zur
+  Laufzeit. Mit beiden Importen läuft es, aber: `EXT_disjoint_timer_query_webgl2` fehlt unter
+  SwiftShader und ist unter Intel/D3D11 vorhanden, und `gpuFrameTimeCounter.current` (in **Nanosekunden**)
+  blieb **in beiden Fällen 0**, auch nach 396 Bildern. → `gpuMs` wird nur angezeigt, wenn `> 0` (sonst
+  „–"), und **kein Test darf `gpuMs > 0` verlangen**. Bleibt er 0, ist das eine M8-Notiz, kein Fehler.
+- **Erstes Bild:** kalt, im frischen Chromium bis `'__mb' in window`, **1542 ms** (T6 maß 1554 und
+  1572 ms); warm im selben Browser-Prozess **71–90 ms**. Der kalte Anteil ist die
+  SwiftShader-Aufwärmung und **flag-unabhängig** – ein zweiter Prozess unmittelbar danach kam auf ~2 ms.
+  Dieselbe Klasse Kosten wie die für Canvas 2D dokumentierten 1,4–1,5 s: sie trifft das erste Bild, nicht
+  die Dauerrate.
+
+### Einstellungs-Speicher: `idb` mit Speicher-Rückfall (D10)
+`src/platform/storage.ts` hält `Settings { qualityTier, overlay }`, `DEFAULT_SETTINGS`, das **reine**
+`normalizeSettings(raw)` (wirft nie: prüft gegen die drei Literale bzw. `boolean`, verwirft fremde Felder,
+füllt Fehlendes), `createMemoryStore()` und `openSettingsStore()`. DB `maeusebau`, Store `settings`,
+Version 1, **ein** Datensatz unter dem Schlüssel `v1`.
+
+- **`get` ist synchron, `set` nicht.** Der Speicher liest den einen Datensatz beim Öffnen, normalisiert ihn
+  und hält ihn im Speicher. Grund: die Engine braucht eine Stufe, **bevor** das erste Bild fällt, und ein
+  `await` je Lesevorgang verteilte `void …then()` durch die Renderschleife. Schreiben ist wirklich
+  asynchron – und ein abgelehntes Schreiben darf das Spiel nicht anhalten.
+- **Jeder `openDB`/`get`/`put`-Fehler endet im `catch`** → Speicher-Store bzw. Vorgabe. Der Rückfall ist
+  zugleich der private Modus; ein dritter Weg dorthin ist Node selbst, wo `idb` mit
+  `ReferenceError: IDBRequest` wirft. `backend()` steht im Overlay, damit ein **stiller** Rückfall
+  auffällt.
+- **`fake-indexeddb` ist nicht nötig** und kommt nicht ins Repo: geprüft werden der reine Normalisierer
+  und der Speicher-Store; der `idb`-Mantel ist ein dünner, **absichtlich ungetesteter** Mantel und im Code
+  als solcher benannt. Gemessen kostet `idb` 11 656 B roh / **3 341 B gzip**, im Bundle **+1,9 kB gzip**.
+- Die Szene startet mit der Vorgabe bzw. `?tier=`; der gespeicherte Wert wird **nachträglich** angewendet.
+
+### Seite: Leinwand als Geschwister, Hülle als Streifen (D11/Q6)
+- **`<canvas id="game-canvas" class="game-canvas" hidden>` steht in `index.html` als Geschwister VOR
+  `<div id="app">`** – `mountShell` ruft `root.replaceChildren()` und löschte jedes vorher eingehängte
+  Kind. `?view=2d` nimmt die Spielleinwand ganz aus dem DOM.
+- **`#app` bekommt die Klasse `game-strip` nur auf der Spielseite**; `lab.html` benutzt dasselbe `#app`
+  und bleibt unberührt. `.shell-stage` und `.shell-stage canvas` bleiben **unverändert** für `?view=2d`:
+  dort steht `height: auto` (die CSS-Größe käme aus dem Seitenverhältnis des Puffers, die DPR-Politik wäre
+  nicht mehr unsere) und `image-rendering: pixelated` skalierte ein 3D-Bild hart.
+- **Die Hülle bleibt Tor-relevant und wird nicht entfernt.** `offline-smoke.spec.ts` verlangt sichtbare
+  `shell-title`, `offline-badge` und `build-id` – Titel und die drei Chips bleiben deshalb auch
+  eingeklappt sichtbar, und der Spec ist **wortgleich** geblieben. Der Streifen ist per Voreinstellung
+  eingeklappt; ein Knopf (`[data-testid=shell-toggle]`, Text aus `strings.ts`) klappt ihn auf, der Zustand
+  steht an `#app[data-collapsed]`. **Gemessen, warum das Einklappen nicht kosmetisch ist:** der volle
+  Streifen deckt bei 844×390 die ganze Höhe ab – vom Spiel bliebe ein Zipfel.
+- **`ShellHandles` bekommt KEIN `setCollapsed`/`collapsed`.** Gemessen: mit den beiden Feldern bricht
+  `tests/unit/pwa.test.ts` (TS2739 – seine Hüllen-Attrappe hat sie nicht), und zwar für eine Schnittstelle
+  **ohne Aufrufer**; den Streifen schaltet allein der Knopf.
+- **`S.shell.stageNoteGame` ist nachgezogen.** Dort stand „Meilenstein M0 – das Gerüst steht", und das
+  wäre über einer laufenden Graybox eine Lüge. Weil `S` ein Objektliteral ist, landen die neuen Texte im
+  `shell-*.js` **beider** Seiten (+0,3 kB) – bewusst in Kauf genommen, eine Aufteilung von `strings.ts`
+  wäre der teurere Preis.
+- Das Spiel startet am Desktop **sofort** – kein Start-Gate (M6). `src/main.ts` entscheidet **exklusiv**
+  zwischen `?view=2d` und dem Spiel und fängt `mountGame` in `try/catch` ans Fehler-Panel.
+
+### E2E-Tor: 14 → 15 Tests
+`tests/e2e/graybox.spec.ts` trägt **kein** `@local`: SwiftShader-WebGL2 rendert mit den vorhandenen
+Projekt-Flags nicht-schwarz (gemessen **256/256** Proben, Anteil 1,00), und ohne `finishRun` braucht der
+Spec auch kein `local-network-access`. Er prüft in **einem** Test und in dieser Reihenfolge: Haken
+vorhanden und `stats()` plausibel → Spawn unverändert nach `advance(60)` mit neutraler Eingabe →
+**Diorama** als Startmodus samt Pose gegen die reine Funktion → Bewegung in −z mit **Schwellen** (bewegt
+sich **und** kommt nicht durch die Nordwand) → `cmd.teleport(0, 0, 0)` → **Verfolger** mit
+`BOOM_MIN_DISTANCE <= distance <= BOOM_DISTANCE` → Pixelprobe über `cmd.grid(16)` → alle Anfragen
+Same-Origin → offline + Reload → die Szene rendert wieder. Die Probenorte kommen aus `feinkost.json`
+(`rooms.indexOf`, `spawns.mice[0]`), nie als abgeschriebene Zahl.
+
+- **Das erste Bild ist nur `CLEAR_COLOR`**, bis die Shader-Chunks lazy nachgeladen sind. Der Spec wartet
+  deshalb **tick-getrieben** auf `drawCalls > 0` (`advance(0)` in einer Bedingung), nie auf eine Zeit.
+- **Die Farbprobe vergleicht auf den hellsten Kanal normierte Verhältnisse**, nie einen Tafelwert: das
+  Licht skaliert alle drei Kanäle mit **demselben** Faktor (rund ×1,35), der aber an der Flächennormale
+  hängt – ein absoluter Vergleich wäre bei jedem Lichtdreh eine andere Zahl. Gemessen liefert die
+  Bildmitte **rgb(154, 145, 141)**; die größte Kanalabweichung der **normierten** Farbe beträgt **0,53**
+  zur Maus-Tafelzeile und **55,75** zur Boden-Zeile – die Bildmitte ist also die Maus, und die
+  Gegenprobe gegen den Boden trennt sauber.
+- **Der Offline-Reload rendert wirklich**, weil der Precache die lazy geholten Shader-Chunks mitbringt.
+
+**Zwei Dinge, die der Spec ausdrücklich NICHT tut:** er sichert den Raster-Hash **nicht** zu (er hängt an
+Treiber und Fenstergröße, ist auf diesem Rechner aber über drei getrennte Browser-Starts bitgleich:
+FNV-1a 2036715620, dreimal), und er sichert **keine Laufzeit** zu. Die gemessene Ziffer der
+Bewegungsprobe (+x: −60 → **−51,2808398950131**, dreimal bitgleich, zuletzt nachgemessen in der
+Bildprüfung von M5) steht **hier** und nicht im Tor; ebenso die Nordwand-Probe (−4 → **−7,0999** bei
+Mausradius 0,4 gegen die Wand z −8,5…−7,5).
+
+**Was das Tor NICHT leisten kann, und warum es die Bildprüfung gibt:** eine Kamera-Pose kann mit der
+reinen Funktion übereinstimmen, das Raster zu 256/256 nicht-schwarz sein – und das Bild trotzdem nichts
+zeigen als die Rückseite einer Wand. Genau das ist im Diorama passiert (siehe oben). Jeder Meilenstein,
+der ein Bild erzeugt, braucht deshalb einen Schritt, in dem jemand **hinsieht**.
+
+### Budgets nach M5
+
+| Größe | gemessen | Budget | Bemerkung |
+|---|---|---|---|
+| Spiel-JS gzip | 318,9 kB | 900 kB | die **+~300 kB gzip sind Babylon** |
+| Lab-JS gzip | 61,9 kB | 150 kB | unverändert, Labor bleibt Babylon-frei |
+| Precache | 26 Dateien / 1567,6 kB | 80 MB | vorher 17 Dateien / 287,8 kB |
+| Precache-Rohzählung von Workbox | 29 Einträge / 1567,07 KiB | – | **andere Menge** als `check-dist` – maßgeblich ist `check-dist` |
+| größte Einzeldatei | 979,31 kB (Babylon-Chunk) | 30 MiB (`maximumFileSizeToCacheInBytes`) | gzip 236,65 kB |
+| Zeichenaufrufe @844×390 | 21–25 | 60 | @1920×1080: 15–19 |
+| aktive Dreiecke @844×390 | 1162–1976 | 60 000 | @1920×1080: 1090–1904 |
+| Render-Mittel @844×390 headless | 0,12–0,17 ms | – | p95 0,30–0,50 ms |
+| erstes Bild kalt / warm | 1542 ms / 71–90 ms | – | einmalige Shader-Kompilate |
+
+**Die sieben Shader-Chunks werden lazy geholt und müssen im Precache bleiben.** Je Shader emittiert der
+Build **zwei** Varianten (GLSL für WebGL2 **und** WGSL für WebGPU); die WGSL-Hälfte (~140 kB roh /
+~28 kB gzip) ist für uns toter Ballast und eine Trimm-Option für M8. Sie kommen erst beim ersten
+Material-Kompilat per `import()` – **ohne Precache bleibt die Szene offline schwarz**. `globPatterns`
+deckt `.js` ab, `check-dist` ist das Gate, und der Offline-Reload im Tor ist der Beweis.
+
+**Die Precache-Zahl wackelt um 0,1 kB, und das ist die Build-ID.** Gemessen am selben Baum: mit sauberer
+Arbeitskopie (Build-ID `<8-stelliger Kurz-SHA>`) meldet `check-dist` **1567,6 kB**, mit einem
+Dirty-Build (`<sha>-dirty-<HHmmss>`, zwölf Zeichen länger) **1567,7 kB**. Der Babylon-Chunk ist dabei
+bitgleich (979,31 kB / 236,65 kB gzip, nur der Inhalts-Hash im Dateinamen wandert). Wer die Zahlen
+vergleicht, vergleicht also saubere mit sauberen Builds.
+
+### Werkzeug-Fallen, die M5 dreimal gekostet haben
+- **Der Schreibweg des Agenten verwandelt `\u`-Escapes in DATEIEN in echte Zeichen** (dreimal gemessen).
+  Eine Prüfung auf unsichtbare Zeichen, die ihr Muster als Escape schreibt, bringt damit ihren eigenen
+  Befund mit – geprüft wird über **numerische Codepunkte**.
+- **PowerShell-Rundläufe zerstören UTF-8.** `Get-Content -Raw | Set-Content -Encoding utf8` erzeugte
+  messbar Mojibake, `fs.readFileSync`/`writeFileSync` mit `'utf8'` nicht. Dateien werden über Node
+  geschrieben.
+- **`Select-String -Path 'src\**\*.ts'` ist kein rekursiver Glob** – der Befehl findet still nichts und
+  sieht dabei wie ein grünes Ergebnis aus.
+- **Die Zeilenzahl einer Datei ist `(Get-Content f).Count`**, nicht `Measure-Object -Line`: `-Line` zählt
+  leere Zeilen nicht mit.
+
+### Was in M5 NICHT entschieden wurde
+- **Auf M6 verschoben:** Touch-Eingabe, Start-Gate (AudioV2-Unlock, Wake Lock, Fullscreen),
+  Orientierungssperre, Regler-Panel (und damit `src/data/camera.json`), Budget-Last-Schalter,
+  Perf-Report, kamerarelative Eingabe, das Blickfeld des Verfolgers (`camera.fov`).
+- **Aufs Spaß-GATE nach M14:** ob sich die Kamera **gut anfühlt**. Das ist am Standbild nicht zu
+  beurteilen – `BOOM_DISTANCE 6` und `BOOM_HEIGHT 3` sind geometrisch begründet (der Boom klemmt in einer
+  6 u breiten Gasse sichtbar), aber ob 6 u zu nah, zu fern oder zu träge sind, sagt erst der Nutzer mit
+  dem Regler-Panel aus M6. Dasselbe gilt für `BOOM_YAW_PER_S`/`BOOM_POS_PER_S`, für die Frage, ob der
+  Diorama-Modus als Blick in den Bau überhaupt das richtige Mittel ist, und dafür, dass die Maus das Bild
+  füllt, sobald der Boom auf `BOOM_MIN_DISTANCE` klemmt.
+- **Zwei Polish-Punkte aus den Reviews**, beide ohne Wirkung auf M5: `pause()` aus einem Bild heraus kann
+  eine zweite rAF-Kette hinterlassen, und `advance(0)` leert den Ereignispuffer noch nicht.
+  `createPercentiles(NaN)` ist ebenfalls unbehandelt.
+- **M8 besitzt die Perf-Bank:** Schatten, `freezeActiveMeshes`, Kantenglättung, die WGSL-Trimmung und die
+  Frage, ob 30 fps am Handy reichen.
+- **M9 besitzt die Requisiten** und damit Thin Instances; dort (bzw. im Look-Durchgang M18) entscheidet
+  sich auch, dass eine Regalreihe heute wie eine Wand aussieht. M10 besitzt den Proportionsdurchgang der
+  Figuren.
+
 ## Offene Punkte
 
 - **Update-Suche offline:** Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).
@@ -1369,9 +1880,18 @@ im Test – das ist billiger als ein Playwright-Lauf und macht jede Layout-Ände
 - **Die Loch-Regeln prüfen den Stopfen, nicht die Wand (M4, Grenze):** eine zu enge oder zu weite Öffnung (`widthCm` 2 oder 120) bleibt befundfrei, und die Wandlücke neben dem Stopfen prüft niemand. Bis M16 (Portal) verantwortet der Level-Autor, dass die Maus wirklich durch die Wand kommt; in `feinkost` ist es nachgerechnet, im Mini-Level steht der Stopfen bewusst frei.
 - **Für `feinkost.json` gibt es keinen gepinnten Zustandshash (M4, Absicht):** bewiesen wird das Level über den Validator (0 Befunde) und die Struktur-Schwellen des Tor-Specs; der Zustandshash hängt allein an den eingefrorenen Fixtures. Jede Zahl in `src/data/balance.json` ist bis zum Spaß-GATE nach M14 provisorisch, und ein Reglerdreh in M6 darf keinen Testlauf rot machen. Wer später doch einen Hash auf die echten Daten setzt, holt sich genau dieses Problem ins Haus.
 - **Der Browser-Beweis hängt an `__mb.cmd.loadFixtures`:** geht dieser Befehl verloren oder ändert er still die Saat, prüft der Tor-Spec nur noch Struktur und Farben, ohne dass etwas rot wird. Deshalb stehen `advance(300) === 300` **und** der Hash-Vergleich im selben Test.
-- **`src/render/view2d/loop.ts`, `src/input/keyboard.ts` und die Tastatur-Verdrahtung sind Leihgaben:** M5 ersetzt Schleife und Verdrahtung durch `src/modes/fixedLoop.ts` und `src/modes/soloSession.ts` (injizierbare Uhr, Interpolation, `visibilitychange`) und macht die Eingabe kamerarelativ. Die Tastatur ist bewusst aus M5 vorgezogen, weil eine Ansicht ohne Eingabe nichts zeigt. Wer hier Interpolation oder Kamera-Relativität einbaut, baut M5 zweimal. Die drei in M4 offen gelassenen Punkte sind in der Polish-Runde erledigt: `reset()` bei Fokusverlust, DOM-Globals-Sperre für `src/input`, dynamische `import()` in den Schichtregeln. `loop.stop()` und `loop.running()` haben weiter keinen Produktivaufrufer – sie stehen für den Test und für M5.
+- **Leihgaben aus M4 abgelöst (M5):** `src/render/view2d/loop.ts` ist gelöscht, Schleife und Verdrahtung liegen in `src/modes/fixedLoop.ts` und `src/modes/soloSession.ts` (injizierbare Uhr, Interpolation über zwei `FastSnapshot`, `visibilitychange` an **`document`** – an `window` feuerte er nie). `src/input/keyboard.ts` bleibt unverändert und ist weiter die einzige Eingabe; **kamerarelativ** wird sie erst in M6, zusammen mit Touch und dem Regler-Panel.
 - **Pixelgleichheit über Betriebssysteme bleibt ungemessen (M4):** nur drei Prozesse und zwei Canvas-Backends auf diesem Rechner. Bleibt eine Farbprobe auf dem Linux-Runner rot, ist die Antwort „weicht um mehr als die Toleranz vom Hintergrund ab" – nicht eine größere Toleranz, die jede Farbe akzeptiert. Ebenfalls ungemessen: `?view=2d` über den Service Worker auf Pages (nur über `vite preview` geprüft), die Leistung der Ansicht am Handy (kein Gerät) und Firefox/WebKit-Pixel.
-- **`--enable-unsafe-swiftshader` ist ein Zufallsgeschenk:** es steht in `FAKE_MEDIA_ARGS` für WebGL und gilt allen drei Playwright-Projekten. Fällt es je heraus, ändert sich das Zeitverhalten der 2D-Specs; mit `willReadFrequently: true` ist die Ansicht davon unabhängig.
+- **`--enable-unsafe-swiftshader` ist seit M5 TRAGEND, kein Zufallsgeschenk mehr:** es steht in `FAKE_MEDIA_ARGS` und gilt allen drei Playwright-Projekten. Fällt es je heraus, rendert die Graybox headless **gar nicht** – anders als die 2D-Specs, die nur langsamer würden. `tests/node/playwright-config.test.ts` hält die Flag-Liste beisammen und bleibt unverändert.
+- **Der Qualitätsstufen-Sweep ist an diesem Rechner nicht beweisbar (M5):** `devicePixelRatio` = 1,0000000149, alle drei Stufen ergeben `hardwareScaling ≈ 1` und dieselbe Renderbreite. Geprüft wird nur die reine Funktion; dass die Engine sie umsetzt, zeigt erst das Handy (M6) oder ein erzwungener `deviceScaleFactor`. Ein Test, der hier „die Stufe wirkt" behauptete, wäre grün, ohne etwas zu beweisen.
+- **Der GPU-Timer bleibt 0 (M5):** `EXT_disjoint_timer_query_webgl2` fehlt unter SwiftShader und ist unter Intel/D3D11 vorhanden – `gpuFrameTimeCounter.current` (Nanosekunden) blieb in **beiden** Fällen 0, auch nach 396 Bildern. Das Overlay zeigt „–", kein Test verlangt mehr. Die Verdrahtung ist bei Gelegenheit noch einmal gegen `onAfterRenderObservable` zu prüfen; bleibt sie 0, ist das eine M8-Notiz, kein Fehler.
+- **`cmd.grid` hängt daran, dass `canvas.getContext('webgl2')` Babylons Kontext liefert (M5):** das sagt die Spezifikation, `view2d.spec.ts` verlässt sich für Canvas 2D darauf, und für Babylon ist es in M5 eigens **gemessen** worden. Verlässlich bleibt es damit nur, solange niemand den Kontext selbst anlegt; bei `null` meldet der Befehl `{ samples: 0 }` und das Tor fällt laut. Der Ausweg wäre, den Kontext selbst anzulegen und ihn dem `Engine`-Konstruktor zu geben – das ändert `resize()` und die DPR-Politik und ist ausdrücklich nicht Plan A.
+- **Ein fehlender Babylon-Nebenwirkungs-Import ist weder Build- noch Typfehler (M5):** der erste Prototyp-Lauf starb zur Laufzeit an `captureGPUFrameTime is not a function`, und `CheckMissingImports()` hätte das nicht gefunden. Das Gegenmittel ist der Offline-Smoke **mit Pixelprobe** – und der Blick aufs Bild. Wer einen neuen Babylon-Aufruf ergänzt, prüft, ob er eine Zeile in `src/render/babylonRegistry.ts` braucht.
+- **Farben, Kamera-Konstanten und der Diorama-Rahmen sind ein erster Entwurf (M5):** die Tafel `GRAYBOX_COLORS` ist Vertrag, ihre vierzehn Zahlentripel sind es nicht. Beim Bildlesen ist zu wissen, dass ein Screenshot die **beleuchtete** Farbe zeigt (Faktor ≈ 1,345 auf dem Boden, rund 0,3 auf einer vom Richtungslicht abgewandten Senkrechten) – eine Farbprobe gegen den Tafelwert ist deshalb falsch. Der Diorama-Blick brauchte eine steilere Neigung als 45°, weil die 12 u hohe Südwand des Baus den Blick sonst vollständig verdeckt; gefunden hat das **nur das Auge**, das E2E-Tor war dabei grün (Pose == reine Funktion, Raster 256/256 nicht-schwarz).
+- **Die Maus ist in M5 eine Kugel (M5, Datenspannung):** `heightCm 6 < 2 · radiusCm 4`, also klemmt `capsuleHeight` auf 0,81 u und `CreateCapsule` liefert per Konstruktion eine Kugel – die Blickrichtung ist im Bild nicht zu sehen. Die Balance bleibt unangetastet (sie trägt das Kollisions-Höhenband); die Frage geht an M10s Proportionsdurchgang und aufs Spaß-GATE nach M14. Im selben Zug zu klären: eine Regalreihe ist heute ein einziger 18 u hoher Block und liest sich wie eine Wand (M9 Requisiten, M18 Look).
+- **Die WGSL-Hälfte der Shader ist toter Ballast (M5):** ~140 kB roh / ~28 kB gzip, weil der Build je Shader GLSL **und** WGSL emittiert. Beim Budget belanglos, aber eine Trimm-Option für M8. **Sie müssen im Precache bleiben**: die Shader kommen erst beim ersten Material-Kompilat per `import()`, ohne sie ist die Szene offline schwarz.
+- **Die Maus füllt das Bild, sobald der Boom klemmt (M5, Spielgefühl):** gemessen unter einem Regal `distance` 1,5389 u (Untergrenze `BOOM_MIN_DISTANCE` 1,5) bei **1** Okkluder – der Okkluder wird korrekt halbdurchsichtig, aber die Maus-Kugel deckt das halbe Bild. Längs einer Gasse sieht man umgekehrt fast nur Boden, weil Babylons senkrechtes Blickfeld fest ist. Beides gehört ans Regler-Panel (M6, `camera.fov` inbegriffen) und aufs Spaß-GATE nach M14, nicht in eine M5-Korrektur.
+- **In M5 ungemessen:** Handy-Leistung (kein Gerät), Firefox/WebKit, das Verhalten der Graybox über den Service Worker auf Pages (nur über `vite preview` geprüft), die Ladezeit des Babylon-Chunks über Mobilfunk, und ob 30 fps am Handy reichen. Ebenfalls offen: ob die Kamera sich **gut anfühlt** – das entscheidet der Nutzer mit dem Regler-Panel aus M6, nicht ein Standbild.
 
 ## Beobachten (vor jedem Release prüfen)
 - Chrome „Local Network Access Restrictions for WebRTC" (WebRTC ins lokale Netz nur noch nach Berechtigungsabfrage): chromestatus.com/feature/5065884686876672
