@@ -34,9 +34,14 @@ export function createBoxTransform(): BoxTransform {
 /**
  * REIN: schreibt `out` und gibt es zurück.
  *
- * `rotationY = -collider.rot`, weil Babylon LINKSHÄNDIG ist – gemessen, nicht geraten: der Vergleich
- * der Mesh-Weltbounds mit den vier gedrehten Kollider-Ecken (`tests/unit/render/graybox-bounds.test.ts`)
- * ist mit dem Minus exakt und mit `+rot` für jeden gedrehten Körper falsch.
+ * `rotationY = -collider.rot`, weil Babylon LINKSHÄNDIG ist. Die achsenparallele Hülle allein
+ * (Mesh-Weltbounds gegen Min/Max der Kollider-Ecken) kann das VORZEICHEN nicht zeigen: die Hülle
+ * eines mittig gedrehten Kastens ist unter `rot -> -rot` invariant, also bleibt sie mit `+rot`
+ * ziffernidentisch grün (Task-3-Review, MAJOR). Bewiesen wird das Minus erst Ecke für Ecke durch die
+ * Weltmatrix (`tests/unit/render/graybox-bounds.test.ts`, Vergleich gegen `colliderCorners`): mit dem
+ * Minus bleibt die Abweichung bei ≈7,63e-7/3,92e-7 (Float32-Rauschen), mit `+rot` springt sie auf
+ * 60/30. Zusätzlich gepinnt in `levelMeshes.test.ts` (`toBe(-0)` bzw. `toBe(-halbePi)`, wo ein
+ * Vorzeichenwechsel sofort auffällt).
  */
 export function colliderToBoxTransform(collider: Collider, out: BoxTransform): BoxTransform {
   out.x = collider.cx;
@@ -114,9 +119,10 @@ export interface LevelMeshes {
 }
 
 /**
- * Einzel-Meshes, KEINE Thin Instances: gemessen 19 Zeichenaufrufe bei 46 Meshes (Budget 60) – die
- * Instanzen kommen mit den Requisiten in M9. Und KEIN `scene.freezeActiveMeshes` (Entscheidung 22):
- * der Gewinn ist bei 46 Meshes nicht messbar, die bekannte Einfrier-Falle ist ungeprüft.
+ * Einzel-Meshes, KEINE Thin Instances: im Browser-Probelauf gemessen (T6s Pixelprobe) 19
+ * Zeichenaufrufe bei 46 Meshes (Budget 60) – die Instanzen kommen mit den Requisiten in M9. Und KEIN
+ * `scene.freezeActiveMeshes` (Entscheidung 22): der Gewinn ist bei 46 Meshes nicht messbar, die
+ * bekannte Einfrier-Falle ist ungeprüft.
  */
 export function buildLevelMeshes(scene: Scene, runtime: LevelRuntime, materials: MaterialTable): LevelMeshes {
   const transform = createBoxTransform();

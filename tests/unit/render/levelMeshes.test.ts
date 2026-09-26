@@ -175,4 +175,12 @@ describe('levelMeshes: die Farbtafel deckt jede Art ab', () => {
       }
     }
   });
+
+  it('GRAYBOX_KINDS hat keine Duplikate und deckt GENAU die Schlüssel von GRAYBOX_COLORS (Task-3-Review, Minor 3)', () => {
+    // Der Kommentar in `grayboxColors.ts:16` behauptet „ein Test hält beide Listen aneinander" –
+    // die Länge allein tut das nicht: 'wall' doppelt und 'cat' fehlend hätte auch 14 Einträge.
+    const unique = new Set(GRAYBOX_KINDS);
+    expect(unique.size).toBe(GRAYBOX_KINDS.length);
+    expect([...GRAYBOX_KINDS].sort()).toEqual(Object.keys(GRAYBOX_COLORS).sort());
+  });
 });

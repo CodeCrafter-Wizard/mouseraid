@@ -1,4 +1,8 @@
-import { NullEngine } from '@babylonjs/core/Engines/nullEngine';
+// Task-3-Review, Minor 2: `Engines/nullEngine` (ohne `.pure`) zieht das Sammel-Modul mit und damit
+// neun Registry-Erweiterungen still mit sich – genau das, was der Kopfkommentar unten NICHT
+// behauptet. `.pure` hält den Aufbau frei davon, wie in `tests/node/engine-null.test.ts` seit 3a7ae82.
+import { NullEngine } from '@babylonjs/core/Engines/nullEngine.pure';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Scene } from '@babylonjs/core/scene.pure';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadBalance } from '../../../src/core/data/balanceLoad';
@@ -18,9 +22,9 @@ import balanceFixture from '../../fixtures/core/test-balance.json';
 import miniJson from '../../fixtures/core/mini-level.json';
 import feinkostJson from '../../../src/data/levels/feinkost.json';
 
-// Dieser Test läuft gegen das ECHTE Babylon, nur ohne Rasterung: `NullEngine` braucht KEIN DOM und
-// KEINEN Nebenwirkungs-Import aus `src/render/babylonRegistry.ts` – die Module dieses Tasks
-// importieren ihre Bindungen aus den registrierenden Pfaden (`Meshes/Builders/*`,
+// Dieser Test läuft gegen das ECHTE Babylon, nur ohne Rasterung: `NullEngine` (aus `.pure`, s. o.)
+// braucht KEIN DOM und KEINEN Nebenwirkungs-Import aus `src/render/babylonRegistry.ts` – die Module
+// dieses Tasks importieren ihre Bindungen aus den registrierenden Pfaden (`Meshes/Builders/*`,
 // `Materials/standardMaterial`, `Lights/*`), und das genügt.
 //
 // Die Ablage spiegelt den QUELLBAUM (`src/render/**` -> `tests/unit/render/**`): der Test liest
@@ -106,6 +110,24 @@ describe('graybox-bounds: Mesh-Weltbounds gegen die Kollider-Ecken', () => {
         for (const delta of deltas) {
           const size = Math.abs(delta);
           if (size > worst) worst = size;
+        }
+        // ECKE FÜR ECKE durch die Weltmatrix – nur das sieht das VORZEICHEN der Drehung: die
+        // achsenparallele Hülle eines mittig gedrehten Kastens ist unter rot -> -rot invariant
+        // (Task-3-Review, MAJOR), die min/max-Prüfung oben kann `rotationY = -collider.rot` also
+        // NICHT von `+collider.rot` unterscheiden. Die vier lokalen Ecken stehen in derselben
+        // Reihenfolge wie `colliderCorners` (-hx,-hz), (+hx,-hz), (+hx,+hz), (-hx,+hz), also Ecke k
+        // gegen Ecke k statt gegen ein Min/Max-Paar.
+        const wm = mesh.getWorldMatrix();
+        const locals: readonly [number, number][] = [
+          [-collider.hx, -collider.hz], [collider.hx, -collider.hz],
+          [collider.hx, collider.hz], [-collider.hx, collider.hz],
+        ];
+        for (let k = 0; k < 4; k += 1) {
+          const local = locals[k];
+          if (local === undefined) continue;
+          const point = Vector3.TransformCoordinates(new Vector3(local[0], 0, local[1]), wm);
+          worst = Math.max(worst, Math.abs(point.x - (corners[2 * k] ?? 0)),
+            Math.abs(point.z - (corners[2 * k + 1] ?? 0)));
         }
       }
       expect(runtime.colliders.length).toBeGreaterThan(0);
@@ -221,6 +243,11 @@ describe('graybox-bounds: Figuren', () => {
     // GEMESSEN: `feinkost` hat vier Maus-Spawns, also sind zu Tick 0 ALLE VIER Plätze aktiv – der
     // verborgene Fall muss von Hand gestellt werden. Genau deshalb liess sich im Prototyp die
     // Einfrier-Falle von `freezeActiveMeshes` nicht auslösen (Entscheidung 22).
+    //
+    // `prev` und `curr` sind bewusst VERSCHIEDENE Schnappschüsse (Task-3-Review, Minor 6): `prev`
+    // wird VOR dem Verstecken gezogen, zeigt also alle vier Plätze sichtbar; erst `curr` trägt die
+    // versteckten Plätze. Mit demselben Schnappschuss für beide fällt ein Tausch auf
+    // `prev.visible[index]` in `applyOne` nicht auf – der Test bliebe grün.
     const { root, level, balance } = build(feinkostJson);
     const state = createInitialState(level, balance, 1);
     const still = state.players[1];
@@ -228,10 +255,11 @@ describe('graybox-bounds: Figuren', () => {
     expect(still).toBeDefined();
     expect(caught).toBeDefined();
     if (still === undefined || caught === undefined) return;
+    const prev = snapshotFast(state, createSnapshot());
     still.active = false;
     caught.caught = true;
-    const snapshot = snapshotFast(state, createSnapshot());
-    applyActors(root.actors, { prev: snapshot, curr: snapshot, alpha: 1, slow: makeSlowView(state) });
+    const curr = snapshotFast(state, createSnapshot());
+    applyActors(root.actors, { prev, curr, alpha: 1, slow: makeSlowView(state) });
     expect(root.actors.players[0]?.isEnabled(false)).toBe(true);
     expect(root.actors.players[1]?.isEnabled(false)).toBe(false);
     expect(root.actors.players[2]?.isEnabled(false)).toBe(false);

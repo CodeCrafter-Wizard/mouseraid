@@ -32,6 +32,13 @@ export function capsuleHeight(radius: number, height: number): number {
   return Math.max(height, 2 * radius + CAPSULE_SLACK);
 }
 
+/**
+ * `lerp(a, b, 1)` trifft `b` NICHT bitgenau: `a + (b - a) * 1` ist in IEEE-754 im Allgemeinen ein
+ * anderer Float als `b` (gemessen: Δ 3,55e-15 bei `a = -60, b = -12.3456789`). Die Formel ist Vertrag
+ * (Planzeilen 959–961 sagen „genau dieser Zustand" und meinen numerisch gleich, nicht bitidentisch) –
+ * wer Mesh-/Posenwerte gegen einen Zustandswert prüft, vergleicht deshalb IMMER mit Toleranz
+ * (`toBeCloseTo`), nie mit `toBe`/`toEqual` (Task-3-Review, Minor 4).
+ */
 export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
@@ -109,6 +116,7 @@ export function applyActors(actors: ActorMeshes, view: RenderView): void {
   applyOne(actors.cat, view, SNAPSHOT_CAT);
 }
 
+/** `alpha = 1` setzt die Meshposition nur NUMERISCH gleich `curr` – s. `lerp` oben. */
 function applyOne(mesh: Mesh, view: RenderView, index: number): void {
   const base = index * SNAPSHOT_STRIDE;
   const { prev, curr, alpha } = view;
