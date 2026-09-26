@@ -3,6 +3,10 @@
 Kooperatives 3D-Mäuse-Abenteuer im Browser – offline spielbar, für Handy, Tablet und PC.
 **Status:** Meilenstein M5 (Graybox am Desktop: Babylon.js mit WebGL2, feste 30-Hz-Schleife mit Interpolation, Kasten je Kollider und Boden je Raum aus dem Level, Kapsel-Figuren, Kamera-Boom mit Wandklemmung und Diorama-Blick, F3-Overlay – dazu weiter die Entwickler-Ansicht `?view=2d`. Noch kein Spielgefühl, keine Touch-Eingabe, kein Start-Gate). Live: https://codecrafter-wizard.github.io/mouseraid/
 
+**Prototyp zum Spielen:** https://codecrafter-wizard.github.io/mouseraid/spiel/ – ein eigenständiger,
+offline-fähiger Einzeldatei-Prototyp derselben Spielidee (three.js, aus einem claude.ai-Artefakt), der
+neben dem gebauten Spiel liegt und keinen Code mit ihm teilt; Begründung und Abgrenzung in `docs/decisions.md`.
+
 ## Entwickeln
 Voraussetzung: Node ≥ 22.18 (`scripts/wait-for-deploy.mjs` lädt ein TypeScript-Modul direkt).
 

@@ -9,6 +9,7 @@ export const S = {
     stageNoteGame: 'Meilenstein M5 – die Graybox steht: Level, Figuren und Kamera in 3D. Spielgefühl, Ton und Handy-Steuerung kommen in den nächsten Meilensteinen.',
     linkLab: 'Verbindungs-Testlabor',
     linkGame: 'Zurück zum Spiel',
+    linkProto: 'Prototyp: Mäusebau spielen',
     build: 'Build',
     stripCollapse: 'Leiste einklappen',
     stripExpand: 'Leiste ausklappen',

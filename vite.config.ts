@@ -79,14 +79,19 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           // Workbox lässt alles > 2 MiB sonst STILL weg → Offline-Bruch nur auf dem Handy.
-          globPatterns: ['**/*.{js,css,html,wasm,png,webp,svg,woff2,json,glb,mp3,ogg}'],
+          // `txt` ist für die Lizenztexte des Prototyps (`public/spiel/{vendor,fonts}/*.txt`) da:
+          // `isPrecacheCandidate` (scripts/lib/distChecks.mjs) verlangt JEDE dist-Datei im Precache,
+          // und die Lizenzen müssen neben den mitgelieferten Dateien liegen bleiben (MIT, OFL).
+          globPatterns: ['**/*.{js,css,html,wasm,png,webp,svg,woff2,json,glb,mp3,ogg,txt}'],
           globIgnores: ['**/node_modules/**/*', '**/version.json'],
           maximumFileSizeToCacheInBytes: 30 * 1024 * 1024,
           // Dev-/Test-Parameter (?view=2d, ?station=…, ?expect=…) dürfen den Precache nie verfehlen.
           ignoreURLParametersMatching: [/.*/],
           // Eine Browser-Navigation zu version.json muss die Datei liefern, nicht die App-Hülle –
           // sonst „bestätigt“ der Deploy-Wächter am Ende nur den alten, vorgecachten index.html.
-          navigateFallbackDenylist: [/\/lab\.html/, /\/version\.json/],
+          // `/spiel/` ist der eigenständige Prototyp (public/spiel/): ohne diesen Eintrag bekäme eine
+          // Offline-Navigation dorthin die Hülle des Hauptspiels, obwohl spiel/index.html vorgecacht ist.
+          navigateFallbackDenylist: [/\/lab\.html/, /\/version\.json/, /\/spiel\//],
           cleanupOutdatedCaches: true,
         },
       }),

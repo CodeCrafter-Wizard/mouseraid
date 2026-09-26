@@ -21,7 +21,13 @@ const isView2d = params.get('view') === '2d';
 shell = mountShell(root, {
   subtitle: S.shell.subtitleGame,
   note: S.shell.stageNoteGame,
-  links: [{ href: `${import.meta.env.BASE_URL}lab.html`, label: S.shell.linkLab }],
+  // `spiel/` ist der eigenständige Prototyp aus `public/spiel/` – eine statische Seite ohne
+  // Verbindung zu `src/**`. Deshalb ein normaler Link und KEIN Import: die Schichtregeln und die
+  // JS-Budgets dieser Seite bleiben davon unberührt.
+  links: [
+    { href: `${import.meta.env.BASE_URL}lab.html`, label: S.shell.linkLab },
+    { href: `${import.meta.env.BASE_URL}spiel/`, label: S.shell.linkProto },
+  ],
   // Nur die Spielseite bekommt den Klapp-Knopf: `?view=2d` zeigt die Hülle in voller Höhe.
   collapsible: isView2d
     ? undefined

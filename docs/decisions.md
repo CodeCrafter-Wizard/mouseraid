@@ -1964,6 +1964,110 @@ Der Abschlussreview meldete **0 Blocker, 3 Majors, 35 Minors**. Was davon eine E
   sich auch, dass eine Regalreihe heute wie eine Wand aussieht. M10 besitzt den Proportionsdurchgang der
   Figuren.
 
+## Prototyp `/spiel/` (2026-09-26)
+
+**Was es ist.** Eine einzige HTML-Datei (763 kB, 6 793 Zeilen) aus einem claude.ai-Artefakt: ein
+zweiter, unabhängiger Prototyp derselben Spielidee. Versionsangaben im Quelltext: die Marke für den
+Peer-Abgleich ist `const VERSION='mb-1.0'` (Zeile 750), der letzte CSS-Abschnitt heißt
+„v0.5: Erweiterungen" (Zeile 279) – eine Build-ID trägt die Seite nicht, der Deploy-Wächter
+(`?expect=`, `scripts/wait-for-deploy.mjs`) prüft weiterhin nur das Hauptspiel. three.js
+r0.149.0 statt Babylon, reines JavaScript in **einer** IIFE statt TypeScript-Schichten, prozedurale
+Canvas-Texturen, Figuren aus Distanzfeldern per Surface Nets, WebAudio-Synthese – **keine einzige
+externe Bild-, Modell- oder Audiodatei**. Sie liegt als `public/spiel/index.html` im Build und ist
+damit **eigenständig**: kein Vite-Einstieg, kein Modul aus `src/**`, kein gemeinsamer Code.
+
+**Warum sie außerhalb der Tore lebt.** Vite kopiert `public/**` unverändert; die Seite taucht in
+keinem der beiden JS-Graphen (`index.html`, `lab.html`) auf. Also greifen bei ihr weder die
+ESLint-Schichtregeln noch `tsc`, weder die Determinismus-Regeln von `src/core` (der Prototyp nutzt
+`Math.random()` und `performance.now()` durchgängig) noch die Gzip-Budgets `gameJsGzip`/`labJsGzip`.
+Was **doch** greift: `findForbiddenSignatures` läuft über jede `.js`/`.css`/`.html`-Datei in `dist/`
+(gemessen: 0 Befunde, auch für das mitgelieferte `three.min.js`), `isPrecacheCandidate` verlangt
+**jede** dist-Datei im Precache, `privacy-guard` scannt die 763-kB-Datei mit (0 Befunde), und das
+neue E2E-Tor `tests/e2e/proto-offline.spec.ts` lädt `/spiel/` online **und** offline.
+
+**Die Hygiene-Änderungen** (Grundlage: `.superpowers/artifact-audit.md`, git-ignoriert). Genau
+**11 Zeilen** sind anders als im Artefakt, die Zeilenzahl bleibt 6 793, damit jede Zeilennummer des
+Audits weiter stimmt. Am Spielcode selbst wurde nichts umgebaut und nichts umformatiert:
+
+| Zeile(n) | Änderung |
+|---|---|
+| 1–5 | `<html lang="de">`; `<title>` und `<link rel="stylesheet" href="./fonts/fonts.css">` stehen jetzt **im** `<head>` (im Artefakt standen sie hinter `</head>`); beide `preconnect`-Zeilen entfernt |
+| 745 | `./vendor/three.min.js` statt `cdn.jsdelivr.net` |
+| 746 | `./vendor/qrcode.js` statt `cdn.jsdelivr.net` |
+| 4219 | `'CARRIS'` → `'CARREIS'` (2×, Straßenbahn-Textur) – Carris ist der echte Lissabonner Verkehrsbetrieb |
+| 4223 | `'Quinas'` → `'Coroa'` (Streichholz-Textur) – Quinas ist eine echte portugiesische Marke |
+| 5123 | `RTC_CFG` → `{iceServers:[]}`; das war der **einzige** `check-dist`-Blocker (Signatur „STUN/TURN-Server") |
+| 5163, 5279 | die zwei Verweise auf „die Offline-Datei ‚maeusebau.html'" nennen jetzt die echte Route `/mouseraid/spiel/` |
+
+**Mitgelieferte Fremddateien und ihre Lizenzen** (die Lizenztexte liegen neben den Dateien; ohne sie
+wäre das Mitliefern nicht erlaubt):
+
+| Datei | Bytes | sha256 (Anfang) | Lizenz |
+|---|---|---|---|
+| `spiel/vendor/three.min.js` (three@0.149.0 `build/three.min.js`) | 608 081 | `8a5f7249…` | MIT → `THREE-LICENSE.txt` |
+| `spiel/vendor/qrcode.js` (qrcode-generator@1.4.4) | 56 694 | `18ae399f…` | MIT → `QRCODE-GENERATOR-LICENSE.txt` |
+| `spiel/fonts/grandstander-{latin,latin-ext}.woff2` | 42 376 / 33 964 | `fb24dd64…` / `d8e9e648…` | OFL 1.1 → `OFL-Grandstander.txt` |
+| `spiel/fonts/atkinson-hyperlegible-400-{latin,latin-ext}.woff2` | 17 208 / 9 384 | `d64ba838…` / `61eeb0eb…` | OFL 1.1 → `OFL-AtkinsonHyperlegible.txt` |
+| `spiel/fonts/atkinson-hyperlegible-700-{latin,latin-ext}.woff2` | 17 524 / 9 372 | `140e2bd2…` / `840ced16…` | dieselbe Datei |
+
+Die woff2-Teilmengen sind die unveränderten Dateien, die Google Fonts für `wght@600;800` bzw.
+`wght@400;700` ausliefert (CSS mit Chrome-User-Agent geholt, `unicode-range` übernommen,
+`font-display: swap`). **Grandstander ist eine variable Schrift:** 600 und 800 teilen je Teilmenge
+**eine** Datei – so liefert Google Fonts es auch aus, deshalb sind es 6 Dateien und nicht 8. Die
+`vietnamese`-Teilmenge wurde weggelassen (im Spiel kommt kein vietnamesischer Text vor). Die
+OFL-Texte stammen aus `google/fonts` (`ofl/grandstander/OFL.txt`, `ofl/atkinsonhyperlegible/OFL.txt`,
+beide HTTP 200, kein Umweg über die GitHub-API nötig); die MIT-Datei von `qrcode-generator` liegt
+**nicht** im npm-Paket (jsdelivr antwortet „Couldn't find the requested file /LICENSE") – sie kommt
+deshalb aus dem Quell-Repo `kazuhikoarase/qrcode-generator`, 1 071 Bytes, © 2009 Kazuhiko Arase.
+
+**Kein Fremd-Host bleibt.** In `spiel/index.html` stehen genau **3** `http`-Vorkommen, alle
+`http://www.w3.org/2000/svg`: zweimal als `xmlns` in den beiden selbst gezeichneten
+CSS-`data:`-SVG-Herzen (Zeile 281, 282) und einmal als Namensraum in `createElementNS` (Zeile 5969).
+XML-Namensräume werden nie geholt. Unsichtbare Zeichen: **0** (zeichenweise geprüft: 0, 127, 128–159,
+160, 173, 8203–8207, 8232–8238, 8288–8303, 65024–65039, 65279).
+
+**Konfiguration.** `vite.config.ts` bekam zwei Zeilen: `/\/spiel\//` in `navigateFallbackDenylist`
+(ohne das liefert eine Offline-Navigation zu `/mouseraid/spiel/` die **Hülle des Hauptspiels**,
+obwohl `spiel/index.html` vorgecacht ist), und `txt` in `globPatterns` – die vier Lizenztexte sind
+dist-Dateien, und `isPrecacheCandidate` verlangt jede davon im Precache. Die Alternative (eine
+Ausnahme in `PRECACHE_EXCLUDED`) hätte die Regel geschwächt, statt 11 kB mitzucachen.
+**Precache gemessen: 26 Dateien / 1 567,7 kB → 40 Dateien / 3 104,0 kB** (Budget 80 MB).
+Die Spiel- und Lab-Budgets bleiben unverändert bei 318,9 kB bzw. 61,9 kB gzip.
+
+**`eslint.config.js` ignoriert jetzt `public/**`.** Das war nicht vorhergesehen: der Audit hielt die
+Datei für ESLint unsichtbar, weil alle *Regeln* an `src/**/*.ts`, `*.config.*`, `scripts/**` und
+`tests/**` hängen – `js.configs.recommended` greift aber ohne `files`-Angabe **jede** `.js`-Datei, und
+das minifizierte `three.min.js` liegt jetzt im Baum. **Gemessen: 1 716 Fehler** (`no-unused-expressions`,
+`no-undef` für `console`, `no-this-alias`). Fremder, minifizierter Code wird nicht nach unseren Regeln
+umgebaut, und `public/**` wird von Vite unverändert kopiert – es ist kein Projekt-Quelltext, genauso
+wenig wie das schon ignorierte `dist/**`. Die Schichtregeln für `src/**` sind davon nicht berührt.
+**Preis, den man kennen muss:** damit prüft ESLint auch `spiel/index.html` nicht (es tat es nie, ESLint
+liest kein HTML) – der einzige Wächter über dem Prototyp ist das E2E-Tor plus `check-dist`; Änderungen
+an der Datei sind also nur so weit geschützt, wie diese beiden reichen.
+
+**Was auf Pages nicht funktioniert.** Genau ein Reiter: **„Online-Raum"**. Er läuft über
+`window.claude.use('room')` und existiert nur, wenn die Datei als Artefakt auf claude.ai geöffnet ist.
+Der Prototyp fängt das selbst ab (`IN_ARTIFACT`, Zeile 1000): `initRoom` kehrt sofort zurück, der
+Knopf ist deaktiviert, die Panels öffnen direkt auf „WLAN direkt". Umgekehrt schaltet `!IN_ARTIFACT`
+**mehr** frei als es wegnimmt – WebRTC, QR-Scan und Teilen gibt es nur außerhalb des Artefakts.
+**WebRTC nur im LAN:** ohne Vermittlungsserver (siehe Zeile 5123) gibt es nur Host-Kandidaten, also
+nur dasselbe WLAN bzw. denselben Hotspot – genau das Konzept von `src/net`. Über das Internet
+verbindet der Prototyp nicht, und die deutschen „keine Netzwerkadresse"-Texte greifen dafür bereits.
+
+**Speicher.** Nur `localStorage`, vier Schlüssel: `maeusebau.save.v1` (Spielstand, Migration v1→v3),
+`maeusebau.q2` (Grafikstufe), `maeusebau.snd` (Ton an/aus), `maeusebau.name` (Mäusename, max. 14
+Zeichen, bleibt auf dem Gerät). **Keine Kollision** mit dem Labor (`maeusebau.lab.reports.v1`). Jeder
+Zugriff steckt in `try/catch`; kein IndexedDB, keine Cookies, keine Analytik.
+
+**Entscheidung vom 2026-09-26: die gebaute M0–M5-Linie ist PAUSIERT.** Nicht verworfen – pausiert.
+`index.html`, `lab.html` und `src/**` bleiben Zeile für Zeile unangetastet, alle Tore laufen weiter,
+und die Spec M0–M20 bleibt die Quelle der Wahrheit für diesen Strang. Der Prototyp ist die
+Ideen- und Look-Vorlage; ob und wie viel davon nach `src/**` wandert, ist **nicht** entschieden. Was
+dagegen gemessen ist: eine Portierung wären mehrere Wochen (three.js-spezifisches Rendering gegen
+Babylon neu bauen, ~5 800 Zeilen Logik unter die Determinismus-Regeln bringen), und der Monolith als
+Hauptseite würde `check-dist` („JS-Graph von index.html ist leer") und damit das ganze Sicherheitsnetz
+leerlaufen lassen.
+
 ## Offene Punkte
 
 - **Update-Suche offline:** Headless ist nur der Fall „kein Update" natürlich erreichbar: **gemessen** löst `registration.update()` auch bei `context.setOffline(true)` (und bei abgebrochener `sw.js`-Route) auf – Playwrights Netz-Emulation greift nicht für die Skript-Anfrage des Service Workers, die der Browser selbst stellt. Die beiden anderen Zweige wurden deshalb mit gepatchtem `update()` im echten Chromium geprüft: Ablehnung → „Update-Suche fehlgeschlagen – offline?" (Knopf bleibt verborgen), wartender Worker → „Neue Version bereit." (Knopf sichtbar).

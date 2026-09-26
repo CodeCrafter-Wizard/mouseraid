@@ -157,7 +157,13 @@ const DOM_GLOBALS = ['window', 'document', 'navigator', 'performance', 'localSto
 
 export default tseslint.config(
   // `.superpowers/` ist git-ignoriert (Arbeitsdateien der Agenten) – Flat Config überspringt Punkt-Ordner NICHT von selbst.
-  { ignores: ['dist/**', 'dev-dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'node_modules/**', '.superpowers/**'] },
+  // `public/**` wird von Vite UNVERÄNDERT nach `dist/` kopiert und ist kein Projekt-Quelltext: dort
+  // liegen der eigenständige Prototyp (`public/spiel/index.html`) und die mitgelieferten Fremdbibliotheken
+  // (`public/spiel/vendor/*.js`). GEMESSEN: ohne diese Zeile meldet `eslint .` 1 716 Fehler im
+  // minifizierten `three.min.js` – fremder Code wird nicht nach unseren Regeln umgebaut. Die
+  // Schichtregeln dieser Datei betreffen `src/**` und bleiben davon unberührt; das Offline-Versprechen
+  // des Prototyps bewacht `tests/e2e/proto-offline.spec.ts`, nicht ESLint.
+  { ignores: ['dist/**', 'dev-dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'node_modules/**', '.superpowers/**', 'public/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
