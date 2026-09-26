@@ -3,6 +3,7 @@ import { CAT } from './colliderTypes';
 import type { Collider } from './colliderTypes';
 import { sweepCircle } from './collision';
 import { generateColliders } from './generateColliders';
+import { roomAt } from './levelTypes';
 import type { LevelDef } from './levelTypes';
 
 /**
@@ -20,9 +21,13 @@ export const NAV_MAX_EDGE = 12;
 
 /**
  * Ein Wegpunkt MIT aufgelöstem Raum. `room` ist der Index in `level.rooms`, aus den HALBOFFENEN
- * Grenzen bestimmt – dieselbe Regel, mit der `playerMove` zur Laufzeit einen Raum zuordnet und
- * mit der `loadLevel` „liegt in keinem Raum" prüft. Ohne dieses Feld wäre die Validator-Regel
- * `unerreichbar` („ein Wegpunkt DESSELBEN Raums") nicht formulierbar.
+ * Grenzen bestimmt (`roomAt`) – dieselbe Regel, mit der `playerMove` zur Laufzeit einen Raum
+ * zuordnet und mit der `loadLevel` „liegt in keinem Raum" prüft. Ohne dieses Feld wäre die
+ * Validator-Regel `unerreichbar` („ein Wegpunkt DESSELBEN Raums") nicht formulierbar.
+ *
+ * Bei einem GELADENEN Level ist `room` nie `NO_ROOM` (−1) – der Loader verlangt für jeden Wegpunkt
+ * einen Raum. Bei einem von HAND gebauten `LevelDef` (der Vertrag lässt das ausdrücklich zu, und
+ * genau so entstehen die roten Testfälle) schon: darauf stützt `validateLevel` die Regel `ausserhalb`.
  */
 export interface NavPoint { id: string; x: number; z: number; room: number }
 
@@ -36,22 +41,8 @@ export interface NavGraph {
 
 export interface LevelRuntime { level: LevelDef; colliders: readonly Collider[]; nav: NavGraph }
 
-/**
- * Kein Raum gefunden. Bewusst NICHT `NO_ROOM` aus `src/core/sim/state.ts` importiert: `src/core/world`
- * kennt die Simulation nicht (nur umgekehrt), und ein Import in diese Richtung zöge `sim/state` in jedes
- * Bundle, das nur den Nav-Graphen braucht. Der WERT ist derselbe – wer ihn dort ändert, ändert ihn hier mit.
- */
-const NO_ROOM = -1;
-
-/** Index des Raums, in dem der Punkt liegt, sonst NO_ROOM. Grenzen halboffen: [x0,x1) × [z0,z1). */
-function roomAt(level: LevelDef, x: number, z: number): number {
-  for (let i = 0; i < level.rooms.length; i += 1) {
-    const bounds = level.rooms[i]?.bounds;
-    if (bounds === undefined) continue;
-    if (x >= bounds.x0 && x < bounds.x1 && z >= bounds.z0 && z < bounds.z1) return i;
-  }
-  return NO_ROOM;
-}
+/** Noch keiner Komponente zugeordnet – nur innerhalb von `labelComponents` sichtbar. */
+const NO_COMPONENT = -1;
 
 /**
  * Kollider und Nav-Graph in EINEM Schritt – das Ergebnis ist statisch je Level und gehört deshalb
@@ -63,9 +54,12 @@ function roomAt(level: LevelDef, x: number, z: number): number {
  * CAT-blockenden Kollider). Beide Bedingungen zusammen: ein für die Katze zu enger Durchgang erzeugt
  * keine Kante, und genau daran erkennt `validateLevel` ihn (Regel `nav-getrennt`).
  *
- * Kosten n*(n-1)/2 Sweeps, gemessen ~0,13 µs je Sweep (Faktenblatt §6): 60 Punkte sind 1 770 Paare
- * und kosten im Mittel ein Zehntel einer Millisekunde – beim Laden gratis, auch mit dem 4–8-fachen
- * Handy-Faktor.
+ * Kosten n*(n-1)/2 Sweeps: `feinkost` hat 60 Punkte, also 1 770 Paare, und der Bau kostet GEMESSEN
+ * 0,05 ms im warmen Prozess (Median aus 25 Läufen; ohne Aufwärmen 0,07–0,09 ms) – beim Laden gratis,
+ * auch mit dem 4–8-fachen Handy-Faktor. Verfahren und Streuung in `docs/decisions.md`, Abschnitt
+ * „Nav-Graph beim Laden". Die ~0,13 µs je Einzelaufruf aus dem Faktenblatt §6 tragen diese Rechnung
+ * NICHT (sie ergäben 0,23 ms): dort ist der Aufruf-Aufwand je Sweep mitgemessen, hier laufen 1 770
+ * Sweeps in einer Schleife.
  *
  * Die innere Schleife läuft AUFSTEIGEND über `j`, und jede Kante wird sofort auf beiden Seiten
  * eingetragen. Damit sind die Nachbarlisten per KONSTRUKTION aufsteigend: `adjacency[j]` bekommt
@@ -79,7 +73,7 @@ export function buildLevelRuntime(level: LevelDef, balance: Balance, maxEdge: nu
   const colliders = generateColliders(level);
   const points: NavPoint[] = [];
   for (const point of level.nav.points) {
-    points.push({ id: point.id, x: point.x, z: point.z, room: roomAt(level, point.x, point.z) });
+    points.push({ id: point.id, x: point.x, z: point.z, room: roomAt(level.rooms, point.x, point.z) });
   }
 
   const adjacency: number[][] = [];
@@ -124,36 +118,59 @@ export function buildLevelRuntime(level: LevelDef, balance: Balance, maxEdge: nu
 }
 
 /**
- * Größte Zusammenhangskomponente des Graphen, in PUNKTEN. Leerer Graph -> 0.
+ * Komponentennummer JE Wegpunkt, aufsteigend nach dem ersten Punkt jeder Komponente vergeben.
  * BFS über Arrays – kein `Set`, keine `Map`: dieselbe Disziplin wie im Rest des Kerns, damit die
- * Laufreihenfolge allein an den Indizes hängt. Benutzt von `validateLevel` UND vom Nav-Test.
+ * Laufreihenfolge allein an den Indizes hängt.
+ *
+ * Diese EINE BFS ist die Grundlage von beidem: `validateLevel` braucht die Zuordnung je Punkt, weil
+ * die Regel `nav-getrennt` JE RAUM prüft (R7), und `largestNavComponent` unten zählt nur noch die
+ * Häufigkeiten. Vorher stand dieselbe BFS zweimal im Kern – einmal hier, einmal im Validator.
  */
-export function largestNavComponent(nav: NavGraph): number {
-  const count = nav.points.length;
-  const seen: boolean[] = [];
-  for (let i = 0; i < count; i += 1) seen.push(false);
+export function labelComponents(nav: NavGraph): number[] {
+  const label: number[] = [];
+  for (let i = 0; i < nav.points.length; i += 1) label.push(NO_COMPONENT);
   const queue: number[] = [];
-  let best = 0;
-  for (let start = 0; start < count; start += 1) {
-    if (seen[start] === true) continue;
-    seen[start] = true;
+  let next = 0;
+  for (let start = 0; start < nav.points.length; start += 1) {
+    if (label[start] !== NO_COMPONENT) continue;
+    label[start] = next;
     queue.length = 0;
     queue.push(start);
-    let size = 0;
     // Kopf-Index statt `shift()`: `shift` ist linear, der Index macht die BFS linear in den Kanten.
     for (let head = 0; head < queue.length; head += 1) {
       const node = queue[head];
       if (node === undefined) continue;
-      size += 1;
-      const neighbours = nav.adjacency[node];
-      if (neighbours === undefined) continue;
+      const neighbours = nav.adjacency[node] ?? [];
       for (let k = 0; k < neighbours.length; k += 1) {
-        const next = neighbours[k];
-        if (next === undefined || seen[next] === true) continue;
-        seen[next] = true;
-        queue.push(next);
+        const target = neighbours[k];
+        if (target === undefined || label[target] !== NO_COMPONENT) continue;
+        label[target] = next;
+        queue.push(target);
       }
     }
+    next += 1;
+  }
+  return label;
+}
+
+/**
+ * Größte Zusammenhangskomponente des Graphen, in PUNKTEN. Leerer Graph -> 0.
+ * Benutzt von der Nav-Messung und den Tests (`levelRuntime.test.ts`, die L-Studie 8/10/12/16);
+ * `validateLevel` ruft statt dessen `labelComponents`, weil es die Zuordnung je Punkt braucht (R7).
+ */
+export function largestNavComponent(nav: NavGraph): number {
+  const label = labelComponents(nav);
+  // Häufigkeit je Komponentennummer. Die Nummern sind 0…n-1 und lückenlos, ein Array genügt.
+  const sizes: number[] = [];
+  for (let i = 0; i < label.length; i += 1) {
+    const component = label[i];
+    if (component === undefined) continue;
+    while (sizes.length <= component) sizes.push(0);
+    sizes[component] = (sizes[component] ?? 0) + 1;
+  }
+  let best = 0;
+  for (let i = 0; i < sizes.length; i += 1) {
+    const size = sizes[i] ?? 0;
     if (size > best) best = size;
   }
   return best;

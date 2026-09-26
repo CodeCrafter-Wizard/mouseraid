@@ -4,19 +4,14 @@ import {
 } from '../../../../src/render/view2d/camera2d';
 import type { ScreenPoint } from '../../../../src/render/view2d/camera2d';
 import type { LevelBounds, LevelDef, LevelRoom } from '../../../../src/core/world/levelTypes';
-import { CM_PER_UNIT } from '../../../../src/core/world/levelTypes';
+import { emptyLevel } from '../../core/testWorld';
 
 function room(id: string, bounds: LevelBounds): LevelRoom {
   return { id, name: id, bounds, cameraMode: 'follow' };
 }
 
 function level(rooms: readonly LevelRoom[]): LevelDef {
-  return {
-    id: 'kamera', scale: CM_PER_UNIT,
-    rooms, walls: [], shelves: [], boxes: [], plants: [], lootSpawns: [], nav: { points: [] },
-    spawns: { mice: [{ x: 0, z: 0 }], cat: { x: 0, z: 0 } },
-    mouseHole: { x: 0, z: 0, widthCm: 20, heightCm: 200, thicknessCm: 10, rot: 0 },
-  };
+  return emptyLevel({ id: 'kamera', rooms });
 }
 
 const out: ScreenPoint = { sx: 0, sy: 0 };
@@ -78,6 +73,19 @@ describe('camera2d: fitLevel', () => {
     // Und der Versatz selbst ist ganzzahlig, damit das Raster zwischen zwei Bildern nicht wandert.
     expect(Number.isInteger(left)).toBe(true);
     expect(Number.isInteger(top)).toBe(true);
+  });
+
+  it('der Versatz bleibt auch bei UNGERADEM Restplatz ganzzahlig (961 x 721)', () => {
+    // 960 x 720 laesst fuer 104 x 60 Einheiten bei Skala 9 genau 24 bzw. 180 px Rest – beide gerade,
+    // also schon ohne `Math.round` ganzzahlig. Mit 961 x 721 bleiben 25 bzw. 181 px: ohne das
+    // `Math.round` in `fitLevel` endete der Versatz hier auf ,5 und das Raster wanderte um einen
+    // halben Pixel.
+    const bounds = { x0: -64, z0: -30, x1: 40, z1: 30 };
+    const view = fitLevel(bounds, 961, 721, VIEW_MARGIN_PX);
+    expect(view.scale).toBe(9);
+    expect((961 - (bounds.x1 - bounds.x0) * view.scale) % 2).toBe(1);
+    expect(Number.isInteger(view.offsetX)).toBe(true);
+    expect(Number.isInteger(view.offsetY)).toBe(true);
   });
 
   it('faellt nie unter Skala 1, auch wenn die Leinwand winzig ist', () => {

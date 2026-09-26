@@ -56,6 +56,18 @@ function asNumber(value: unknown, path: string): number {
   return value;
 }
 
+/**
+ * Grenzen des DRAHTFORMATS: `packInput` schreibt `mx`/`mz` als i8 und `buttons` als ein Byte.
+ * Geprueft wird hier, aus demselben Grund wie bei `advance`: `setInput(0, NaN, 0, 0)` fiel sonst erst
+ * Ticks spaeter als `NaNError` aus `hashState` auf – weit weg von der Ursache –, und ein nicht
+ * ganzzahliges `buttons` setzte gar kein Bit und fiel gar nicht auf.
+ */
+function needAxis(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < -127 || value > 127) {
+    throw new RangeError(`setInput: ${name} erwartet eine ganze Zahl in [-127, 127], bekam ${String(value)}`);
+  }
+}
+
 function hex2(value: number | undefined): string {
   const byte = value === undefined ? 0 : value;
   return byte < 16 ? `0${byte.toString(16)}` : byte.toString(16);
@@ -118,9 +130,11 @@ export function mountView2d(stage: HTMLElement, search: URLSearchParams): void {
   canvas.height = height;
   // `willReadFrequently: true`, weil `cmd.pixelAt` je Probe `getImageData` ruft – dafuer ist das
   // Flag gemacht. GEMESSEN (M4, vier Flag-Kombinationen in zwei Reihenfolgen): die einmaligen
-  // ~1 445 ms des Software-Rasterizers im KALTEN Chromium-Prozess beseitigt es NICHT – sie
-  // treffen immer die erste Zeichnung, egal mit welchen Flags. Dauerkosten hat es keine
-  // (benchDraw(50): 0,056 ms je Bild), und ein Pixel aendert es nicht.
+  // ~1,4–1,5 s des Software-Rasterizers im kalten Chromium beseitigt es NICHT – sie treffen immer
+  // die erste Zeichnung, egal mit welchen Flags, und sie sind NICHT streng je Prozess (ein zweiter,
+  // unmittelbar danach gestarteter Prozess zahlte 1,8 ms). Dauerkosten hat das Flag keine
+  // (`cmd.benchDraw`-Mittel 0,06–0,07 ms je Bild), und ein Pixel aendert es nicht. Die Messreihe
+  // selbst steht in `docs/decisions.md` – hier steht bewusst keine zweite, driftende Kopie.
   const maybeCtx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (maybeCtx === null) throw new Error('Canvas-2D-Kontext nicht verfuegbar');
   // Eigene Bindung mit festem Typ: eine Verengung von `null` haelt der Uebersetzer nicht bis in
@@ -173,8 +187,10 @@ export function mountView2d(stage: HTMLElement, search: URLSearchParams): void {
       sum += spent;
       if (spent < min) min = spent;
       if (spent > max) max = spent;
+      // `drawMs` ist laut `hook.ts` die Dauer des LETZTEN Bildes – also die des letzten Durchlaufs
+      // und NICHT das Maximum der Serie. Mittel und Streuung liefert der Rueckgabewert hier.
+      drawMs = spent;
     }
-    drawMs = max;
     return { frames: count, meanMs: sum / count, minMs: min, maxMs: max };
   }
 
@@ -234,6 +250,11 @@ export function mountView2d(stage: HTMLElement, search: URLSearchParams): void {
     setInput(slot, mx, mz, buttons) {
       const held = sticky[slot];
       if (held === undefined) throw new RangeError(`setInput: Platz ${slot} gibt es nicht`);
+      needAxis(mx, 'mx');
+      needAxis(mz, 'mz');
+      if (!Number.isInteger(buttons) || buttons < 0 || buttons > 255) {
+        throw new RangeError(`setInput: buttons erwartet eine ganze Zahl in [0, 255], bekam ${String(buttons)}`);
+      }
       held.mx = mx;
       held.mz = mz;
       held.buttons = buttons;
@@ -255,6 +276,13 @@ export function mountView2d(stage: HTMLElement, search: URLSearchParams): void {
   });
   window.addEventListener('keyup', (event) => {
     if (keyboard.onKeyUp(event.code)) event.preventDefault();
+  });
+  // Ohne Fokus kommt kein `keyup` mehr an: eine gehaltene Taste bliebe fuer immer gehalten und die
+  // Maus liefe weiter. BEIDE Ereignisse, weil sie verschiedene Faelle treffen – `blur` den
+  // Fensterwechsel, `visibilitychange` den Tab-Wechsel und den gesperrten Bildschirm.
+  window.addEventListener('blur', () => { keyboard.reset(); });
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') keyboard.reset();
   });
 
   const loop = createLoop({

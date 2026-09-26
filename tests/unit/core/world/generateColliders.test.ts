@@ -8,6 +8,11 @@ import { CM_PER_UNIT } from '../../../../src/core/world/levelTypes';
 import type { LevelShelf } from '../../../../src/core/world/levelTypes';
 import miniLevel from '../../../fixtures/core/mini-level.json';
 import testBalance from '../../../fixtures/core/test-balance.json';
+import { makeVariant } from '../jsonVariant';
+import type { Json } from '../jsonVariant';
+
+/** Tiefe Kopie der eingefrorenen Fixture, danach EINE gezielte Änderung (statt JSON.parse/stringify). */
+const variant = makeVariant(miniLevel);
 
 const level = loadLevel(miniLevel);
 const balance = loadBalance(testBalance);
@@ -41,6 +46,12 @@ const SHELF_BASE: readonly number[] = [4, 9];
 // nicht über `length - 1`: seit M4 hängt hinter jedem Level der Mauseloch-Stopfen.
 const BOX_INDEX = 14;
 const PLUG_INDEX = 15;
+/**
+ * Die ERSTE Pflanze in der Variante mit Pflanzen. Dieselbe Zahl wie `PLUG_INDEX`, aber eine andere
+ * Bedeutung: Pflanzen stehen VOR dem Stopfen, der rutscht mit zwei Pflanzen also auf 17. Genau
+ * dieser Doppelsinn hat den Block vorher schwer lesbar gemacht.
+ */
+const PLANT_BASE = 15;
 
 function legsOf(shelf: number): Collider[] {
   const base = SHELF_BASE[shelf] ?? -1;
@@ -89,10 +100,11 @@ describe('generateColliders – Anzahl, Reihenfolge, Masken', () => {
   it('ein Level ohne Grundformen liefert GENAU den Mauseloch-Stopfen', () => {
     // `mouseHole` ist Pflichtfeld, der Stopfen entsteht also in JEDEM Level – auch in einem ohne
     // eine einzige Wand. Vor M4 war dieses Ergebnis leer.
-    const bare = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
-    bare['walls'] = [];
-    bare['shelves'] = [];
-    bare['boxes'] = [];
+    const bare = variant((copy) => {
+      copy['walls'] = [];
+      copy['shelves'] = [];
+      copy['boxes'] = [];
+    });
     const bareColliders = generateColliders(loadLevel(bare));
     expect(bareColliders).toHaveLength(1);
     expect(bareColliders[0]?.blocks).toBe(CAT | CAMERA);
@@ -240,12 +252,13 @@ describe('generateColliders – Kiste', () => {
     // nicht auf (Review Minor 2). Diese Variante mit unterschiedlichen Halbmaßen und y0Cm > 0
     // deckt beides auf. Gegriffen wird die Kiste seit M4 über BOX_INDEX statt über `length - 1`:
     // am Ende steht jetzt der Mauseloch-Stopfen.
-    const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
-    const box = (raw['boxes'] as Record<string, unknown>[])[0] as Record<string, unknown>;
-    box['y0Cm'] = 5;
-    box['y1Cm'] = 40;
-    box['hx'] = 2;
-    box['hz'] = 1;
+    const raw = variant((copy) => {
+      const box = (copy['boxes'] as Json[])[0] as Json;
+      box['y0Cm'] = 5;
+      box['y1Cm'] = 40;
+      box['hx'] = 2;
+      box['hz'] = 1;
+    });
     const variantColliders = generateColliders(loadLevel(raw));
     const variantBox = variantColliders[BOX_INDEX];
     if (variantBox === undefined) throw new Error('Kiste fehlt');
@@ -259,18 +272,18 @@ describe('generateColliders – Kiste', () => {
 describe('generateColliders – Topfpflanze (M4)', () => {
   /** Zwei Pflanzen in die Fixture setzen: eine quadratische Probe und eine zweite für die Reihenfolge. */
   function withPlants(): Collider[] {
-    const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
-    raw['plants'] = [
-      { id: 'busch-west', x: -12, z: 0, radiusCm: 25, heightCm: 60 },
-      { id: 'busch-ost', x: 12, z: 0, radiusCm: 15, heightCm: 40 },
-    ];
-    return generateColliders(loadLevel(raw));
+    return generateColliders(loadLevel(variant((copy) => {
+      copy['plants'] = [
+        { id: 'busch-west', x: -12, z: 0, radiusCm: 25, heightCm: 60 },
+        { id: 'busch-ost', x: 12, z: 0, radiusCm: 15, heightCm: 40 },
+      ];
+    })));
   }
 
   it('eine Pflanze wird zu GENAU EINEM Kollider – dem umschreibenden Quadrat', () => {
     const withTwo = withPlants();
     expect(withTwo).toHaveLength(18); // 16 wie bisher + 2 Pflanzen
-    const plant = withTwo[15];
+    const plant = withTwo[PLANT_BASE];
     if (plant === undefined) throw new Error('Pflanze fehlt');
     expect(plant.cx).toBe(-12);
     expect(plant.cz).toBe(0);
@@ -281,7 +294,7 @@ describe('generateColliders – Topfpflanze (M4)', () => {
   });
 
   it('blockt CAT|SIGHT (6) – nicht MOUSE (Versteck) und nicht CAMERA (Boom aus M5)', () => {
-    const plant = withPlants()[15];
+    const plant = withPlants()[PLANT_BASE];
     expect(plant?.blocks).toBe(6);
     expect(plant?.blocks).toBe(CAT | SIGHT);
     expect((plant?.blocks ?? 0) & MOUSE).toBe(0);
@@ -289,7 +302,7 @@ describe('generateColliders – Topfpflanze (M4)', () => {
   });
 
   it('steht EXAKT ungedreht: rot 0, rc 1, rs 0 – ein Kreis hat keine Drehung', () => {
-    const plant = withPlants()[15];
+    const plant = withPlants()[PLANT_BASE];
     expect(plant?.rot).toBe(0);
     expect(plant?.rc).toBe(1);
     expect(plant?.rs).toBe(0);
@@ -303,7 +316,7 @@ describe('generateColliders – Topfpflanze (M4)', () => {
       CAT | CAMERA, // Stopfen
     ]);
     expect(withTwo.map((collider) => collider.occluderGroup).slice(14)).toEqual([7, 8, 9, 10]);
-    expect(withTwo[16]?.hx).toBe(1.5); // die zweite Pflanze: radiusCm 15
+    expect(withTwo[PLANT_BASE + 1]?.hx).toBe(1.5); // die zweite Pflanze: radiusCm 15
   });
 });
 
@@ -328,12 +341,13 @@ describe('generateColliders – Mauseloch-Stopfen (M4)', () => {
   });
 
   it('nimmt Drehung, rc und rs AUSGESCHRIEBEN aus mouseHole.rot – es wird keine Wand gesucht', () => {
-    const raw = JSON.parse(JSON.stringify(miniLevel)) as Record<string, unknown>;
-    const hole = raw['mouseHole'] as Record<string, unknown>;
-    hole['rot'] = Math.PI / 2;
-    hole['widthCm'] = 30;
-    hole['thicknessCm'] = 20;
-    hole['heightCm'] = 150;
+    const raw = variant((copy) => {
+      const hole = copy['mouseHole'] as Json;
+      hole['rot'] = Math.PI / 2;
+      hole['widthCm'] = 30;
+      hole['thicknessCm'] = 20;
+      hole['heightCm'] = 150;
+    });
     const plug = generateColliders(loadLevel(raw))[PLUG_INDEX];
     if (plug === undefined) throw new Error('Stopfen fehlt');
     expect(plug.rot).toBe(Math.PI / 2);

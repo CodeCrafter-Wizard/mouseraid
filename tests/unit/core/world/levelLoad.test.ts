@@ -95,6 +95,19 @@ describe('loadLevel – erlaubte Sonderfälle', () => {
     expect(none.boxes[0]?.blocks).toBe(0);
   });
 
+  it('unbekannte Zusatzfelder stoeren nicht – `_hinweis` ist die einzige Kommentarform der Level', () => {
+    // `feinkost.json` und `mini-level.json` tragen ihren Entwurfskommentar als `_hinweis`; eine
+    // strengere Schlüsselprüfung im Loader würde also BEIDE Level-Dateien auf einen Schlag brechen.
+    // Dieser Fall ist die Zusicherung, dass das nicht unbemerkt passiert.
+    const level = loadLevel(variant((l) => {
+      l['_hinweis'] = 'Kommentar in den Daten';
+      l['zukunft'] = 1;
+      at(l, 'rooms', 0)['_hinweis'] = 'auch verschachtelt';
+    }));
+    expect(level.id).toBe('mini');
+    expect(level.rooms[0]?.id).toBe('verkaufsraum');
+  });
+
   it('der Kameramodus diorama wird angenommen', () => {
     const level = loadLevel(variant((l) => { at(l, 'rooms', 0)['cameraMode'] = 'diorama'; }));
     expect(level.rooms[0]?.cameraMode).toBe('diorama');

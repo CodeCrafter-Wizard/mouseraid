@@ -3,8 +3,9 @@ import type { Balance } from '../data/balanceTypes';
 import { CAT, MOUSE, overlapsY } from './colliderTypes';
 import type { Collider, YRange } from './colliderTypes';
 import { sweepCircle } from './collision';
-import type { LevelRuntime, NavGraph } from './levelRuntime';
-import { CM_PER_UNIT } from './levelTypes';
+import { labelComponents } from './levelRuntime';
+import type { LevelRuntime } from './levelRuntime';
+import { CM_PER_UNIT, NO_ROOM, roomAt } from './levelTypes';
 import type { LevelDef } from './levelTypes';
 
 /**
@@ -86,47 +87,6 @@ function affects(collider: Collider, yRange: YRange, mask: number): boolean {
   return (collider.blocks & mask) !== 0 && overlapsY(yRange, collider);
 }
 
-/** Raumindex aus den HALBOFFENEN Grenzen; -1, wenn der Punkt in keinem Raum liegt. */
-function roomOf(level: LevelDef, x: number, z: number): number {
-  for (let i = 0; i < level.rooms.length; i += 1) {
-    const bounds = level.rooms[i]?.bounds;
-    if (bounds === undefined) continue;
-    if (x >= bounds.x0 && x < bounds.x1 && z >= bounds.z0 && z < bounds.z1) return i;
-  }
-  return -1;
-}
-
-/**
- * Komponentennummer je Wegpunkt (BFS über Arrays, kein Set, keine Map).
- * `largestNavComponent` liefert nur die GRÖSSE der größten Komponente; Regel `nav-getrennt`
- * braucht die Zuordnung je Punkt, weil sie JE RAUM prüft – deshalb hier eine eigene Markierung.
- */
-function labelComponents(nav: NavGraph): number[] {
-  const label: number[] = [];
-  for (let i = 0; i < nav.points.length; i += 1) label.push(-1);
-  const queue: number[] = [];
-  let next = 0;
-  for (let start = 0; start < nav.points.length; start += 1) {
-    if (label[start] !== -1) continue;
-    label[start] = next;
-    queue.length = 0;
-    queue.push(start);
-    for (let head = 0; head < queue.length; head += 1) {
-      const node = queue[head];
-      if (node === undefined) continue;
-      const neighbours = nav.adjacency[node] ?? [];
-      for (let k = 0; k < neighbours.length; k += 1) {
-        const target = neighbours[k];
-        if (target === undefined || label[target] !== -1) continue;
-        label[target] = next;
-        queue.push(target);
-      }
-    }
-    next += 1;
-  }
-  return label;
-}
-
 /**
  * Feldpfad der QUELLE eines Kolliders. Er hängt allein an der vertraglich festgelegten Reihenfolge
  * Wände -> Regale (je 5) -> Kisten -> Pflanzen -> Mauseloch-Stopfen; ein Einschub an anderer Stelle
@@ -185,12 +145,13 @@ export function validateLevel(runtime: LevelRuntime, balance: Balance): LevelFin
   //     zwischen Verkaufsraum und Bau nie eine Kante geben).
   const component = labelComponents(nav);
   for (let r = 0; r < level.rooms.length; r += 1) {
-    let first = -1;
+    let first: number | undefined;
     let split = false;
     for (let i = 0; i < nav.points.length; i += 1) {
       if (nav.points[i]?.room !== r) continue;
-      const label = component[i] ?? -1;
-      if (first === -1) first = label;
+      const label = component[i];
+      if (label === undefined) continue;
+      if (first === undefined) first = label;
       else if (label !== first) split = true;
     }
     if (split) {
@@ -233,20 +194,20 @@ export function validateLevel(runtime: LevelRuntime, balance: Balance): LevelFin
   for (let i = 0; i < level.plants.length; i += 1) {
     const plant = level.plants[i];
     if (plant === undefined) continue;
-    if (roomOf(level, plant.x, plant.z) === -1) {
+    if (roomAt(level.rooms, plant.x, plant.z) === NO_ROOM) {
       add('ausserhalb', `plants[${i}]`, `Pflanze "${plant.id}" liegt in keinem Raum.`);
     }
   }
   for (let i = 0; i < level.lootSpawns.length; i += 1) {
     const loot = level.lootSpawns[i];
     if (loot === undefined) continue;
-    if (roomOf(level, loot.x, loot.z) === -1) {
+    if (roomAt(level.rooms, loot.x, loot.z) === NO_ROOM) {
       add('ausserhalb', `lootSpawns[${i}]`, `Beuteplatz "${loot.id}" liegt in keinem Raum.`);
     }
   }
   for (let i = 0; i < nav.points.length; i += 1) {
     const point = nav.points[i];
-    if (point === undefined || point.room !== -1) continue;
+    if (point === undefined || point.room !== NO_ROOM) continue;
     add('ausserhalb', `nav.points[${i}]`, `Wegpunkt "${point.id}" liegt in keinem Raum.`);
   }
 
@@ -254,24 +215,24 @@ export function validateLevel(runtime: LevelRuntime, balance: Balance): LevelFin
   for (let i = 0; i < level.spawns.mice.length; i += 1) {
     const spawn = level.spawns.mice[i];
     if (spawn === undefined) continue;
-    const room = roomOf(level, spawn.x, spawn.z);
-    if (room === -1 || reachesNav(runtime, balance, spawn.x, spawn.z, room)) continue;
+    const room = roomAt(level.rooms, spawn.x, spawn.z);
+    if (room === NO_ROOM || reachesNav(runtime, balance, spawn.x, spawn.z, room)) continue;
     add('unerreichbar', `spawns.mice[${i}]`,
       'Maus-Spawn erreicht keinen Wegpunkt desselben Raums mit einem freien Maus-Sweep.');
   }
   for (let i = 0; i < level.lootSpawns.length; i += 1) {
     const loot = level.lootSpawns[i];
     if (loot === undefined) continue;
-    const room = roomOf(level, loot.x, loot.z);
-    if (room === -1 || reachesNav(runtime, balance, loot.x, loot.z, room)) continue;
+    const room = roomAt(level.rooms, loot.x, loot.z);
+    if (room === NO_ROOM || reachesNav(runtime, balance, loot.x, loot.z, room)) continue;
     add('unerreichbar', `lootSpawns[${i}]`,
       `Beuteplatz "${loot.id}" erreicht keinen Wegpunkt desselben Raums mit einem freien Maus-Sweep.`);
   }
   for (let i = 0; i < level.plants.length; i += 1) {
     const plant = level.plants[i];
     if (plant === undefined) continue;
-    const room = roomOf(level, plant.x, plant.z);
-    if (room === -1 || reachesNav(runtime, balance, plant.x, plant.z, room)) continue;
+    const room = roomAt(level.rooms, plant.x, plant.z);
+    if (room === NO_ROOM || reachesNav(runtime, balance, plant.x, plant.z, room)) continue;
     add('unerreichbar', `plants[${i}]`,
       `Versteck "${plant.id}" erreicht keinen Wegpunkt desselben Raums mit einem freien Maus-Sweep.`);
   }
@@ -292,11 +253,13 @@ export function validateLevel(runtime: LevelRuntime, balance: Balance): LevelFin
     const reach = hole.thicknessCm / 2 / CM_PER_UNIT + mouse.radius;
     const nx = -sin(hole.rot) * reach;
     const nz = cos(hole.rot) * reach;
-    let previous = -2;
+    // `undefined` heißt „noch keinen Raum gesehen". Ein zweiter Zahlenwert dafür wäre eine zweite
+    // Bedeutung von „kein Raum" neben NO_ROOM – beim Lesen die häufigste Verwechslung.
+    let previousRoom: number | undefined;
     for (const side of [1, -1]) {
-      const room = roomOf(level, hole.x + nx * side, hole.z + nz * side);
-      if (room === -1 || room === previous) continue;
-      previous = room;
+      const room = roomAt(level.rooms, hole.x + nx * side, hole.z + nz * side);
+      if (room === NO_ROOM || room === previousRoom) continue;
+      previousRoom = room;
       if (reachesNav(runtime, balance, hole.x, hole.z, room)) continue;
       add('loch-sperrt-maus', 'mouseHole',
         `Vom Mauseloch führt kein freier Maus-Sweep zu einem Wegpunkt des Raums "${level.rooms[room]?.id ?? ''}".`);

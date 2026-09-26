@@ -215,6 +215,87 @@ describe('ESLint-Leitplanken', () => {
     },
   );
 
+  // M4/Polish: `no-restricted-imports` sieht NUR statische Importe und `export … from`. Ein
+  // `await import('../../lab/report')` kam vorher durch beide neuen Blöcke und wäre erst im
+  // gebauten Bundle aufgefallen (`findLabSignatures`), und auch nur, wenn die gesuchte Zeichenkette
+  // das Tree-Shaking überlebt. Deshalb zusätzlich ein `no-restricted-syntax`-Selektor auf
+  // `ImportExpression`.
+  it.each(['../../net/protocol', '../../lab/report', '../../../src/lab/report'])(
+    'render: der DYNAMISCHE import(%s) nach net/ oder lab/ ist verboten',
+    async (source) => {
+      const ids = await ruleIds(
+        `export async function load(): Promise<unknown> {\n  return await import('${source}');\n}\n`,
+        'src/render/view2d/x.ts',
+      );
+      expect(ids).toContain('no-restricted-syntax');
+    },
+  );
+
+  it.each(['../ui/strings', '../lab/report', '../render/view2d/draw'])(
+    'input: der DYNAMISCHE import(%s) in eine fremde Schicht ist verboten',
+    async (source) => {
+      const ids = await ruleIds(
+        `export async function load(): Promise<unknown> {\n  return await import('${source}');\n}\n`,
+        'src/input/keyboard.ts',
+      );
+      expect(ids).toContain('no-restricted-syntax');
+    },
+  );
+
+  it('der dynamische import eines eigenen Moduls bzw. aus core bleibt erlaubt', async () => {
+    const own = await ruleIds(
+      `export async function load(): Promise<unknown> {\n  return await import('./draw');\n}\n`,
+      'src/render/view2d/x.ts',
+    );
+    const core = await ruleIds(
+      `export async function load(): Promise<unknown> {\n  return await import('../core/sim/input');\n}\n`,
+      'src/input/keyboard.ts',
+    );
+    expect(own).not.toContain('no-restricted-syntax');
+    expect(core).not.toContain('no-restricted-syntax');
+  });
+
+  it('src/main.ts darf die 2D-Ansicht weiter dynamisch importieren', async () => {
+    // Genau dieser Import hält den Kern aus dem Einstiegs-Chunk (`?view=2d`). Der Block `src/**`
+    // bekommt die ImportExpression-Sperre deshalb NICHT – nur render/ und input/.
+    const ids = await ruleIds(
+      `export async function view(): Promise<unknown> {\n  return await import('./render/view2d/main');\n}\n`,
+      'src/main.ts',
+    );
+    expect(ids).not.toContain('no-restricted-syntax');
+    expect(ids).not.toContain('no-restricted-imports');
+  });
+
+  // M4/Polish: der Kommentar am `src/input/**`-Block versprach eine DOM-Schranke, geregelt waren
+  // aber nur Importe. `window.addEventListener` in einem reinen Reducer ist die Verdrahtung an der
+  // falschen Stelle (die steht in `src/render/view2d/main.ts`, ab M5 in `src/modes/`).
+  it('input darf keine Browser-Globals benutzen', async () => {
+    const ids = await ruleIds(
+      `export const w = window;\nexport const d = document;\nexport const t = setTimeout;\n`
+        + `export const n = navigator;\nexport const p = performance;\n`,
+      'src/input/keyboard.ts',
+    );
+    expect(ids.filter((id) => id === 'no-restricted-globals').length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('input darf rechnen, zaehlen und Number-Helfer benutzen', async () => {
+    const ids = await ruleIds(
+      `export const a = Math.floor(1.5) + Math.sqrt(2);\nexport const b = Number.isInteger(a);\n`
+        + `export const c = new Set<string>();\n`,
+      'src/input/keyboard.ts',
+    );
+    expect(ids).not.toContain('no-restricted-globals');
+    expect(ids).not.toContain('no-restricted-syntax');
+  });
+
+  it('render darf Browser-Globals weiter benutzen – dort steht die Verdrahtung', async () => {
+    const ids = await ruleIds(
+      `export const w = window;\nexport const d = document;\nexport const r = requestAnimationFrame;\n`,
+      'src/render/view2d/main.ts',
+    );
+    expect(ids).not.toContain('no-restricted-globals');
+  });
+
   it('input darf Babylon weder direkt noch als Legacy-Barrel importieren', async () => {
     const babylon = await ruleIds(
       `import { Engine } from '@babylonjs/core/Engines/engine';\nexport const e = Engine;\n`,

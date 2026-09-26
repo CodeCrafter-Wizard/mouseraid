@@ -5,13 +5,15 @@ import type { StepContext } from '../../../../src/core/sim/state';
 import { CAT, MOUSE } from '../../../../src/core/world/colliderTypes';
 import { generateColliders } from '../../../../src/core/world/generateColliders';
 import { loadLevel } from '../../../../src/core/world/levelLoad';
-import { NAV_MAX_EDGE, buildLevelRuntime, largestNavComponent } from '../../../../src/core/world/levelRuntime';
+import {
+  NAV_MAX_EDGE, buildLevelRuntime, labelComponents, largestNavComponent,
+} from '../../../../src/core/world/levelRuntime';
 import type { NavGraph } from '../../../../src/core/world/levelRuntime';
-import { CM_PER_UNIT } from '../../../../src/core/world/levelTypes';
 import type { LevelBox, LevelDef, LevelNavPoint, LevelRoom } from '../../../../src/core/world/levelTypes';
 import realBalanceJson from '../../../../src/data/balance.json';
 import feinkostJson from '../../../../src/data/levels/feinkost.json';
 import testBalanceJson from '../../../fixtures/core/test-balance.json';
+import { emptyLevel } from '../testWorld';
 
 // Gemessen wird mit der EINGEFRORENEN Balance (Katze r = 1.0, yRange 0…2.5). Die echte Balance ist
 // bis zum Spaß-GATE nach M14 provisorisch; an ihren Zahlen darf kein Test hängen (CLAUDE.md).
@@ -29,19 +31,13 @@ const WIDE: LevelRoom = { id: 'r', name: 'r', bounds: { x0: -50, z0: -50, x1: 10
  * erzeugt in JEDEM Level genau einen Stopfen, und der soll keine der Proben unten berühren.
  */
 function probeLevel(rooms: readonly LevelRoom[], points: readonly LevelNavPoint[], boxes: readonly LevelBox[] = []): LevelDef {
-  return {
+  return emptyLevel({
     id: 'probe',
-    scale: CM_PER_UNIT,
     rooms,
-    walls: [],
-    shelves: [],
     boxes,
-    plants: [],
-    lootSpawns: [],
     nav: { points },
-    spawns: { mice: [{ x: 0, z: 0 }], cat: { x: 0, z: 0 } },
     mouseHole: { x: 200, z: 200, widthCm: 20, heightCm: 200, thicknessCm: 10, rot: 0 },
-  };
+  });
 }
 
 /** Riegel quer zwischen zwei Punkten auf der x-Achse: Halbmaß 0.5 x 5 um den Ursprung. */
@@ -171,13 +167,31 @@ describe('buildLevelRuntime – Nachbarn, Längen, Raum', () => {
   });
 });
 
-describe('largestNavComponent', () => {
+describe('labelComponents und largestNavComponent', () => {
+  it('nummeriert die Komponenten je Punkt, aufsteigend nach ihrem ersten Punkt', () => {
+    // Drei Inseln in verwürfelter Lage: (0/4) – (60) – (100/104). Die Nummern hängen allein an den
+    // INDIZES, nicht an der Lage: Punkt 0 beginnt Komponente 0, Punkt 2 Komponente 1, Punkt 3 die 2.
+    const nav = buildLevelRuntime(
+      probeLevel([WIDE], points([0, 0], [4, 0], [60, 0], [100, 0], [104, 0])), balance,
+    ).nav;
+    expect(labelComponents(nav)).toEqual([0, 0, 1, 2, 2]);
+    // Dieselbe Markierung benutzt `validateLevel` für die Regel `nav-getrennt` JE RAUM (R7) –
+    // deshalb steht sie in `levelRuntime` und nicht zweimal im Kern.
+    expect(largestNavComponent(nav)).toBe(2);
+  });
+
+  it('ein leerer Graph hat keine Komponenten', () => {
+    expect(labelComponents({ points: [], adjacency: [], lengths: [] })).toEqual([]);
+  });
+
   it('zählt die größte Insel, nicht alle Punkte', () => {
     // Insel A: 3 Punkte (0/4/8), Insel B: 2 Punkte (60/64) – 52 Einheiten dazwischen.
     const nav = buildLevelRuntime(probeLevel([WIDE], points([0, 0], [4, 0], [8, 0], [60, 0], [64, 0])), balance).nav;
     expect(adjacencyOf(nav)).toEqual([[1, 2], [0, 2], [0, 1], [4], [3]]);
     expect(edgeCount(nav)).toBe(4);
     expect(largestNavComponent(nav)).toBe(3);
+    // Die größte Komponente ist die ERSTE; eine Variante, die die LETZTE nimmt, läge bei 2.
+    expect(labelComponents(nav)).toEqual([0, 0, 0, 1, 1]);
   });
 
   it('ein einzelner Punkt ohne Kante ist eine Komponente der Größe 1', () => {
@@ -237,8 +251,11 @@ describe('buildLevelRuntime – feinkost', () => {
 
   it('mit der ECHTEN Balance bleibt die Beziehung erhalten – ohne dass eine Zahl daran hängt', () => {
     // Keine exakte Kantenzahl gegen `src/data/balance.json`: deren Werte sind provisorisch.
-    // Gepinnt wird nur, was für JEDE Balance gilt: ein größeres L nimmt keine Kante weg.
-    let previous = -1;
+    // Gepinnt wird nur, was für JEDE Balance gilt: es gibt überhaupt Kanten, und ein größeres L
+    // nimmt keine weg. `previous` beginnt bei 0 und nicht bei -1 – „Kantenzahl >= -1" wäre für den
+    // ersten Durchgang immer wahr und würde „gar keine Kante" nicht bemerken.
+    let previous = 0;
+    expect(edgeCount(buildLevelRuntime(feinkost, realBalance, 8).nav)).toBeGreaterThan(0);
     for (const maxEdge of [8, 10, 12, 16]) {
       const edges = edgeCount(buildLevelRuntime(feinkost, realBalance, maxEdge).nav);
       expect(edges).toBeGreaterThanOrEqual(previous);

@@ -22,10 +22,27 @@ const ENTRIES = ['src/lab/labHook.ts', 'src/render/view2d/hook.ts', 'src/render/
  */
 const IMPORT_SPECIFIER = /(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g;
 
-/** Statische `from '…'`-Importe einer Datei, relative Pfade aufgelöst; Pakete werden übersprungen. */
-function walk(entry: string): { files: Set<string>; styles: string[] } {
+/**
+ * Alle erreichbaren Dateien, Stylesheets und die NICHT auflösbaren Bezeichner eines Einstiegs.
+ * Relative Pfade werden aufgelöst, Pakete übersprungen.
+ *
+ * Zwei Normalisierungen, beide aus dem Abschlussreview (Determinismus-Minor 1), beide GEMESSEN:
+ * 1. Vite-Queries (`?inline`, `?raw`, `?url`) gehören nicht zum Pfad – ohne das Abschneiden fiele
+ *    `./theme.css?inline` aus BEIDEN Listen, wäre also weder Datei noch Stylesheet.
+ * 2. `./x.js` zeigt unter `moduleResolution: 'bundler'` auf `x.ts`, und `tsc` ist damit zufrieden
+ *    (eigene Gegenprobe: Exit 0). Ohne die Abbildung `.js|.mjs|.cjs -> .ts` fiel so ein Import
+ *    still aus dem Graphen – genau der blinde Fleck, den ein künftiges
+ *    `import type … from '../../platform/buildInfo.js'` ausgenutzt hätte.
+ *
+ * Was NICHT auflösbar war, landet in `unresolved` und wird unten laut: ein still übergangener
+ * Bezeichner ist ein blinder Fleck, kein Erfolg. Einzige bekannte Lücke: berechnete Bezeichner
+ * (`import(\`./${name}\`)`, `import.meta.glob`) trifft das Muster gar nicht – sie kommen im Repo
+ * nicht vor, und `tsc -p tsconfig.node.json` bleibt die harte Schranke.
+ */
+function walk(entry: string): { files: Set<string>; styles: string[]; unresolved: string[] } {
   const files = new Set<string>();
   const styles: string[] = [];
+  const unresolved: string[] = [];
   const queue = [resolve(ROOT, entry)];
   while (queue.length > 0) {
     const file = queue.pop();
@@ -33,16 +50,22 @@ function walk(entry: string): { files: Set<string>; styles: string[] } {
     files.add(file);
     const text = readFileSync(file, 'utf8');
     for (const match of text.matchAll(IMPORT_SPECIFIER)) {
-      const spec = match[1] ?? '';
-      if (!spec.startsWith('.')) continue;
-      const target = resolve(dirname(file), spec);
-      if (/\.css$/.test(spec)) { styles.push(relative(ROOT, target).replaceAll('\\', '/')); continue; }
-      for (const candidate of [`${target}.ts`, join(target, 'index.ts'), target]) {
-        if (existsSync(candidate) && candidate.endsWith('.ts')) { queue.push(candidate); break; }
+      const raw = match[1] ?? '';
+      if (!raw.startsWith('.')) continue;
+      const spec = raw.split('?')[0] ?? '';
+      if (/\.css$/.test(spec)) {
+        styles.push(relative(ROOT, resolve(dirname(file), spec)).replaceAll('\\', '/'));
+        continue;
       }
+      const target = resolve(dirname(file), spec.replace(/\.(?:js|mjs|cjs)$/, '.ts'));
+      let found = false;
+      for (const candidate of [`${target}.ts`, join(target, 'index.ts'), target]) {
+        if (existsSync(candidate) && candidate.endsWith('.ts')) { queue.push(candidate); found = true; break; }
+      }
+      if (!found) unresolved.push(raw);
     }
   }
-  return { files, styles };
+  return { files, styles, unresolved };
 }
 
 const asRel = (files: Set<string>): string[] => [...files].map((file) => relative(ROOT, file).replaceAll('\\', '/'));
@@ -56,6 +79,12 @@ for (const entry of ENTRIES) {
 
     it('erreicht kein Stylesheet (CSS wird nur aus labMain.ts bzw. src/ui/shell.css geladen)', () => {
       expect(walk(entry).styles).toEqual([]);
+    });
+
+    it('loest JEDEN relativen Bezeichner auf – ein uebergangener waere ein blinder Fleck', () => {
+      // Ohne diese Zusicherung ist der Waechter gruen, weil das Repo brav schreibt, und nicht, weil
+      // er es erzwingt: eine Schreibweise, die `walk` nicht kennt, fiele einfach aus dem Graphen.
+      expect(walk(entry).unresolved).toEqual([]);
     });
   });
 }

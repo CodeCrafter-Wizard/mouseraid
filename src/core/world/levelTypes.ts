@@ -13,6 +13,31 @@ export interface LevelBounds { x0: number; z0: number; x1: number; z1: number }
 
 export interface LevelRoom { id: string; name: string; bounds: LevelBounds; cameraMode: CameraMode }
 
+/**
+ * Kein Raum gefunden. Bewusst NICHT `NO_ROOM` aus `src/core/sim/state.ts` importiert: `src/core/world`
+ * kennt die Simulation nicht (nur umgekehrt), und ein Import in diese Richtung zöge `sim/state` in jedes
+ * Bundle, das nur den Nav-Graphen braucht. Der WERT ist derselbe – wer ihn dort ändert, ändert ihn hier mit.
+ */
+export const NO_ROOM = -1;
+
+/**
+ * Index des Raums, in dem der Punkt liegt, sonst `NO_ROOM`. Grenzen HALBOFFEN: `[x0,x1) × [z0,z1)` –
+ * dieselbe Regel, mit der `playerMove` zur Laufzeit einen Raum zuordnet.
+ *
+ * Die Regel wohnt hier, im importfreien Typ-Modul, weil DREI Stellen sie brauchen und sie
+ * auseinanderlaufen würden: `levelLoad` („liegt in keinem Raum"), `levelRuntime` (`NavPoint.room`)
+ * und `validateLevel` (`ausserhalb`). Sie nimmt bewusst nur die Räume und kein `LevelDef` – der
+ * Loader hat beim Prüfen noch kein fertiges Level.
+ */
+export function roomAt(rooms: readonly LevelRoom[], x: number, z: number): number {
+  for (let i = 0; i < rooms.length; i += 1) {
+    const bounds = rooms[i]?.bounds;
+    if (bounds === undefined) continue;
+    if (x >= bounds.x0 && x < bounds.x1 && z >= bounds.z0 && z < bounds.z1) return i;
+  }
+  return NO_ROOM;
+}
+
 /** Wand als Strecke MIT Dicke – ohne Dicke ergäbe sich keine OBB. */
 export interface LevelWall { x0: number; z0: number; x1: number; z1: number; heightCm: number; thicknessCm: number }
 

@@ -7,7 +7,7 @@
  * `Colors` daraus importiert statt Hexwerte zu verdoppeln: es darf weder `src/platform/buildInfo.ts`
  * noch ein Stylesheet erreichen, sonst bricht `tsc -p tsconfig.node.json`.
  */
-import { CAT, MOUSE } from '../../core/world/colliderTypes';
+import { CAMERA, CAT, MOUSE, SIGHT } from '../../core/world/colliderTypes';
 import type { Collider } from '../../core/world/colliderTypes';
 import type { LevelRuntime } from '../../core/world/levelRuntime';
 import type { WorldState } from '../../core/sim/state';
@@ -29,13 +29,20 @@ export type LayerMask = Readonly<Record<Layer, boolean>>;
 /** Deckkraft der Unter-Regal-Zone. Danach wird `globalAlpha` IMMER wieder auf 1 gesetzt. */
 export const UNDER_SHELF_ALPHA = 0.55;
 
+/**
+ * Der Hintergrund als eigene Konstante: `Colors.facing` IST derselbe Wert (die Blickrichtungslinie
+ * ist ein Loch in der Figur). Vorher stand das Literal zweimal da, und wer den Hintergrund änderte,
+ * ließ die Linie stumm in der alten Farbe stehen.
+ */
+const BACKGROUND = '#10131c';
+
 export const Colors: {
   background: string; room: string; roomDiorama: string;
   wall: string; leg: string; canopy: string; plant: string; window: string; unknownMask: string;
-  underShelf: string; navEdge: string; navPoint: string; loot: string; hole: string; spawn: string;
-  mouse: string; mouseWeak: string; cat: string; facing: string;
+  underShelf: string; navEdge: string; navPoint: string; loot: string; hole: string; holeMark: string;
+  spawn: string; spawnCat: string; mouse: string; mouseWeak: string; cat: string; facing: string;
 } = {
-  background: '#10131c',
+  background: BACKGROUND,
   room: '#1e2536',
   roomDiorama: '#2b3350',
   wall: '#3c4360',
@@ -50,24 +57,34 @@ export const Colors: {
   navPoint: '#8fb8e8',
   loot: '#f2c14e',
   hole: '#c88a3c',
+  // Die Mauseloch-MARKE liegt mitten auf dem Stopfen (Maske 10, `hole`) – in derselben Farbe war sie
+  // ein Zeichenaufruf ohne Aussage (gemessen: Marke r 3 px vollständig im 18x9-px-Stopfen).
+  // Deutlich heller als jede Kollider-Farbe, damit die Stelle des Lochs im Bild sofort auffällt.
+  holeMark: '#ffe3a3',
   spawn: '#8fd18a',
+  // Der Katzen-Spawn bekommt eine EIGENE Farbe, nicht die der Maus-Spawns: zu Tick 0 verdeckt ihn
+  // der Katzenkreis, nach 300 Ticks wäre sein Startpunkt sonst nicht mehr zu sehen.
+  spawnCat: '#e04f5f',
   mouse: '#f6ecd9',
   mouseWeak: '#c69ba0',
   cat: '#ff8f6b',
-  facing: '#10131c',
+  facing: BACKGROUND,
 };
 
 /**
  * Feste Tafel NACH `blocks`, nicht nach Quelle: die Ansicht soll zeigen, was ein Koerper TUT.
  * Zwei Quellen mit derselben Maske sind fuer Maus und Katze dasselbe Hindernis.
+ *
+ * Die Masken stehen als BIT-NAMEN, nicht als Zahl: eine Umbelegung in `colliderTypes` bricht damit
+ * den Typecheck und nicht stumm die Farben. Die Zahlen (15/5/14/6/11/10) pinnt der Vitest-Test.
  */
 export const MASK_COLORS: readonly { blocks: number; color: string }[] = [
-  { blocks: 15, color: Colors.wall },     // MOUSE|CAT|SIGHT|CAMERA – Wand, Theke, Vitrine
-  { blocks: 5, color: Colors.leg },       // MOUSE|SIGHT             – Regalbein
-  { blocks: 14, color: Colors.canopy },   // CAT|SIGHT|CAMERA        – Regal-Baldachin
-  { blocks: 6, color: Colors.plant },     // CAT|SIGHT               – Topfpflanze
-  { blocks: 11, color: Colors.window },   // MOUSE|CAT|CAMERA        – Schaufenster (Sicht frei)
-  { blocks: 10, color: Colors.hole },     // CAT|CAMERA              – Mauseloch-Stopfen
+  { blocks: MOUSE | CAT | SIGHT | CAMERA, color: Colors.wall },   // Wand, Theke, Vitrine
+  { blocks: MOUSE | SIGHT, color: Colors.leg },                    // Regalbein
+  { blocks: CAT | SIGHT | CAMERA, color: Colors.canopy },          // Regal-Baldachin
+  { blocks: CAT | SIGHT, color: Colors.plant },                    // Topfpflanze
+  { blocks: MOUSE | CAT | CAMERA, color: Colors.window },          // Schaufenster (Sicht frei)
+  { blocks: CAT | CAMERA, color: Colors.hole },                    // Mauseloch-Stopfen
 ];
 
 export function colorForMask(blocks: number): string {
@@ -214,8 +231,10 @@ export function drawFrame(
       worldToScreen(view, spawn.x, spawn.z, point);
       fillDot(ctx, point.sx, point.sy, MARK_PX, Colors.spawn);
     }
+    worldToScreen(view, level.spawns.cat.x, level.spawns.cat.z, point);
+    fillDot(ctx, point.sx, point.sy, MARK_PX, Colors.spawnCat);
     worldToScreen(view, level.mouseHole.x, level.mouseHole.z, point);
-    fillDot(ctx, point.sx, point.sy, MARK_PX, Colors.hole);
+    fillDot(ctx, point.sx, point.sy, MARK_PX, Colors.holeMark);
   }
 
   if (layers.undershelf) {

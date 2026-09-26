@@ -62,10 +62,31 @@ const NET_LAB_IMPORT = {
 // M4/D5: die Tastatur ist ein reiner Reducer über `InputFrame`. Wer hier ein DOM-Ereignis, einen
 // String oder eine Kamera braucht, baut die Verdrahtung an die falsche Stelle (die steht in
 // `src/render/view2d/main.ts`, ab M5 in `src/modes/`).
+const INPUT_FOREIGN_LAYERS = ['render', 'ui', 'net', 'platform', 'audio', 'modes', 'lab'];
 const INPUT_FOREIGN_IMPORT = {
-  regex: layerImportRegex(['render', 'ui', 'net', 'platform', 'audio', 'modes', 'lab']),
+  regex: layerImportRegex(INPUT_FOREIGN_LAYERS),
   message: 'src/input darf nur src/core importieren.',
 };
+
+/**
+ * Dieselbe Schichtgrenze für den DYNAMISCHEN Weg: `no-restricted-imports` sieht nur statische
+ * Importe und `export … from`, ein `await import('../../lab/report')` kam vorher durch. Gefangen
+ * hätte das erst `findLabSignatures` im gebauten Bundle – und auch nur, wenn die gesuchte
+ * Zeichenkette das Tree-Shaking überlebt.
+ *
+ * `/` muss im Selektor als `\u002F` stehen, sonst beendet es das Regex-Literal des esquery-Ausdrucks
+ * (dieselbe Schreibweise wie in NO_BABYLON_NAMESPACE).
+ * @param {string[]} layers
+ * @param {string} message
+ */
+function dynamicImportBan(layers, message) {
+  return {
+    selector: `ImportExpression[source.value=/${layerImportRegex(layers).replaceAll('/', '\\u002F')}/]`,
+    message,
+  };
+}
+const NO_NET_LAB_DYNAMIC = dynamicImportBan(['net', 'lab'], NET_LAB_IMPORT.message);
+const NO_INPUT_FOREIGN_DYNAMIC = dynamicImportBan(INPUT_FOREIGN_LAYERS, INPUT_FOREIGN_IMPORT.message);
 
 const NO_BABYLON_NAMESPACE = {
   selector: 'ImportDeclaration[source.value=/^@babylonjs\\u002F/] > ImportNamespaceSpecifier',
@@ -92,6 +113,16 @@ const NO_FOR_IN = { selector: 'ForInStatement', message: SCHEMA_MSG };
 // bauen alle drei no-restricted-syntax-Listen auf diesen beiden Konstanten auf.
 const SYNTAX_BANS = [NO_BABYLON_NAMESPACE, NO_AUDIO_CONTEXT, NO_AUDIO_CONTEXT_MEMBER];
 const CORE_SYNTAX_BANS = [...SYNTAX_BANS, NO_NEW_DATE, NO_EXPONENT, NO_EXPONENT_ASSIGN, NO_FOR_IN];
+
+/**
+ * Browser-Globals, die eine REINE Schicht nicht anfassen darf. Eine Liste für `src/core`
+ * (Determinismus: keine Uhr, kein Timer, kein Zufall von außen) und für `src/input` (reiner
+ * Reducer über `InputFrame`, D5) – zwei Kopien liefen auseinander, sobald eine erweitert wird.
+ * Die Verdrahtung der Ereignisse steht in `src/render/view2d/main.ts`, ab M5 in `src/modes/`.
+ */
+const DOM_GLOBALS = ['window', 'document', 'navigator', 'performance', 'localStorage',
+  'sessionStorage', 'indexedDB', 'fetch', 'setTimeout', 'setInterval', 'requestAnimationFrame', 'crypto',
+  'self', 'globalThis', 'location', 'history', 'screen'];
 
 export default tseslint.config(
   // `.superpowers/` ist git-ignoriert (Arbeitsdateien der Agenten) – Flat Config überspringt Punkt-Ordner NICHT von selbst.
@@ -121,21 +152,29 @@ export default tseslint.config(
     // passendem Block, sie summiert sie nicht – ohne die Wiederholung fiele das Legacy-Verbot für
     // render/ still weg.
     files: ['src/render/**/*.ts'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, NET_LAB_IMPORT] }] },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, NET_LAB_IMPORT] }],
+      // SYNTAX_BANS steht wieder mit in der Liste: Flat Config ERSETZT die Optionen einer Regel je
+      // passendem Block. Ohne die Wiederholung fiele das Babylon-Namespace-Verbot fuer render/ weg.
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_NET_LAB_DYNAMIC],
+    },
   },
   {
-    // `src/input/**` darf NUR `src/core` sehen – Babylon also auch nicht (anders als render/).
+    // `src/input/**` darf NUR `src/core` sehen – Babylon also auch nicht (anders als render/) – und
+    // kein DOM anfassen: die Tastatur ist ein reiner Reducer, die Verdrahtung steht in render/.
     files: ['src/input/**/*.ts'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, INPUT_FOREIGN_IMPORT] }] },
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, INPUT_FOREIGN_IMPORT] }],
+      'no-restricted-globals': ['error', ...DOM_GLOBALS],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_INPUT_FOREIGN_DYNAMIC],
+    },
   },
   {
     files: ['src/core/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [BABYLON_IMPORT, NON_CORE_IMPORT] }],
       'no-restricted-properties': ['error', ...corePropertyBans],
-      'no-restricted-globals': ['error', 'window', 'document', 'navigator', 'performance', 'localStorage',
-        'sessionStorage', 'indexedDB', 'fetch', 'setTimeout', 'setInterval', 'requestAnimationFrame', 'crypto',
-        'self', 'globalThis', 'location', 'history', 'screen'],
+      'no-restricted-globals': ['error', ...DOM_GLOBALS],
       'no-restricted-syntax': ['error', ...CORE_SYNTAX_BANS],
     },
   },

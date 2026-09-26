@@ -1,5 +1,6 @@
 {
   "_hinweis": "Erster echter Laden (M4). 1 Einheit = 10 cm. Verkaufsraum 80x60 u (follow) + Bau 24x16 u (diorama), geteilt durch die Westwand des Ladens; in ihr sitzt das Mauseloch, in der Nordwand das Schaufenster - beide Waende sind deshalb in zwei Segmente geteilt, damit der Sperrkoerper bzw. die Scheibe in einer LUECKE liegt und keine Wand ueberdeckt. Layout ist ein erster Entwurf, kein Layout-Urteil: bewiesen wird in M4 nur die Widerspruchsfreiheit (validateLevel = 0 Befunde), gespielt wird es ab M6.",
+  "_hinweis_wegpunkte": "Schema der 60 Wegpunkt-IDs: w = Westumlauf, n = Nordwand, e = Ostwand (englisch, weil 'o' wie 0 aussieht), a/b/c = die drei Gassen zwischen den Regalreihen (a nord, b mitte, c ost), m = Thekengang, s = Suedgang, bau = Maeusebau. Die Nummern laufen je Gruppe in Laufrichtung. boxes[3] ist bewusst die EINZIGE Kiste ohne 'blocks' und ohne 'kind': so spielt das echte Level die Loader-Vorgaben (ALL_MASKS, 'crate') mit durch, statt sie nur in der Fixture zu haben.",
   "id": "feinkost",
   "scale": 10,
   "rooms": [

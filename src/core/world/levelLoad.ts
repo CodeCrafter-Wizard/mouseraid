@@ -1,6 +1,6 @@
 import type { Vec2 } from '../math/vec';
 import { ALL_MASKS } from './colliderTypes';
-import { CM_PER_UNIT } from './levelTypes';
+import { CM_PER_UNIT, NO_ROOM, roomAt } from './levelTypes';
 import type {
   BoxKind, CameraMode, LevelBounds, LevelBox, LevelDef, LevelLootSpawn, LevelMouseHole, LevelNav,
   LevelNavPoint, LevelPlant, LevelRoom, LevelShelf, LevelSpawns, LevelWall,
@@ -214,15 +214,11 @@ function loadBoxes(raw: readonly unknown[]): LevelBox[] {
  * mit der T5 (`playerMove`, Ruling R11) zur Laufzeit den Raum eines Punkts bestimmt. Eine
  * geschlossene Prüfung (`<=`) würde einen Spawn genau auf `x1`/`z1` hier annehmen, obwohl er
  * zur Laufzeit in KEINEM Raum läge – ein vom Loader abgesegneter Spawn, der sofort NO_ROOM
- * meldet.
+ * meldet. Die Regel selbst steht EINMAL, in `levelTypes.roomAt`: sie gilt wortgleich auch für
+ * `NavPoint.room` (T2) und die Validator-Regel `ausserhalb` (T3).
  */
 function insideAnyRoom(point: Vec2, rooms: readonly LevelRoom[]): boolean {
-  for (let i = 0; i < rooms.length; i += 1) {
-    const bounds = rooms[i]?.bounds;
-    if (bounds === undefined) continue;
-    if (point.x >= bounds.x0 && point.x < bounds.x1 && point.z >= bounds.z0 && point.z < bounds.z1) return true;
-  }
-  return false;
+  return roomAt(rooms, point.x, point.z) !== NO_ROOM;
 }
 
 /**
@@ -284,8 +280,10 @@ function loadNav(value: unknown, rooms: readonly LevelRoom[]): LevelNav {
     needUniqueId(ids, id, path, 'doppelte Wegpunkt-ID');
     const x = num(point, 'x', path);
     const z = num(point, 'z', path);
-    // Jeder Wegpunkt MUSS in einem Raum liegen – nur deshalb darf `NavPoint.room` (T2) nie -1 sein,
-    // und nur deshalb ist die Erreichbarkeitsregel „ein Wegpunkt DESSELBEN Raums" (T3) formulierbar.
+    // Jeder Wegpunkt MUSS in einem Raum liegen – nur deshalb ist `NavPoint.room` (T2) bei einem
+    // GELADENEN Level nie `NO_ROOM`, und nur deshalb ist die Erreichbarkeitsregel „ein Wegpunkt
+    // DESSELBEN Raums" (T3) formulierbar. Für ein von HAND gebautes `LevelDef` gilt das nicht –
+    // genau dafür gibt es die Validator-Regel `ausserhalb` auch für Wegpunkte.
     if (!insideAnyRoom({ x, z }, rooms)) throw new LevelError(path, 'liegt in keinem Raum');
     ids.push(id);
     points.push({ id, x, z });

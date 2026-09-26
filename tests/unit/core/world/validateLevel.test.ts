@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { loadBalance } from '../../../../src/core/data/balanceLoad';
 import type { Balance } from '../../../../src/core/data/balanceTypes';
-import { CAT, MOUSE } from '../../../../src/core/world/colliderTypes';
+import { ALL_MASKS, CAT, MOUSE } from '../../../../src/core/world/colliderTypes';
 import type { Collider } from '../../../../src/core/world/colliderTypes';
 import { sweepCircle } from '../../../../src/core/world/collision';
 import { loadLevel } from '../../../../src/core/world/levelLoad';
@@ -14,6 +14,7 @@ import feinkostJson from '../../../../src/data/levels/feinkost.json';
 import realBalanceJson from '../../../../src/data/balance.json';
 import miniLevelJson from '../../../fixtures/core/mini-level.json';
 import testBalanceJson from '../../../fixtures/core/test-balance.json';
+import { collider } from '../testWorld';
 
 const testBalance = loadBalance(testBalanceJson);
 const realBalance = loadBalance(realBalanceJson);
@@ -68,12 +69,12 @@ function pathsOf(findings: readonly LevelFinding[]): string[] {
 
 /** Achsenparalleler Kollider für die reinen `obbOverlap`-Fälle. */
 function aabb(id: number, cx: number, cz: number, hx: number, hz: number): Collider {
-  return { id, cx, cz, hx, hz, y0: 0, y1: 10, rot: 0, rc: 1, rs: 0, blocks: 15, occluderGroup: id + 1 };
+  return collider(id, cx, cz, { hx, hz, y1: 10, blocks: ALL_MASKS });
 }
 
-/** Gedrehter Kollider; `rc`/`rs` werden wie in `generateColliders` einmal vorgerechnet. */
+/** Gedrehter Kollider; `rc`/`rs` rechnet die gemeinsame Fabrik wie `generateColliders` vor. */
 function turned(id: number, cx: number, cz: number, hx: number, hz: number, rot: number): Collider {
-  return { id, cx, cz, hx, hz, y0: 0, y1: 10, rot, rc: Math.cos(rot), rs: Math.sin(rot), blocks: 15, occluderGroup: id + 1 };
+  return collider(id, cx, cz, { hx, hz, y1: 10, rot, blocks: ALL_MASKS });
 }
 
 describe('validateLevel – die Bühne der roten Fälle ist selbst sauber', () => {
@@ -221,10 +222,55 @@ describe('validateLevel – jede Regel einmal gezielt rot', () => {
 
   it('ueberdeckung: eine Kiste IN der Westwand – die Ausnahme gilt nur fuer Wand gegen Wand', () => {
     const findings = findingsFor({
-      boxes: [{ cx: -19, cz: 0, hx: 2, hz: 2, rot: 0, y0Cm: 0, y1Cm: 100, blocks: 15, kind: 'crate' }],
+      boxes: [{ cx: -19, cz: 0, hx: 2, hz: 2, rot: 0, y0Cm: 0, y1Cm: 100, blocks: ALL_MASKS, kind: 'crate' }],
     });
     expect(codesOf(findings)).toEqual(['ueberdeckung']);
     expect(pathsOf(findings)).toEqual(['walls[3]~boxes[0]']);
+  });
+
+  it('ueberdeckung: die Wand-Ausnahme und der Pfad haengen an der `id`, nicht an der Array-Stelle', () => {
+    // Ein Regal auf (19, 10) legt seinen Baldachin IN die Ostwand (id 1). Aus der Kolliderliste wird
+    // zusaetzlich die Suedwand (id 0) entfernt: die Ostwand steht dann auf Array-Stelle 0, der
+    // Baldachin auf 7 – der Pfad nennt trotzdem `walls[1]`, weil `sourcePath` die id liest.
+    const level: LevelDef = { ...baseLevel(), shelves: [{ cx: 19, cz: 10, hx: 4, hz: 2, rot: 0, gapCm: 12, topCm: 180, legHalfCm: 3 }] };
+    const runtime = buildLevelRuntime(level, testBalance);
+    const ohneSuedwand: LevelRuntime = {
+      ...runtime,
+      colliders: runtime.colliders.filter((entry) => entry.id !== 0),
+    };
+    const findings = validateLevel(ohneSuedwand, testBalance);
+    expect(codesOf(findings)).toEqual(['ueberdeckung']);
+    expect(pathsOf(findings)).toEqual(['walls[1]~shelves[0]']);
+
+    // Und die AUSNAHME selbst haengt ebenso an der id: dieselbe Liste mit den vier Waenden am ENDE
+    // (Array-Stellen 8–11, alle jenseits von `level.walls.length`) meldet weiterhin GENAU EINEN
+    // Befund. Schriebe die Regel `i < wallCount && j < wallCount` – also die Laufindizes –, kaemen
+    // die vier Raumecken dazu (GEMESSEN: 5 statt 1 Befund). Nur die REIHENFOLGE im Pfad dreht sich
+    // mit der Liste, die Namen darin kommen weiter aus den IDs.
+    const wallCount = level.walls.length;
+    const verdreht: LevelRuntime = {
+      ...runtime,
+      colliders: [
+        ...runtime.colliders.filter((entry) => entry.id >= wallCount),
+        ...runtime.colliders.filter((entry) => entry.id < wallCount),
+      ],
+    };
+    expect(pathsOf(validateLevel(verdreht, testBalance))).toEqual(['shelves[0]~walls[1]']);
+  });
+
+  it('ueberdeckung: eine HOHE Kiste ueber dem Baldachin betrifft niemanden', () => {
+    // Abweichung 10 sagt „wirksam = Maskenbit UND Hoehenband-Ueberlappung". Diese Kiste sitzt bei
+    // y 5…8 Einheiten, der Baldachin bei 1,2…18 – sie ueberlappen sich also in der Hoehe. Aber die
+    // Katze reicht nur bis 2,5 und die Maus bis 0,8: fuer BEIDE Bewegten-Arten ist die Kiste
+    // unwirksam, und damit gibt es kein Paar. Ohne `overlapsY` in `affects` meldet derselbe Fall
+    // `ueberdeckung` (gemessen) – das ist die Mutation, die dieser Fall toetet.
+    const findings = findingsFor({
+      boxes: [
+        { cx: -10, cz: 10, hx: 2, hz: 2, rot: 0, y0Cm: 0, y1Cm: 100, blocks: ALL_MASKS, kind: 'crate' },
+        { cx: 10, cz: 10, hx: 1, hz: 1, rot: 0, y0Cm: 50, y1Cm: 80, blocks: ALL_MASKS, kind: 'crate' },
+      ],
+    });
+    expect(findings).toEqual([]);
   });
 });
 

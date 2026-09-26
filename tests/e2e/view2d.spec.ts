@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import feinkost from '../../src/data/levels/feinkost.json' with { type: 'json' };
-import { Colors } from '../../src/render/view2d/draw';
+import { Colors, UNDER_SHELF_ALPHA } from '../../src/render/view2d/draw';
 import type { MbHook } from '../../src/render/view2d/hook';
 import golden from '../fixtures/core/golden.json' with { type: 'json' };
 import miniLevel from '../fixtures/core/mini-level.json' with { type: 'json' };
@@ -32,6 +32,18 @@ function channelDelta(a: string, b: string): number {
   return Math.max(Math.abs(ar - br), Math.abs(ag - bg), Math.abs(ab - bb));
 }
 
+/**
+ * `source-over` mit `globalAlpha`: `alpha * Quelle + (1 - alpha) * Ziel`, je Kanal gerundet. Damit
+ * steht die erwartete Mischfarbe der Unter-Regal-Zone HERGELEITET im Spec – aus `Colors` und
+ * `UNDER_SHELF_ALPHA` – statt als Hex-Literal, das mit der Farbtafel auseinanderliefe.
+ */
+function blend(source: string, target: string, alpha: number): string {
+  const src = rgb(source);
+  const dst = rgb(target);
+  const mixed = src.map((channel, i) => Math.round(alpha * channel + (1 - alpha) * (dst[i] ?? 0)));
+  return `#${mixed.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
 // Die Probenorte kommen aus feinkost.json, nicht aus abgeschriebenen Zahlen: so fällt eine
 // Layout-Änderung hier auf, statt still eine Kante statt einer Fläche zu treffen.
 const counter = feinkost.boxes.find((box) => box.kind === 'counter');
@@ -42,6 +54,16 @@ if (counter === undefined || plant === undefined || shelf === undefined) {
   throw new Error('feinkost.json: Theke, Pflanze oder Regal fehlt – die Farbproben haben keinen Ort');
 }
 if (goldenCase === undefined) throw new Error('golden.json: Fall mini-neutral-300 fehlt');
+
+/**
+ * Die Regalprobe sitzt NICHT in der Regalmitte: dort liegt in `feinkost` immer ein Beuteplatz
+ * (`loot-regal-mitte`), und die Marken werden VOR der Zone gezeichnet – gemessen liest die Probe
+ * dann `Zone über Beuteplatz` statt `Zone über Baldachin`. Genommen wird deshalb die Mitte der
+ * östlichen Baldachinhälfte: markenfrei (nachgemessen: kein Beuteplatz, kein Wegpunkt, kein Spawn
+ * innerhalb von 2 Einheiten) und weiterhin FLÄCHENMITTE im Sinne von R3 – bei Skala 9 sind es
+ * 18 px zur nächsten Baldachinkante.
+ */
+const shelfProbeX = shelf.cx + shelf.hx / 2;
 
 /**
  * Anteil der Nicht-Hintergrund-Pixel und ein FNV-1a über die RGB-Bytes – beides IN der Seite
@@ -84,6 +106,9 @@ test('2D-Ansicht: Struktur, Farben und Zustandshash gegen den Golden-Fall', asyn
   expect(stats.tick, 'die Uhr steht bei ?clock=manual').toBe(0);
   expect(stats.players, 'aktive Plätze').toBeGreaterThan(0);
   // Schwellen, keine exakten Zahlen: die pinnt Vitest, wo eine Layout-Änderung eine Zeile kostet.
+  // RETTUNGSANWEISUNG, falls eine Zahl darunter fällt: dann ist das LEVEL zu dünn – `feinkost.json`
+  // nachbessern (Wegpunkte in jede Gasse, siehe docs/decisions.md „Layout-Prüfung"). Die Schwelle
+  // wird NIE gesenkt; sie ist die billigste und damit gefährlichste Reparatur eines roten Tors.
   expect(stats.colliders, 'Kollider aus feinkost.json').toBeGreaterThanOrEqual(30);
   expect(stats.navPoints, 'Wegpunkte aus feinkost.json').toBeGreaterThanOrEqual(40);
   expect(stats.navEdges, 'Nav-Kanten aus feinkost.json').toBeGreaterThanOrEqual(60);
@@ -104,26 +129,33 @@ test('2D-Ansicht: Struktur, Farben und Zustandshash gegen den Golden-Fall', asyn
   }, {
     wall: [counter.cx, counter.cz] as [number, number],
     plant: [plant.x, plant.z] as [number, number],
-    shelf: [shelf.cx, shelf.cz] as [number, number],
+    shelf: [shelfProbeX, shelf.cz] as [number, number],
   });
 
   expect(channelDelta(probes.wall, Colors.wall), `Theke ${probes.wall} gegen ${Colors.wall}`).toBeLessThanOrEqual(TOL);
   expect(channelDelta(probes.plant, Colors.plant), `Pflanze ${probes.plant} gegen ${Colors.plant}`).toBeLessThanOrEqual(TOL);
-  // Die Unter-Regal-Zone ist per Konstruktion eine MISCHFARBE (globalAlpha über dem Baldachin).
-  // Dort ist nur zu beweisen, dass überhaupt etwas liegt – und zwar weder Hintergrund noch reiner
-  // Baldachin. Die exakte Tafel pinnt der Vitest-Test mit aufzeichnendem Kontext (T5).
-  expect(channelDelta(probes.shelf, Colors.background), `Regalmitte ${probes.shelf} gegen Hintergrund`).toBeGreaterThan(TOL);
-  expect(channelDelta(probes.shelf, Colors.canopy), `Regalmitte ${probes.shelf} gegen reinen Baldachin`).toBeGreaterThan(TOL);
+  // Die Unter-Regal-Zone ist per Konstruktion eine MISCHFARBE: `globalAlpha` über dem Baldachin.
+  // Verglichen wird nur über ABSTÄNDE (R3), aber gegen DREI Farben – Hintergrund und reiner
+  // Baldachin müssen weit weg sein, die hergeleitete Mischfarbe nah dran. Ohne die dritte Zusicherung
+  // wäre die Probe auch dann grün, wenn die Ebene `undershelf` komplett fehlte.
+  const zoneOverCanopy = blend(Colors.underShelf, Colors.canopy, UNDER_SHELF_ALPHA);
+  expect(channelDelta(probes.shelf, Colors.background), `Baldachin ${probes.shelf} gegen Hintergrund`).toBeGreaterThan(TOL);
+  expect(channelDelta(probes.shelf, Colors.canopy), `Baldachin ${probes.shelf} gegen reinen Baldachin`).toBeGreaterThan(TOL);
+  expect(channelDelta(probes.shelf, zoneOverCanopy), `Baldachin ${probes.shelf} gegen Zone ${zoneOverCanopy}`).toBeLessThanOrEqual(TOL);
 
   // 4. Screenshot für die Augen des Umsetzers – git-ignoriert, KEIN Golden-PNG.
   await page.locator('canvas').screenshot({ path: 'test-results/view2d-feinkost.png' });
 
   // 5. NODE == BROWSER (R2): die beiden EINGEFRORENEN Fixtures werden injiziert, nicht gebündelt.
-  const proof = await page.evaluate(async ([levelJson, balanceJson, ticks]) => {
+  const proof = await page.evaluate(([levelJson, balanceJson, ticks]) => {
     const mb = (window as unknown as { __mb: MbHook }).__mb;
-    mb.cmd['loadFixtures']?.(levelJson, balanceJson);
+    // Ein verlorener oder umbenannter Befehl täte hier STILL nichts, und der Test fiele erst an der
+    // Hash-Zeile – die Meldung schickte den Leser in den Kern, obwohl nur der Haken fehlt.
+    const load = mb.cmd['loadFixtures'];
+    if (typeof load !== 'function') throw new Error('cmd.loadFixtures fehlt – Haken-Vertrag gebrochen');
+    load(levelJson, balanceJson);
     const afterLoad = mb.tick();
-    const reached = mb.advance(ticks as number);
+    const reached = mb.advance(ticks);
     return { afterLoad, reached, read: mb.tick(), hash: mb.hash() };
   }, [miniLevel, testBalance, goldenCase.ticks] as const);
   expect(proof.afterLoad, 'loadFixtures setzt den Zustand zurück').toBe(0);

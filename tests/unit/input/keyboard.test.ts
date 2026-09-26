@@ -186,7 +186,9 @@ describe('keyboard: Interact wird gerastet', () => {
     const kb = createKeyboard();
     kb.onKeyDown('KeyE');
     expect(kb.frame(0, 0).buttons).toBe(BUTTON_INTERACT);
-    kb.onKeyDown('KeyE'); // Wiederholung des Systems: kein keyup dazwischen
+    // Auch die Wiederholung meldet `true`: die Taste gehoert uns, also ruft der Aufrufer
+    // `preventDefault` – sonst scrollte eine gehaltene Space-Taste die Seite (T5-Verdrahtung).
+    expect(kb.onKeyDown('KeyE')).toBe(true); // Wiederholung des Systems: kein keyup dazwischen
     expect(kb.frame(1, 0).buttons).toBe(0);
     kb.onKeyUp('KeyE');
     kb.onKeyDown('KeyE'); // echter zweiter Druck
@@ -249,6 +251,30 @@ describe('keyboard: idle und fremde Tasten', () => {
     expect(kb.frame(0, 0).mz).toBe(0);
   });
 
+  it('`reset()` leert gehaltene Tasten UND die Interact-Marke', () => {
+    // Vertragsergaenzung der Polish-Runde: bei Fokusverlust kommt kein `keyup`. Ohne `reset()`
+    // laeuft eine gehaltene Taste weiter, bis sie erneut gedrueckt UND losgelassen wird.
+    const kb = createKeyboard();
+    kb.onKeyDown('KeyD');
+    kb.onKeyDown('ShiftLeft');
+    kb.onKeyDown('KeyE');
+    expect(kb.idle()).toBe(false);
+    kb.reset();
+    expect(kb.idle()).toBe(true);
+    expect(kb.frame(0, 0)).toEqual({ seq: 0, tick: 0, mx: 0, mz: 0, buttons: 0 });
+    // Und die verworfene Marke kommt auch im naechsten Rahmen nicht zurueck.
+    expect(kb.frame(1, 0).buttons).toBe(0);
+  });
+
+  it('nach `reset()` zaehlt derselbe Tastendruck wieder als NEUER Druck', () => {
+    const kb = createKeyboard();
+    kb.onKeyDown('KeyD');
+    kb.reset();
+    // `held` ist leer: derselbe `keydown` ist kein Autowiederholungs-Ereignis mehr.
+    kb.onKeyDown('KeyD');
+    expect(kb.frame(0, 0).mx).toBe(KEY_AXIS_WALK);
+  });
+
   it('zwei Tastaturen teilen keinen Zustand', () => {
     const a = createKeyboard();
     const b = createKeyboard();
@@ -264,6 +290,10 @@ describe('keyboard: idle und fremde Tasten', () => {
 // Bei voller Auslenkung (127/127 = 1) waere `sprint` ueber den Ring immer wahr; genau deshalb geht
 // die Tastatur mit 112/79 (Entscheidung 11).
 
+// RETTUNGSANWEISUNG, falls einer der Faelle unten rot wird: die Ungleichung bleibt, gesenkt wird
+// `KEY_AXIS_WALK`/`KEY_AXIS_WALK_DIAG` (oder in M6 der Regler `sprintRingMag`). Wer statt dessen die
+// Ungleichung lockert, macht den Test zu einer Behauptung – und genau die Verwechslung „jeder
+// Tastenschritt sprintet" war der Grund fuer Entscheidung 11.
 const BALANCES: [string, Balance][] = [
   ['test-balance.json (eingefroren)', loadBalance(testBalanceJson)],
   ['src/data/balance.json (provisorisch)', loadBalance(realBalanceJson)],

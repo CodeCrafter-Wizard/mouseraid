@@ -59,6 +59,16 @@ export interface Keyboard {
   frame(tick: number, seq: number): InputFrame;
   /** Keine Taste gehalten UND keine Interact-Marke offen. */
   idle(): boolean;
+  /**
+   * Leert ALLE gehaltenen Tasten und die Interact-Marke; danach ist `idle()` wahr.
+   *
+   * GRUND (Vertragsergaenzung der Polish-Runde): bei Fokusverlust schickt der Browser kein `keyup`.
+   * Wer mit gehaltenem W das Fenster wechselt, laesst die Maus sonst weiterlaufen, bis er W erneut
+   * drueckt UND loslaesst. Das Modul bleibt trotzdem ein reiner Reducer – WANN zurueckgesetzt wird,
+   * entscheidet die Verdrahtung (`src/render/view2d/main.ts` bei `blur` und `visibilitychange`,
+   * ab M5 `src/modes/soloSession.ts`).
+   */
+  reset(): void;
 }
 
 export function createKeyboard(): Keyboard {
@@ -107,6 +117,13 @@ export function createKeyboard(): Keyboard {
 
     idle(): boolean {
       return held.size === 0 && !interactLatch;
+    },
+
+    reset(): void {
+      held.clear();
+      // Auch die Marke: ein Druck, der mit dem Fokuswechsel verloren geht, soll nicht beim
+      // Zurueckkommen als Interact-Flanke ankommen.
+      interactLatch = false;
     },
   };
 }
