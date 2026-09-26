@@ -85,6 +85,40 @@ html, body {
   max-width: 100%; height: auto; border-radius: 12px; background: #10131c; image-rendering: pixelated;
 }
 
+/* Spielseite (M5): Vollbild-Leinwand als Hintergrund, die Hülle als Streifen darüber.
+   EIGENE Klasse statt `.shell-stage canvas`: dort steht `height: auto` (die CSS-Größe käme aus dem
+   Seitenverhältnis des Puffers – die DPR-Politik wäre damit nicht mehr unsere) und
+   `image-rendering: pixelated` skaliert ein 3D-Bild hart. Die `.shell-stage`-Regeln oben bleiben
+   deshalb unverändert für `?view=2d`. */
+.game-canvas {
+  position: fixed; inset: 0; display: block; width: 100%; height: 100%;
+  background: #10131c; touch-action: none; outline: none;
+}
+.game-canvas[hidden] { display: none; }
+
+/* `#app` liegt als Streifen ÜBER der Leinwand. `pointer-events: none` gibt Maus und Finger an die
+   Leinwand durch; Chips, Knöpfe und Links holen sich das Ereignis zurück. */
+#app.game-strip {
+  position: relative; height: auto; max-height: 100dvh; gap: 8px; pointer-events: none;
+  padding-bottom: 10px;
+}
+#app.game-strip .chip, #app.game-strip .btn { pointer-events: auto; }
+#app.game-strip .shell-title { font-size: clamp(18px, 3vw, 26px); }
+#app.game-strip[data-collapsed='true'] .shell-sub,
+#app.game-strip[data-collapsed='true'] .shell-note,
+#app.game-strip[data-collapsed='true'] .shell-actions,
+#app.game-strip[data-collapsed='true'] .info-list { display: none; }
+
+/* F3-Overlay: über der Leinwand, nimmt keine Eingabe an. */
+.debug-overlay {
+  position: fixed; top: calc(var(--safe-t) + 12px); right: calc(var(--safe-r) + 12px);
+  margin: 0; padding: 10px 14px; border-radius: 12px; z-index: 900;
+  background: rgba(10, 13, 26, 0.72); color: var(--c-cream);
+  font: 12px/1.5 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  white-space: pre; pointer-events: none;
+}
+.debug-overlay[hidden] { display: none; }
+
 /* Ausnahme von der Touch-Härtung oben: Eingabefelder und kopierbare Texte (Labor-Codes, Reports). */
 .selectable {
   -webkit-user-select: text;

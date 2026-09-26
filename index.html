@@ -13,6 +13,10 @@
     <title>Mäusebau</title>
   </head>
   <body>
+    <!-- Die Spielleinwand steht als GESCHWISTER VOR `#app` und zunächst verborgen: `mountShell` ruft
+         `root.replaceChildren()` und löschte jedes vorher eingehängte Kind. `?view=2d` nimmt sie aus
+         dem Baum, `src/main.ts` schaltet sie für die Graybox sichtbar. -->
+    <canvas id="game-canvas" class="game-canvas" hidden></canvas>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -6,6 +6,11 @@ export interface ShellOptions {
   note: string;
   links: { href: string; label: string }[];
   info?: { label: string; value: string }[];
+  /**
+   * Nur die Spielseite: der Streifen über der Leinwand ist einklappbar. Fehlt das Feld, entsteht
+   * KEIN Knopf und `data-collapsed` bleibt ungesetzt – `lab.html` benutzt dieselbe Hülle.
+   */
+  collapsible?: { collapsed: boolean; collapseLabel: string; expandLabel: string };
 }
 
 export interface ShellHandles {
@@ -32,7 +37,10 @@ export function mountShell(root: HTMLElement, options: ShellOptions): ShellHandl
   const sub = el('p', 'shell-sub', options.subtitle);
   const note = el('p', 'shell-note', options.note);
 
-  const status = el('div', 'shell-row');
+  // Zwei zusätzliche Klassen: `shell-status` bleibt im eingeklappten Streifen sichtbar (Titel,
+  // Offline-Chip und Build-Chip sind Tor-relevant – `offline-smoke.spec.ts`), `shell-actions`
+  // verschwindet mit. Beide hießen vorher nur `shell-row`; die Klasse bleibt für das Layout.
+  const status = el('div', 'shell-row shell-status');
   const offline = el('span', 'chip', S.pwa.offlinePending);
   offline.dataset.testid = 'offline-badge';
   offline.dataset.state = 'pending';
@@ -45,7 +53,7 @@ export function mountShell(root: HTMLElement, options: ShellOptions): ShellHandl
   sw.hidden = true;
   status.append(offline, build, sw);
 
-  const actions = el('div', 'shell-row');
+  const actions = el('div', 'shell-row shell-actions');
   const check = el('button', 'btn secondary', S.pwa.checkUpdate);
   check.type = 'button';
   check.dataset.testid = 'check-update';
@@ -61,6 +69,28 @@ export function mountShell(root: HTMLElement, options: ShellOptions): ShellHandl
   }
 
   root.append(title, sub, note, status, actions);
+
+  // Der Knopf steht IM Status-Streifen und bleibt deshalb auch eingeklappt sichtbar und bedienbar.
+  // Er ist die einzige Stelle, die `data-collapsed` schreibt – `ShellHandles` bekommt bewusst kein
+  // `setCollapsed`: eine Schnittstelle ohne Aufrufer bräche nur die Hüllen-Attrappe in den Tests.
+  const collapsible = options.collapsible;
+  if (collapsible !== undefined) {
+    let collapsed = collapsible.collapsed;
+    const toggle = el('button', 'btn secondary shell-toggle', collapsed ? collapsible.expandLabel : collapsible.collapseLabel);
+    toggle.type = 'button';
+    toggle.dataset.testid = 'shell-toggle';
+    const paint = (): void => {
+      root.dataset.collapsed = collapsed ? 'true' : 'false';
+      toggle.textContent = collapsed ? collapsible.expandLabel : collapsible.collapseLabel;
+      toggle.dataset.collapsed = collapsed ? 'true' : 'false';
+    };
+    toggle.onclick = () => {
+      collapsed = !collapsed;
+      paint();
+    };
+    status.append(toggle);
+    paint();
+  }
 
   if (expectation === 'mismatch') {
     root.append(el('p', 'shell-note', fmt(S.shell.buildMismatch, { expected: expectedBuild(location.search) ?? '' })));
