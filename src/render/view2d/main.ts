@@ -2,9 +2,11 @@
  * Verdrahtung der Entwickler-Ansicht `?view=2d`: laden, bauen, zeichnen, Haken, Tastatur, Schleife,
  * Raum-Ausschnitt.
  *
- * Das ist die Stelle, die M5 durch `src/modes/soloSession` + `src/modes/fixedLoop` ersetzt. Sie
- * ist auch die erste Stelle im Projekt, die JSON-Dateien importiert – der Kern tut das nie (D12),
- * er bekommt sie hier als `unknown` in die Loader gereicht.
+ * Die SCHLEIFE kommt ab M5 aus `src/modes/fixedLoop` – dieselbe, die die Graybox treibt; das eigene
+ * `view2d/loop.ts` ist geloescht. Die Sitzungslogik bleibt dagegen hier: die Ansicht hat ihren
+ * eigenen Haken, ihre eigene Einpass-Regel und ihr `cmd.loadFixtures`, und `soloSession` interpoliert
+ * fuer eine Grundriss-Ansicht ins Leere. Sie ist auch die erste Stelle im Projekt, die JSON-Dateien
+ * importiert – der Kern tut das nie (D12), er bekommt sie hier als `unknown` in die Loader gereicht.
  */
 import balanceJson from '../../data/balance.json';
 import levelJson from '../../data/levels/feinkost.json';
@@ -21,13 +23,13 @@ import type { LevelRuntime } from '../../core/world/levelRuntime';
 import { loadLevel } from '../../core/world/levelLoad';
 import type { LevelDef } from '../../core/world/levelTypes';
 import { createKeyboard } from '../../input/keyboard';
+import { createFixedLoop } from '../../modes/fixedLoop';
 import { VIEW_MARGIN_PX, fitLevel, fitRoom, levelBounds, worldToScreen } from './camera2d';
 import type { ScreenPoint, View2d } from './camera2d';
 import { drawFrame, layerText, parseLayers } from './draw';
 import type { LayerMask } from './draw';
 import { MAX_ADVANCE, installHook } from './hook';
 import type { MbHook, MbStats } from './hook';
-import { createLoop } from './loop';
 
 export const DEFAULT_WIDTH = 960;
 export const DEFAULT_HEIGHT = 720;
@@ -281,17 +283,35 @@ export function mountView2d(stage: HTMLElement, search: URLSearchParams): void {
   // Maus liefe weiter. BEIDE Ereignisse, weil sie verschiedene Faelle treffen – `blur` den
   // Fensterwechsel, `visibilitychange` den Tab-Wechsel und den gesperrten Bildschirm.
   window.addEventListener('blur', () => { keyboard.reset(); });
-  window.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') keyboard.reset();
+
+  const loop = createFixedLoop(
+    {
+      advance: advanceTicks,
+      // Die 2D-Ansicht interpoliert nicht: ein Grundriss mit 30 Hz ist lesbar, und `alpha` waere
+      // hier nur eine zweite Wahrheit neben dem Zustand.
+      render: () => { draw(); },
+      onFrame: () => { /* die Entwickler-Ansicht braucht keine Bildstatistik – das ist M5s Overlay */ },
+    },
+    {
+      now: () => performance.now(),
+      requestFrame: (run) => window.requestAnimationFrame(run),
+      cancelFrame: (handle) => { window.cancelAnimationFrame(handle); },
+    },
+  );
+
+  // An DOCUMENT, nicht an `window`: `visibilitychange` wird am Dokument ausgeloest und steigt nicht
+  // zum Fenster auf – der Hoerer an `window` aus M4 feuerte deshalb NIE (gemessen, M5-Nebenbefund).
+  // Er tut jetzt zweierlei: Tastatur leeren UND die Schleife anhalten. Pausiert laeuft keine Zeit
+  // auf, also rechnet die Ansicht beim Zuruecckommen nichts nach.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      keyboard.reset();
+      loop.pause();
+    } else {
+      loop.resume();
+    }
   });
 
-  const loop = createLoop({
-    advance: advanceTicks,
-    draw,
-    now: () => performance.now(),
-    schedule: (run) => window.requestAnimationFrame(run),
-    cancel: (handle) => { window.cancelAnimationFrame(handle); },
-  });
   // `?clock=manual`: die Schleife wird gebaut, aber NIE gestartet – gerechnet wird nur ueber
   // `__mb.advance`, damit ein Playwright-Lauf ohne Wartezeit deterministisch bleibt.
   if (search.get('clock') !== 'manual') loop.start();

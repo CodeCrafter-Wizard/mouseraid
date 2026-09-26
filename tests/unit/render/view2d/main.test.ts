@@ -35,7 +35,10 @@ interface Fake {
   rects: Rect[];
   canvasWidth: number;
   canvasHeight: number;
+  /** Ereignisarten, die an `window` haengen. */
   events: string[];
+  /** Ereignisarten, die an `document` haengen – `visibilitychange` gehoert dorthin (M5). */
+  docEvents: string[];
   frames: number;
   /** Die Argumente des EINEN `getContext`-Aufrufs – die Flags sind eine Global Constraint. */
   ctxArgs: unknown[];
@@ -48,7 +51,7 @@ interface Fake {
 }
 
 const fake: Fake = {
-  rects: [], canvasWidth: 0, canvasHeight: 0, events: [], frames: 0, ctxArgs: [],
+  rects: [], canvasWidth: 0, canvasHeight: 0, events: [], docEvents: [], frames: 0, ctxArgs: [],
   visibility: 'visible', listeners: [], beforeFill: undefined,
 };
 
@@ -109,6 +112,7 @@ function fakeContext(): unknown {
 function installFakeDom(): void {
   fake.rects = [];
   fake.events = [];
+  fake.docEvents = [];
   fake.frames = 0;
   fake.ctxArgs = [];
   fake.visibility = 'visible';
@@ -127,6 +131,13 @@ function installFakeDom(): void {
       return canvas;
     },
     get visibilityState(): string { return fake.visibility; },
+    // `visibilitychange` wird am DOKUMENT ausgeloest und steigt nicht zum Fenster auf – ein Hoerer
+    // an `window` feuert nie (gemessen, M5-Nebenbefund). Die Attrappe fuehrt deshalb getrennte
+    // Listen, sonst waere beides ununterscheidbar.
+    addEventListener: (type: string, run: (event: unknown) => void) => {
+      fake.docEvents.push(type);
+      fake.listeners.push({ type, run });
+    },
   };
   const win = {
     addEventListener: (type: string, run: (event: unknown) => void) => {
@@ -208,7 +219,29 @@ describe('view2d/main: Aufbau', () => {
   it('startet bei `?clock=manual` KEINE Schleife und haengt trotzdem die Tastatur an', () => {
     mount('clock=manual');
     expect(fake.frames).toBe(0);
-    expect(fake.events).toEqual(['keydown', 'keyup', 'blur', 'visibilitychange']);
+    expect(fake.events).toEqual(['keydown', 'keyup', 'blur']);
+  });
+
+  it('haengt `visibilitychange` an DOCUMENT – an `window` feuerte er nie (M5-Nebenbefund)', () => {
+    // Bis M4 stand der Hoerer an `window`. Er wurde nie gerufen: `visibilitychange` wird am
+    // Dokument ausgeloest und steigt nicht zum Fenster auf – der Tastatur-Reset beim Tab-Wechsel
+    // war damit toter Code, ohne dass ein Test es merkte.
+    mount('clock=manual');
+    expect(fake.events).not.toContain('visibilitychange');
+    expect(fake.docEvents).toEqual(['visibilitychange']);
+  });
+
+  it('haelt die Schleife beim Tab-Wechsel an und plant beim Zurueckkommen wieder ein', () => {
+    // Die Attrappe zaehlt nur die rAF-Anforderungen: pausiert kommt keine dazu, `resume` fordert
+    // wieder eines an. Dass pausiert auch keine Zeit auflaeuft, prueft `fixedLoop.test.ts`.
+    mount('');
+    expect(fake.frames).toBe(1);
+    fake.visibility = 'hidden';
+    fire('visibilitychange');
+    expect(fake.frames).toBe(1);
+    fake.visibility = 'visible';
+    fire('visibilitychange');
+    expect(fake.frames).toBe(2);
   });
 
   it('startet ohne `?clock=manual` genau ein Bild ueber requestAnimationFrame', () => {

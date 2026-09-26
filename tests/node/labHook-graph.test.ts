@@ -11,8 +11,11 @@ import { describe, expect, it } from 'vitest';
 const ROOT = resolve(__dirname, '../..');
 const FORBIDDEN = ['src/platform/buildInfo.ts', 'src/net/environment.ts', 'src/lab/report.ts', 'src/lab/labSession.ts'];
 // `draw.ts` steht mit im Wächter, weil der Tor-Spec die Farbtafel daraus importiert, statt
-// Hexwerte zu verdoppeln. Ein zweiter, fast gleicher Wächter je Datei wäre dieselbe Prüfung dreimal.
-const ENTRIES = ['src/lab/labHook.ts', 'src/render/view2d/hook.ts', 'src/render/view2d/draw.ts'];
+// Hexwerte zu verdoppeln. Ein zweiter, fast gleicher Wächter je Datei wäre dieselbe Prüfung viermal.
+// `src/modes/hook.ts` ist der Haken der SPIELSEITE (M5): `tests/e2e/graybox.spec.ts` importiert
+// `MbHook`/`MbStats` daraus, also gilt für ihn genau dieselbe Schranke.
+const ENTRIES = ['src/lab/labHook.ts', 'src/render/view2d/hook.ts', 'src/render/view2d/draw.ts',
+  'src/modes/hook.ts'];
 
 /**
  * Jede Import-Angabe einer Datei – statisch (`from '…'`, `import '…'`) UND dynamisch
@@ -89,11 +92,18 @@ for (const entry of ENTRIES) {
   });
 }
 
-describe('Besonderheiten der beiden Haken-Graphen', () => {
+describe('Besonderheiten der Haken-Graphen', () => {
   it('src/render/view2d/hook.ts ist IMPORTFREI – der Graph ist die Datei selbst', () => {
     // Schärfer als „erreicht nichts Verbotenes": das Modul darf auch keinen Core-Typ importieren,
     // sonst wächst sein Graph mit jedem späteren Umbau des Kerns mit.
     expect(asRel(walk('src/render/view2d/hook.ts').files)).toEqual(['src/render/view2d/hook.ts']);
+  });
+
+  it('src/modes/hook.ts ist IMPORTFREI – der Graph ist die Datei selbst', () => {
+    // Dieselbe Schärfe für den Haken der Spielseite: `MbStats` besteht nur aus Zahlen und
+    // Zeichenketten, `tier` ist ein NACKTER String statt `QualityTier`. Ein einziger Typ-Import aus
+    // `src/render` zöge über `engine.ts` die Texte und über sie ein Stylesheet in den Graphen.
+    expect(asRel(walk('src/modes/hook.ts').files)).toEqual(['src/modes/hook.ts']);
   });
 
   it('die Gegenprobe greift: über labMain.ts sind ALLE verbotenen Module erreichbar', () => {

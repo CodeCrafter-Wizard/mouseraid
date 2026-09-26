@@ -4,7 +4,9 @@ import { hashState } from '../../../../src/core/sim/hash';
 import { MAX_PLAYERS, createInitialState } from '../../../../src/core/sim/state';
 import type { WorldState } from '../../../../src/core/sim/state';
 import type { RenderView } from '../../../../src/core/sim/views';
-import { makeSlowView } from '../../../../src/core/sim/views';
+import {
+  SNAPSHOT_ACTORS, SNAPSHOT_CAT, SNAPSHOT_STRIDE, createSnapshot, makeSlowView, snapshotFast,
+} from '../../../../src/core/sim/views';
 import { loadLevel } from '../../../../src/core/world/levelLoad';
 import balanceJson from '../../../fixtures/core/test-balance.json';
 import levelJson from '../../../fixtures/core/mini-level.json';
@@ -98,13 +100,81 @@ describe('makeSlowView', () => {
     expect(at(nachher.players, 0).loudness).toBe(0.9);
   });
 
-  it('RenderView ist in M3 nur ein Typ – gebaut wird er erst von fixedLoop (M5)', () => {
+  it('RenderView traegt ab M5 ZWEI Schnappschuesse – gebaut wird er von soloSession', () => {
     // Kostet nichts und faengt eine spaetere Feldumbenennung schon im Typecheck: ohne diese Zeile
-    // pruefte T4 `RenderView` an keiner Stelle.
+    // pruefte kein Test `RenderView` an irgendeiner Stelle. In M3 standen hier zwei `WorldState`.
     const state = stateFuerAnzeige();
-    const view: RenderView = { prev: state, curr: state, alpha: 0.5, slow: makeSlowView(state) };
+    const view: RenderView = {
+      prev: snapshotFast(state, createSnapshot()),
+      curr: snapshotFast(state, createSnapshot()),
+      alpha: 0.5,
+      slow: makeSlowView(state),
+    };
     expect(view.alpha).toBe(0.5);
-    expect(view.prev).toBe(view.curr);
+    expect(view.prev).not.toBe(view.curr);
+    expect(view.prev.tick).toBe(900);
     expect(view.slow.tick).toBe(900);
+  });
+});
+
+describe('snapshotFast', () => {
+  it('legt Arrays in voller Laenge an und meldet sich als nie beschrieben', () => {
+    const snapshot = createSnapshot();
+    expect(snapshot.tick).toBe(-1);
+    expect(snapshot.values).toHaveLength(SNAPSHOT_ACTORS * SNAPSHOT_STRIDE);
+    expect(snapshot.visible).toHaveLength(SNAPSHOT_ACTORS);
+    expect(SNAPSHOT_ACTORS).toBe(MAX_PLAYERS + 1);
+    expect(SNAPSHOT_CAT).toBe(MAX_PLAYERS);
+  });
+
+  it('schreibt Ort und Blickrichtung jedes Platzes an SEINEN Index', () => {
+    const state = stateFuerAnzeige();
+    at(state.players, 0).pos.x = 1.5;
+    at(state.players, 0).pos.z = -2.5;
+    at(state.players, 0).facing = 0.25;
+    at(state.players, 3).pos.x = -7;
+    at(state.players, 3).pos.z = 8;
+    at(state.players, 3).facing = -1.75;
+    state.cat.pos.x = 11;
+    state.cat.pos.z = 12;
+    state.cat.facing = 3;
+
+    const snapshot = snapshotFast(state, createSnapshot());
+    expect([...snapshot.values.slice(0, SNAPSHOT_STRIDE)]).toEqual([1.5, -2.5, 0.25]);
+    expect([...snapshot.values.slice(3 * SNAPSHOT_STRIDE, 4 * SNAPSHOT_STRIDE)]).toEqual([-7, 8, -1.75]);
+    expect([...snapshot.values.slice(SNAPSHOT_CAT * SNAPSHOT_STRIDE)]).toEqual([11, 12, 3]);
+    expect(snapshot.tick).toBe(900);
+  });
+
+  it('sichtbar ist, wer AKTIV und NICHT gefangen ist; die Katze immer', () => {
+    // `stateFuerAnzeige` hat Platz 2 gefangen und Platz 3 inaktiv – beide Gruende fuehren zum
+    // selben Bild (Mesh aus), und genau deshalb tragen sie dieselbe Zahl.
+    const snapshot = snapshotFast(stateFuerAnzeige(), createSnapshot());
+    expect([...snapshot.visible]).toEqual([1, 1, 0, 0, 1]);
+  });
+
+  it('gibt `out` zurueck und allokiert bei wiederholtem Aufruf NICHTS', () => {
+    // Das ist der ganze Sinn der Typed Arrays: `soloSession` tauscht zwei Schnappschuesse je Tick,
+    // und ab dem zweiten Aufruf entsteht kein Objekt mehr.
+    const state = stateFuerAnzeige();
+    const snapshot = createSnapshot();
+    const values = snapshot.values;
+    const visible = snapshot.visible;
+    expect(snapshotFast(state, snapshot)).toBe(snapshot);
+    state.tick = 901;
+    at(state.players, 0).pos.x = 42;
+    const again = snapshotFast(state, snapshot);
+    expect(again).toBe(snapshot);
+    expect(again.values).toBe(values);
+    expect(again.visible).toBe(visible);
+    expect(again.values[0]).toBe(42);
+    expect(again.tick).toBe(901);
+  });
+
+  it('ist rein: der Zustand bleibt unveraendert', () => {
+    const state = stateFuerAnzeige();
+    const vorher = hashState(state);
+    snapshotFast(state, createSnapshot());
+    expect(hashState(state)).toBe(vorher);
   });
 });
