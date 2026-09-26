@@ -6,10 +6,12 @@ export const S = {
   shell: {
     subtitleGame: 'Ein Mäuse-Abenteuer im Feinkostladen',
     subtitleLab: 'Verbindungs-Testlabor',
-    stageNoteGame: 'Meilenstein M0 – das Gerüst steht. Das Spiel entsteht in den nächsten Meilensteinen.',
+    stageNoteGame: 'Meilenstein M5 – die Graubox steht: Level, Figuren und Kamera in 3D. Spielgefühl, Ton und Handy-Steuerung kommen in den nächsten Meilensteinen.',
     linkLab: 'Verbindungs-Testlabor',
     linkGame: 'Zurück zum Spiel',
     build: 'Build',
+    stripCollapse: 'Leiste einklappen',
+    stripExpand: 'Leiste ausklappen',
     buildMismatch: 'Erwartet wurde Build {expected} – bitte Seite neu laden bzw. „Nach Update suchen“ tippen. (Ungespeicherte Änderungen hängen „-dirty“ an die Build-ID.)',
   },
   pwa: {
@@ -33,6 +35,29 @@ export const S = {
   // weil der Nutzer sie im Fehler-Panel liest (Q3).
   render: {
     webgl2Missing: 'Dieses Gerät stellt kein WebGL2 bereit – die 3D-Ansicht kann nicht starten. Bitte einen aktuellen Browser benutzen.',
+  },
+  // Entwickler-Overlay (F3). Die BEZEICHNER stehen hier (Q3 – ein Bildschirm-Overlay ist sichtbarer
+  // Text und steht nicht in der Ausnahmeliste von CLAUDE.md); die ZAHLENFORMATE bleiben im Modul
+  // `src/render/debugOverlay.ts`. Die Einheiten stehen im Bezeichner, damit im Modul kein Wort steht.
+  debug: {
+    title: 'Diagnose (F3)',
+    tick: 'Tick',
+    fps: 'Bilder/s',
+    panelHz: 'Panel Hz',
+    frameMs: 'Bild ms',
+    cpuP95: 'CPU p95 ms',
+    gpuMs: 'GPU ms',
+    drawCalls: 'Zeichenaufrufe',
+    triangles: 'Dreiecke',
+    tickRate: 'Ticks/s',
+    steps: 'Schritte',
+    tier: 'Stufe',
+    storage: 'Speicher',
+    build: 'Build',
+    none: '–',
+    tierLow: 'niedrig',
+    tierMedium: 'mittel',
+    tierHigh: 'hoch',
   },
   errors: {
     title: 'Es ist ein Fehler aufgetreten',
