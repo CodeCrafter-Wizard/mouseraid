@@ -66,7 +66,12 @@ function fakeHost(): { host: HTMLElement; children: FakeElement[] } {
 beforeEach(installFakeDom);
 afterEach(removeFakeDom);
 
-/** Gemessene Werte des Prototyps als Grundlage; jeder Fall dreht nur, was er prueft. */
+/**
+ * FREI GEWAEHLTE Formatier-Eingabe, keine Messung: geprueft wird die Textausgabe ('1056'), nicht die
+ * Zahl. Die echten Bereiche stehen in `docs/decisions.md` („Budgets nach M5": 1162–1976 Dreiecke bei
+ * 844 x 390, 1090–1904 bei 1920 x 1080) – 1056 liegt in keinem von beiden, und der Kommentar hier
+ * behauptete vorher, es sei gemessen (Abschlussreview MIN-6). Jeder Fall dreht nur, was er prueft.
+ */
 function stats(overrides: Partial<MbStats> = {}): MbStats {
   return {
     tick: 90,
@@ -123,8 +128,13 @@ describe('percentile95', () => {
     expect(percentile95([...ascending].reverse())).toBe(114);
   });
 
-  it('liefert bei 20 Werten den 19. – die Tabelle haengt an ceil, nicht an round', () => {
+  it('liefert bei 20 Werten den 19. – die Tabelle haengt an ceil, nicht an round oder floor', () => {
     expect(percentile95(Array.from({ length: 20 }, (_, index) => index + 1))).toBe(19);
+    // Task-5-Review, Minor 1: bei 20 Werten ist `0.95 * 20 = 19` GANZZAHLIG – `ceil` und `round`
+    // liefern dasselbe, der Fall pinnte seinen eigenen Titel also nicht. n = 11 trennt sie:
+    // `ceil(10.45) = 11` -> Rang 10 (der groesste Wert), `round(10.45) = 10` ergaebe den 10.
+    // GEMESSEN unterscheiden sich `ceil` und `round` bei 180 von 400 Umfaengen (die kleinsten: 11 … 19).
+    expect(percentile95(Array.from({ length: 11 }, (_, index) => index + 1))).toBe(11);
   });
 
   it('sortiert NUR eine Kopie – die Liste des Aufrufers bleibt, wie sie war', () => {
@@ -165,6 +175,19 @@ describe('createPercentiles', () => {
     zero.push(11);
     zero.push(12);
     expect(zero.p95()).toBe(12);
+  });
+
+  // Task-5-Review, Minor 3: `Math.max(1, Math.floor(NaN))` ist NaN, `new Float64Array(NaN).length` ist
+  // 0 – der Ring verschluckte dann JEDEN Wert und meldete fuer immer 0 (gemessen: 200 Werte, p95 = 0).
+  // Genau die stille Null, gegen die Festlegung 3 beim GPU-Zaehler argumentiert. `Infinity` warf schon
+  // vorher, aber mit `Invalid typed array length: Infinity` statt mit einer eigenen Aussage.
+  it('weist ein nicht endliches Fenster LAUT ab – eine stille Dauer-Null waere schlimmer', () => {
+    expect(() => createPercentiles(Number.NaN)).toThrow(RangeError);
+    expect(() => createPercentiles(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    expect(() => createPercentiles(Number.NaN)).toThrow(/endliche Zahl/);
+    // Die Gegenprobe: endliche Fenster kommen weiter durch, auch die geklemmten.
+    expect(createPercentiles(0).p95()).toBe(0);
+    expect(createPercentiles(1.9).p95()).toBe(0);
   });
 
   it('`reset` leert das Fenster', () => {
@@ -273,11 +296,61 @@ describe('createDebugOverlay', () => {
     expect(children[0]?.textContent).toBe(formatOverlay(stats()));
   });
 
+  // Task-5-Review, Minor 2: die zweite Sparmassnahme war NICHT gepinnt – der Mutant „`if (text ===
+  // last) return;` entfernt" lief durch alle Faelle gruen. Ohne Pin kommt der Layout-Lauf je Bild bei
+  // einem spaeteren Aufraeumen still zurueck, denn die Zeile sieht ohne Test wie eine
+  // Mikro-Optimierung aus. Der SENTINEL ist der einzige Weg, „hat NICHT geschrieben" zu sehen.
+  it('gleicher Text -> KEIN zweites Schreiben (ein textContent je Bild wirft einen Layout-Lauf an)', () => {
+    const { host, children } = fakeHost();
+    const overlay = createDebugOverlay(host);
+    overlay.setVisible(true);
+    overlay.update(stats());
+    expect(children[0]?.textContent).toBe(formatOverlay(stats()));
+    // Von aussen ueberschrieben: schriebe `update` erneut, stuende der Text wieder da.
+    if (children[0] !== undefined) children[0].textContent = 'SENTINEL';
+    overlay.update(stats());
+    expect(children[0]?.textContent).toBe('SENTINEL');
+    // Gegenprobe, damit der Fall nicht „schreibt nie" pinnt: bei GEAENDERTEN Zahlen schreibt es.
+    overlay.update(stats({ tick: 91 }));
+    expect(children[0]?.textContent).toBe(formatOverlay(stats({ tick: 91 })));
+  });
+
   it('nimmt das <pre> bei `dispose` wieder aus der Seite', () => {
     const { host, children } = fakeHost();
     const overlay = createDebugOverlay(host);
     overlay.dispose();
     expect(children[0]?.removed).toBe(true);
+  });
+
+  // Abschlussreview (quality MIN-10): `GPU_PROBE_FRAMES` hatte KEINEN Leser – die Konstante benannte
+  // eine Messgrundlage, kein Verhalten, und dieser Fall pinnte nur ihre Ziffer. Der vorgesehene Leser
+  // ist das Aufwaermfenster des GPU-Zaehlers: die ersten Bilder enthalten die Shader-Kompilate, ein
+  // Wert daraus waere Unsinn. Gezaehlt werden BILDER (also `update`-Aufrufe), auch verborgene.
+  it('zeigt gpuMs erst NACH dem Aufwaermfenster – GPU_PROBE_FRAMES Bilder lang den Strich', () => {
+    const { host, children } = fakeHost();
+    const overlay = createDebugOverlay(host);
+    overlay.setVisible(true);
+    for (let frame = 0; frame < GPU_PROBE_FRAMES; frame += 1) overlay.update(stats({ gpuMs: 2 }));
+    expect(rows(children[0]?.textContent ?? '').get(S.debug.gpuMs)).toBe(S.debug.none);
+    // Das Bild NACH dem Fenster zeigt den Wert.
+    overlay.update(stats({ gpuMs: 2 }));
+    expect(rows(children[0]?.textContent ?? '').get(S.debug.gpuMs)).toBe('2.00');
+    // Ein Zaehler, der 0 bleibt, zeigt weiter den Strich – das ist Q2, und daran aendert das
+    // Fenster nichts.
+    overlay.update(stats({ gpuMs: 0 }));
+    expect(rows(children[0]?.textContent ?? '').get(S.debug.gpuMs)).toBe(S.debug.none);
+  });
+
+  it('zaehlt die Aufwaermbilder auch, solange das Overlay verborgen ist', () => {
+    const { host, children } = fakeHost();
+    const overlay = createDebugOverlay(host);
+    for (let frame = 0; frame <= GPU_PROBE_FRAMES; frame += 1) overlay.update(stats({ gpuMs: 2 }));
+    // Verborgen wurde nichts geschrieben …
+    expect(children[0]?.textContent).toBe('');
+    overlay.setVisible(true);
+    overlay.update(stats({ gpuMs: 2 }));
+    // … aber das Fenster ist abgelaufen: F3 im Spiel zeigt sofort den echten Wert.
+    expect(rows(children[0]?.textContent ?? '').get(S.debug.gpuMs)).toBe('2.00');
   });
 
   it('pinnt die Taste und das GPU-Probefenster – `gameMain` verdrahtet beides', () => {

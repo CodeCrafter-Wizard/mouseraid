@@ -241,7 +241,9 @@ describe('cameraBoom: dioramaPose', () => {
     const diag = Math.sqrt(24 * 24 + 16 * 16);
     const distance = DIORAMA_HEIGHT_FACTOR * diag + DIORAMA_HEIGHT_BASE;
     const back = distance / Math.sqrt(1 + DIORAMA_PITCH_TAN * DIORAMA_PITCH_TAN);
-    expect(diag).toBeCloseTo(Math.sqrt(832), 12);
+    // (Die Zeile `expect(diag).toBeCloseTo(Math.sqrt(832))` stand hier und prüfte, dass
+    // `Math.sqrt(24*24 + 16*16)` gleich `Math.sqrt(832)` ist – beide Werte test-lokal, der Fall
+    // konnte nicht rot werden. Abschlussreview MIN-7. Die Diagonale von 24 x 16 IST sqrt(832).)
     expect(pose.mode).toBe('diorama');
     expect(pose.distance).toBeCloseTo(distance, 12);
     expect(pose.targetX).toBe(-52);
@@ -263,16 +265,18 @@ describe('cameraBoom: dioramaPose', () => {
     expect(hoeheAnDerWand).toBeCloseTo(DIORAMA_PITCH_TAN * bauWallPlane, 12);
     expect(hoeheAnDerWand).toBeGreaterThan(bauWallTop + 1);
     // Und das ist die eigentliche Aussage: mit Tangens 1 (45 Grad) laege die Sichtlinie an der
-    // Wandebene UNTER der Oberkante – die Kamera saehe nur die Aussenseite der Suedwand.
-    expect(1 * bauWallPlane).toBeLessThan(bauWallTop);
+    // Wandebene bei 8,5 u und damit UNTER der Oberkante 12 u – die Kamera saehe nur die Aussenseite
+    // der Suedwand. Die Zusicherung haengt an der KONSTANTE des Moduls, nicht an zwei test-lokalen
+    // Zahlen (`expect(1 * bauWallPlane).toBeLessThan(bauWallTop)` stand hier und konnte nicht rot
+    // werden – Abschlussreview MIN-7).
     expect(DIORAMA_PITCH_TAN).toBeGreaterThan(bauWallTop / bauWallPlane);
   });
 
-  it('faellt mit Tangens 1 auf die alte 45-Grad-Form zurueck', () => {
-    // Belegt die Gleichung im Modulkommentar: back = height = distance / SQRT2 bei t = 1.
-    const distance = DIORAMA_HEIGHT_FACTOR * Math.sqrt(832) + DIORAMA_HEIGHT_BASE;
-    expect(distance / Math.sqrt(1 + 1 * 1)).toBeCloseTo(distance / Math.SQRT2, 12);
-  });
+  // (Hier stand `faellt mit Tangens 1 auf die alte 45-Grad-Form zurueck`. Der Fall rief `dioramaPose`
+  //  nie auf: `DIORAMA_PITCH_TAN` ist eine Konstante, mit t = 1 ist die Funktion gar nicht aufrufbar,
+  //  und geprueft wurde nur, dass `Math.sqrt(2)` gleich `Math.SQRT2` ist. Die Gleichung selbst –
+  //  `back = height = distance / SQRT2` bei t = 1 – steht im Modulkommentar von `cameraBoom.ts`.
+  //  Abschlussreview MIN-7.)
 
   it('steht im Sueden und schaut nach Norden – yaw = -PI/2', () => {
     const pose = dioramaPose(bau, createBoomPose());

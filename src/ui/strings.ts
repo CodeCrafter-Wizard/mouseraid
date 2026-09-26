@@ -6,7 +6,7 @@ export const S = {
   shell: {
     subtitleGame: 'Ein Mäuse-Abenteuer im Feinkostladen',
     subtitleLab: 'Verbindungs-Testlabor',
-    stageNoteGame: 'Meilenstein M5 – die Graubox steht: Level, Figuren und Kamera in 3D. Spielgefühl, Ton und Handy-Steuerung kommen in den nächsten Meilensteinen.',
+    stageNoteGame: 'Meilenstein M5 – die Graybox steht: Level, Figuren und Kamera in 3D. Spielgefühl, Ton und Handy-Steuerung kommen in den nächsten Meilensteinen.',
     linkLab: 'Verbindungs-Testlabor',
     linkGame: 'Zurück zum Spiel',
     build: 'Build',

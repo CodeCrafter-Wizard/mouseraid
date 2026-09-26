@@ -1,7 +1,10 @@
-// Einstellungen des Spiels. In T1 steht hier NUR das Schema: `src/render/quality.ts` leitet
-// `QualityTier` daraus ab, und `src/platform` darf `src/render` nicht kennen – umgekehrt schon.
-// Der Speicher selbst (`normalizeSettings`, `createMemoryStore`, `openSettingsStore` über `idb`)
-// kommt in T5 in dieselbe Datei.
+// Einstellungen des Spiels: das getypte Schema, der reine Normalisierer, die URL-Übersteuerung und
+// der Speicher über `idb` mit Arbeitsspeicher-Rückfall.
+//
+// Das SCHEMA steht hier und nicht in `src/render/quality.ts`, weil `src/platform` die unterste
+// Browser-Schicht ist: sie darf `src/render` nicht kennen (ESLint erzwingt es), umgekehrt schon.
+// `quality.ts` leitet `QualityTier` deshalb aus `Settings['qualityTier']` ab – eine zweite Liste
+// liefe beim ersten neuen Namen auseinander.
 import { openDB } from 'idb';
 
 /** Das getypte Schema des EINEN Datensatzes, den der Speicher hält. */
@@ -14,9 +17,9 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = { qualityTier: 'high', overl
 export const SETTINGS_DB = 'maeusebau';
 export const SETTINGS_STORE = 'settings';
 export const SETTINGS_DB_VERSION = 1;
-/** EIN Datensatz haelt alle Einstellungen: ein Schema-Wechsel bekommt einen neuen Schluessel. */
+/** EIN Datensatz hält alle Einstellungen: ein Schema-Wechsel bekommt einen neuen Schlüssel. */
 export const SETTINGS_KEY = 'v1';
-/** URL-Parameter, die den gespeicherten Wert uebersteuern (nur Entwicklung und Tests). */
+/** URL-Parameter, die den gespeicherten Wert übersteuern (nur Entwicklung und Tests). */
 export const SEARCH_TIER = 'tier';
 export const SEARCH_OVERLAY = 'overlay';
 
@@ -24,14 +27,14 @@ export type SettingsBackend = 'idb' | 'memory';
 
 export interface SettingsStore {
   /**
-   * SYNCHRON: der Speicher liest den einen Datensatz beim Oeffnen, normalisiert ihn und haelt ihn im
-   * Arbeitsspeicher. Die Engine braucht eine Stufe, BEVOR das erste Bild faellt, und ein `await` je
+   * SYNCHRON: der Speicher liest den einen Datensatz beim Öffnen, normalisiert ihn und hält ihn im
+   * Arbeitsspeicher. Die Engine braucht eine Stufe, BEVOR das erste Bild fällt, und ein `await` je
    * Lesevorgang verteilte `void …then()` durch die Renderschleife.
    */
   get<K extends keyof Settings>(key: K): Settings[K];
   /**
    * Das Schreiben ist wirklich asynchron. Es scheitert LEISE (das Versprechen wird auch dann
-   * erfuellt): ein gesperrter Speicher darf das Spiel nicht anhalten. Der Wert im Arbeitsspeicher
+   * erfüllt): ein gesperrter Speicher darf das Spiel nicht anhalten. Der Wert im Arbeitsspeicher
    * steht sofort, also liest `get` ihn ohne `await`.
    */
   set<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void>;
@@ -40,19 +43,20 @@ export interface SettingsStore {
 
 /**
  * Die drei Stufen stehen hier als Literale und nicht als Liste aus `src/render/quality.ts`: diese
- * Schicht darf `src/render` nicht importieren (siehe Kommentar an `Settings`).
+ * Schicht darf `src/render` nicht importieren (siehe Kopfkommentar).
  */
 function isQualityTier(value: unknown): value is Settings['qualityTier'] {
   return value === 'low' || value === 'medium' || value === 'high';
 }
 
+/** `!Array.isArray`: ein Array MIT den Feldern käme sonst als Datensatz durch (Task-5-Review, Minor 4). */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
- * REIN und wirft NIE: aus dem Datensatz der Datenbank – der alles sein kann, auch der einer aelteren
- * Fassung – wird ein gueltiges `Settings`. Jedes Feld wird einzeln geprueft, Fehlendes und
+ * REIN und wirft NIE: aus dem Datensatz der Datenbank – der alles sein kann, auch der einer älteren
+ * Fassung – wird ein gültiges `Settings`. Jedes Feld wird einzeln geprüft, Fehlendes und
  * Unpassendes kommt aus `DEFAULT_SETTINGS`, fremde Felder fallen weg (das Ergebnis wird frisch
  * gebaut). Das Ergebnis ist immer ein NEUES Objekt – niemand bekommt `DEFAULT_SETTINGS` in die Hand.
  */
@@ -67,9 +71,9 @@ export function normalizeSettings(raw: unknown): Settings {
 }
 
 /**
- * REIN: `?tier=low|medium|high` und `?overlay=1|0` uebersteuern den gespeicherten Wert. Ein Wert,
+ * REIN: `?tier=low|medium|high` und `?overlay=1|0` übersteuern den gespeicherten Wert. Ein Wert,
  * der keiner der erlaubten ist, wird VERWORFEN (der gespeicherte gewinnt) – geraten wird nichts.
- * Ohne diesen Weg waere der Stufen-Sweep am Entwicklungsrechner gar nicht ausloesbar (DPR 1,0).
+ * Ohne diesen Weg wäre der Stufen-Sweep am Entwicklungsrechner gar nicht auslösbar (DPR 1,0).
  */
 export function applySearchOverrides(settings: Settings, search: URLSearchParams): Settings {
   const out: Settings = { qualityTier: settings.qualityTier, overlay: settings.overlay };
@@ -82,9 +86,9 @@ export function applySearchOverrides(settings: Settings, search: URLSearchParams
 }
 
 /**
- * Erfuellt dieselbe Schnittstelle wie der `idb`-Speicher und ist zugleich der Rueckfall fuer den
- * privaten Modus, fuer Node (Vitest) und fuer jeden Fehler beim Oeffnen. `initial` wird
- * normalisiert: was aus der Datenbank kommt, ist kein `Settings`, bis es geprueft ist.
+ * Erfüllt dieselbe Schnittstelle wie der `idb`-Speicher und ist zugleich der Rückfall für den
+ * privaten Modus, für Node (Vitest) und für jeden Fehler beim Öffnen. `initial` wird
+ * normalisiert: was aus der Datenbank kommt, ist kein `Settings`, bis es geprüft ist.
  */
 export function createMemoryStore(initial?: Partial<Settings>): SettingsStore {
   const settings = normalizeSettings({ ...DEFAULT_SETTINGS, ...initial });
@@ -99,18 +103,23 @@ export function createMemoryStore(initial?: Partial<Settings>): SettingsStore {
 }
 
 /**
- * Oeffnet die Einstellungen ueber `idb`, liest den EINEN Datensatz, normalisiert ihn und haelt ihn
+ * Öffnet die Einstellungen über `idb`, liest den EINEN Datensatz, normalisiert ihn und hält ihn
  * im Arbeitsspeicher. JEDER Fehler (kein `indexedDB`, verweigerter Zugriff, Fehler beim Lesen)
- * endet im `catch` und liefert `createMemoryStore()` – das Spiel laeuft dann mit den Vorgaben
- * weiter, und `backend()` meldet `'memory'`, damit ein stiller Rueckfall im Overlay auffaellt.
+ * endet im `catch` und liefert `createMemoryStore()` – das Spiel läuft dann mit den Vorgaben
+ * weiter, und `backend()` meldet `'memory'`, damit ein stiller Rückfall im Overlay auffällt.
  *
- * Der `idb`-Mantel ist ABSICHTLICH ungetestet (D10): er ist duenn, und ein Nachbau von IndexedDB
- * waere eine neue Abhaengigkeit. Geprueft sind `normalizeSettings`, `createMemoryStore` und der
- * Rueckfall – die einzigen Stellen mit einer eigenen Entscheidung.
+ * Der `idb`-Mantel ist ABSICHTLICH ungetestet (D10): er ist dünn, und ein Nachbau von IndexedDB
+ * wäre eine neue Abhängigkeit. Geprüft sind `normalizeSettings`, `createMemoryStore` und der
+ * Rückfall – die einzigen Stellen mit einer eigenen Entscheidung.
  */
 export async function openSettingsStore(): Promise<SettingsStore> {
-  if (typeof indexedDB === 'undefined') return createMemoryStore();
   try {
+    // Der `typeof`-Wächter steht IM `try`: `indexedDB` ist ein Accessor auf
+    // `WindowOrWorkerGlobalScope`, und in einem `sandbox`-iframe ohne `allow-same-origin` bzw. bei
+    // gesperrten Website-Daten kann schon der Getter WERFEN. Vor dem `try` verließ diese Ausnahme
+    // die Funktion, und der zugesagte stille Rückfall galt genau dort nicht (Abschlussreview,
+    // determinism Minor 2).
+    if (typeof indexedDB === 'undefined') return createMemoryStore();
     const db = await openDB(SETTINGS_DB, SETTINGS_DB_VERSION, {
       upgrade(open) {
         if (!open.objectStoreNames.contains(SETTINGS_STORE)) open.createObjectStore(SETTINGS_STORE);
@@ -121,8 +130,8 @@ export async function openSettingsStore(): Promise<SettingsStore> {
       get: <K extends keyof Settings>(key: K): Settings[K] => settings[key],
       set: <K extends keyof Settings>(key: K, value: Settings[K]): Promise<void> => {
         settings[key] = value;
-        // Der ganze normalisierte Datensatz geht zurueck – ein Teil-Schreibvorgang liesse eine
-        // aeltere Fassung des anderen Feldes stehen. Fehler werden geschluckt (siehe `set` oben).
+        // Der ganze normalisierte Datensatz geht zurück – ein Teil-Schreibvorgang ließe eine
+        // ältere Fassung des anderen Feldes stehen. Fehler werden geschluckt (siehe `set` oben).
         try {
           return db.put(SETTINGS_STORE, { qualityTier: settings.qualityTier, overlay: settings.overlay }, SETTINGS_KEY)
             .then(() => undefined, () => undefined);

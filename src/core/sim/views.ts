@@ -41,7 +41,11 @@ export interface SlowView { tick: number; phase: Phase; phaseTick: number; dayCo
 
 export interface RenderView { prev: FastSnapshot; curr: FastSnapshot; alpha: number; slow: SlowView }
 
-/** Ein leerer Schnappschuss mit den Arrays in voller Länge. Wird EINMAL je Sitzung gerufen. */
+/**
+ * Ein leerer Schnappschuss mit den Arrays in voller Länge. Wird ZWEIMAL je Sitzung gerufen – für
+ * `prev` und für `curr` (`soloSession.ts`); ab dann werden die beiden nur noch getauscht und
+ * überschrieben, und die Interpolation kostet keine Allokation mehr. Genau das ist der Sinn.
+ */
 export function createSnapshot(): FastSnapshot {
   return {
     tick: -1,

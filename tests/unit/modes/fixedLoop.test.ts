@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { FRAME_CLAMP_MS, MAX_STEPS_PER_FRAME, createFixedLoop } from '../../../src/modes/fixedLoop';
-import type { FixedLoop, FixedLoopClock, FixedLoopHooks, FrameStats } from '../../../src/modes/fixedLoop';
+import type { FixedLoop, FixedLoopHooks, FrameStats } from '../../../src/modes/fixedLoop';
 import { TICK_MS } from '../../../src/core/sim/tick';
+import { fakeFrameClock } from '../../helpers/fakeFrameClock';
 
 /**
- * Uhr, Zeitplan und Zaehler von Hand – kein rAF, keine Wartezeit, keine echte Zeit.
+ * Zaehler von Hand, Uhr und rAF-Planer aus `tests/helpers/fakeFrameClock.ts` (Abschlussreview
+ * MIN-14: die Attrappe stand wörtlich zweimal im Repo).
  * Gerechnet wird immer in VIELFACHEN von TICK_MS: 1000/30 ist keine glatte Dualzahl, und eine
  * Erwartung wie "100 ms sind 3 Ticks" waere um genau ein Bit falsch.
  *
@@ -21,32 +23,28 @@ interface Harness {
   draws: number;
   setNow(value: number): void;
   addNow(delta: number): void;
+  /** Haengt einen Rueckruf IN `render` – `render` und `onFrame` duerfen die Schleife anhalten. */
+  onRender(run: () => void): void;
 }
 
 function harness(divider?: number): Harness {
-  let now = 0;
   const ticks: number[] = [];
   const alphas: number[] = [];
   const stats: FrameStats[] = [];
-  const scheduled: (() => void)[] = [];
-  const cancelled: number[] = [];
-  let nextHandle = 0;
+  const timer = fakeFrameClock();
+  let inRender: (() => void) | undefined = undefined;
   const hooks: FixedLoopHooks = {
     advance: (count) => { ticks.push(count); },
-    render: (alpha) => { alphas.push(alpha); },
+    render: (alpha) => { alphas.push(alpha); inRender?.(); },
     onFrame: (entry) => { stats.push(entry); },
   };
-  const clock: FixedLoopClock = {
-    now: () => now,
-    requestFrame: (run) => { scheduled.push(run); nextHandle += 1; return nextHandle; },
-    cancelFrame: (handle) => { cancelled.push(handle); },
-  };
-  const loop = createFixedLoop(hooks, clock, divider);
+  const loop = createFixedLoop(hooks, timer.clock, divider);
   return {
-    loop, ticks, alphas, stats, scheduled, cancelled,
+    loop, ticks, alphas, stats, scheduled: timer.scheduled, cancelled: timer.cancelled,
     get draws() { return alphas.length; },
-    setNow(value) { now = value; },
-    addNow(delta) { now += delta; },
+    setNow: timer.setNow,
+    addNow: timer.addNow,
+    onRender(run: () => void) { inRender = run; },
   };
 }
 
@@ -313,6 +311,56 @@ describe('fixedLoop: pause/resume', () => {
     expect(stats).toEqual({ deltaMs: 0, steps: 0, dropped: 0, alpha: 0, rendered: false, cpuMs: 0, frameMs: 0 });
     expect(h.draws).toBe(0);
     expect(h.ticks).toEqual([]);
+  });
+
+  // Task-2-Review, Minor 3: der Fall oben laeuft direkt nach `start()`, der Akkumulator ist also
+  // ohnehin 0 – `alpha: 0` war dort eine Folge des Aufbaus, keine Aussage ueber das pausierte Bild.
+  // Ein pausiertes Bild BEHAELT den Mischanteil: derselbe Grund wie bei `resume()`, der angefangene
+  // Tick ist nicht verschenkt. Ohne diesen Fall liesse sich `alpha: alphaNow()` in `pump()` unbemerkt
+  // auf `alpha: 0` aendern.
+  it('ein pausiertes `pump()` BEHAELT den stehengebliebenen Mischanteil', () => {
+    const h = harness();
+    h.loop.start();
+    h.setNow(TICK_MS * 1.5);
+    expect(h.loop.pump().alpha).toBeCloseTo(0.5, 9);
+    h.loop.pause();
+    h.addNow(3600_000);
+    const stats = h.loop.pump();
+    expect(stats.alpha).toBeCloseTo(0.5, 9);
+    expect(stats.steps).toBe(0);
+    expect(stats.rendered).toBe(false);
+  });
+
+  // Task-2-Review, Minor 1: `frame()` prueft `active`/`halted` nur VOR `pump()`. Ein `pause()` aus
+  // `render` oder `onFrame` heraus sagte das laufende Bild ab – und `frame()` bestellte danach ein
+  // NEUES, das den abgesagten Handle ueberschrieb. GEMESSEN lagen nach `resume()` dann ZWEI offene
+  // Rueckrufe in der Warteschlange, und beide planten je einen Nachfolger: die Schleife zeichnete ab
+  // da zweimal je Bildschirmbild. Auf dem M5-Weg unerreichbar (`pause()` kommt nur aus
+  // `visibilitychange`), aber M6 pausiert aus dem Bild heraus.
+  it('`pause()` AUS DEM BILD HERAUS bestellt kein neues Bild – nach `resume()` laeuft EINE Kette', () => {
+    const h = harness();
+    h.loop.start();
+    h.onRender(() => { h.loop.pause(); });
+    // Das geplante Bild ausloesen: es zeichnet, pausiert dabei – und darf nichts nachbestellen.
+    h.scheduled[0]?.();
+    expect(h.draws).toBe(1);
+    expect(h.scheduled).toHaveLength(1);
+    // `resume()` plant genau EIN Bild. Waere oben eines nachbestellt worden, liefen jetzt zwei Ketten.
+    h.onRender(() => undefined);
+    h.loop.resume();
+    expect(h.scheduled).toHaveLength(2);
+    const before = h.scheduled.length;
+    h.scheduled[1]?.();
+    expect(h.scheduled.length - before, 'genau EIN Nachfolger je Bild').toBe(1);
+  });
+
+  it('`stop()` aus dem Bild heraus hinterlaesst kein totes rAF', () => {
+    const h = harness();
+    h.loop.start();
+    h.onRender(() => { h.loop.stop(); });
+    h.scheduled[0]?.();
+    expect(h.loop.running()).toBe(false);
+    expect(h.scheduled).toHaveLength(1);
   });
 
   it('ein schon geplanter Frame tut nach `pause()` nichts mehr', () => {

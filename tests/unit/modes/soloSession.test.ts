@@ -4,19 +4,21 @@ import { NO_ROOM } from '../../../src/core/sim/state';
 import { TICK_MS } from '../../../src/core/sim/tick';
 import type { RenderView } from '../../../src/core/sim/views';
 import { createKeyboard } from '../../../src/input/keyboard';
-import type { FixedLoopClock, FrameStats } from '../../../src/modes/fixedLoop';
+import type { FrameStats } from '../../../src/modes/fixedLoop';
 import { EVENT_BUFFER_MAX } from '../../../src/modes/session';
 import type { SoloSession } from '../../../src/modes/session';
-import { createSoloSession } from '../../../src/modes/soloSession';
+import { DEFAULT_SEED, createSoloSession } from '../../../src/modes/soloSession';
 import type { SoloSessionOptions } from '../../../src/modes/soloSession';
+import { fakeFrameClock } from '../../helpers/fakeFrameClock';
 import balanceFixture from '../../fixtures/core/test-balance.json';
 import golden from '../../fixtures/core/golden.json';
 import levelFixture from '../../fixtures/core/mini-level.json';
 
 /**
- * Kein DOM, keine echte Uhr, kein rAF – die Sitzung bekommt beides injiziert. Geprueft wird gegen
- * die EINGEFRORENEN Fixtures (`mini-level.json`, `test-balance.json`), nie gegen `src/data/**`: deren
- * Zahlen sind bis zum Spass-GATE nach M14 provisorisch.
+ * Kein DOM, keine echte Uhr, kein rAF – die Sitzung bekommt beides injiziert (Uhr und rAF-Planer aus
+ * `tests/helpers/fakeFrameClock.ts`). Geprueft wird gegen die EINGEFRORENEN Fixtures
+ * (`mini-level.json`, `test-balance.json`), nie gegen `src/data/**`: deren Zahlen sind bis zum
+ * Spass-GATE nach M14 provisorisch.
  */
 interface Harness {
   session: SoloSession;
@@ -31,27 +33,19 @@ interface Harness {
 }
 
 function harness(patch: Partial<SoloSessionOptions> = {}): Harness {
-  let now = 0;
-  const scheduled: (() => void)[] = [];
-  const cancelled: number[] = [];
   const alphas: number[] = [];
   const seen: number[] = [];
   const frames: FrameStats[] = [];
-  let nextHandle = 0;
-  const clock: FixedLoopClock = {
-    now: () => now,
-    requestFrame: (run) => { scheduled.push(run); nextHandle += 1; return nextHandle; },
-    cancelFrame: (handle) => { cancelled.push(handle); },
-  };
+  const timer = fakeFrameClock();
   // `render` laeuft immer erst NACH `harness()` (ueber `pump`, `advance` oder einen eingeplanten
   // Frame) – deshalb darf es die Sicht aus diesem Halter lesen.
   const holder: { view?: RenderView } = {};
   const session = createSoloSession({
     levelJson: levelFixture,
     balanceJson: balanceFixture,
-    seed: 1,
+    seed: DEFAULT_SEED,
     keyboard: createKeyboard(),
-    clock,
+    clock: timer.clock,
     manual: true,
     render: (alpha) => {
       alphas.push(alpha);
@@ -61,7 +55,10 @@ function harness(patch: Partial<SoloSessionOptions> = {}): Harness {
     ...patch,
   });
   holder.view = session.view;
-  return { session, scheduled, cancelled, alphas, seen, frames, setNow(value) { now = value; } };
+  return {
+    session, scheduled: timer.scheduled, cancelled: timer.cancelled, alphas, seen, frames,
+    setNow: timer.setNow,
+  };
 }
 
 /** Maus-Spawn aus der Fixture – hergeleitet, nicht abgeschrieben. */
@@ -133,7 +130,12 @@ describe('soloSession: Aufbau', () => {
   });
 
   it('`?seed=` saet den Zustand, und die Saat als ZEICHENKETTE zaehlt gleich', () => {
-    const one = harness({ seed: 1 }).session.hash();
+    // Abschlussreview (contract Minor 2 / quality MIN-12): es gibt jetzt EINE `DEFAULT_SEED`, und sie
+    // ist eine ZAHL. `gameMain` reicht `search.get('seed') ?? DEFAULT_SEED` durch, also je nach URL
+    // eine Zeichenkette ODER diese Zahl – dass beides denselben Zustand ergibt, ist der Vertrag von
+    // `seedRng` (FNV-1a ueber `String(seed)`) und steht hier gepinnt, statt in zwei Kommentaren.
+    expect(DEFAULT_SEED).toBe(1);
+    const one = harness({ seed: DEFAULT_SEED }).session.hash();
     const text = harness({ seed: '1' }).session.hash();
     const other = harness({ seed: 2 }).session.hash();
     expect(text).toBe(one);
@@ -374,6 +376,24 @@ describe('soloSession: Ereignispuffer', () => {
     // 300 neutrale Ticks der Fixture: Phasenwechsel und Tagesbeginn – gemessen sechs Ereignisse.
     expect(buffer.length).toBeGreaterThan(0);
     h.session.advance(1);
+    expect(h.session.events).toBe(buffer);
+    expect(buffer).toHaveLength(0);
+  });
+
+  // Task-2-Review, Minor 2: der Vertrag sagt „wird bei JEDEM `advance()` zuerst geleert" (Planzeile
+  // 611). Das Leeren steckte aber in `advanceTicks`, und `loop.advance(0)` meldet `hooks.advance`
+  // nicht (richtig so: „meldet `advance` nur, wenn es etwas zu rechnen gibt"). GEMESSEN lagen nach
+  // `advance(300)` sechs Ereignisse im Puffer und nach einem zusaetzlichen `advance(0)` immer noch
+  // dieselben sechs – wer `advance(0)` als „Bild ohne Tick" benutzt und den Puffer abholt, bekaeme
+  // sie ein zweites Mal. Genau das tut der Tor-Spec in `waitForGeometry`.
+  it('wird AUCH von `advance(0)` geleert – der Vertrag sagt „bei JEDEM advance"', () => {
+    const h = harness();
+    const buffer = h.session.events;
+    h.session.advance(300);
+    expect(buffer.length).toBeGreaterThan(0);
+    const reached = h.session.advance(0);
+    expect(reached, '`advance(0)` rechnet keinen Tick').toBe(300);
+    expect(h.session.tick()).toBe(300);
     expect(h.session.events).toBe(buffer);
     expect(buffer).toHaveLength(0);
   });

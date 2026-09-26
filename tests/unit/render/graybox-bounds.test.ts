@@ -142,9 +142,20 @@ describe('graybox-bounds: Mesh-Weltbounds gegen die Kollider-Ecken', () => {
     expect(root.meshes.boxes).toHaveLength(buildLevelRuntime(level, fixtureBalance()).colliders.length);
     expect(root.meshes.floors).toHaveLength(level.rooms.length);
     expect(root.actors.players).toHaveLength(MAX_PLAYERS);
-    expect(root.meshCount()).toBe(
-      root.meshes.boxes.length + root.meshes.floors.length + MAX_PLAYERS + 1,
-    );
+    // Abschlussreview MIN-8: `boxes.length + floors.length + MAX_PLAYERS + 1` war Zeichen fuer
+    // Zeichen `sceneRoot.ts:68` – abgeschrieben, nicht bewiesen, und die magische `+ 1` (die Katze)
+    // wanderte unbenannt in den Test. Gerechnet wird gegen die DOKUMENTIERTEN Summanden von
+    // `feinkost` (docs/decisions.md, M5: 39 Kaesten + 2 Boeden + 5 Kapseln = 46). Die 39 sind
+    // ohnehin gepinnt (`levelRuntime.test.ts:213`, `validateLevel.test.ts:360`: 9 Waende +
+    // 4 Regale a 5 + 4 Kisten + 5 Pflanzen + 1 Stopfen).
+    const FEINKOST_BOXES = 39;
+    const FEINKOST_FLOORS = 2;
+    /** Vier Maus-Kapseln und die Katze. */
+    const CAPSULES = MAX_PLAYERS + 1;
+    expect(root.meshes.boxes).toHaveLength(FEINKOST_BOXES);
+    expect(root.meshes.floors).toHaveLength(FEINKOST_FLOORS);
+    expect(root.meshCount()).toBe(FEINKOST_BOXES + FEINKOST_FLOORS + CAPSULES);
+    expect(root.meshCount()).toBe(46);
     // `groupOf` liegt parallel zu den Kästen – der Okkluder-Weg aus T4 hängt daran.
     expect(root.meshes.groupOf).toHaveLength(root.meshes.boxes.length);
   });

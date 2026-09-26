@@ -3,7 +3,9 @@
  *
  * Das ist die Logik, die in M4 in `src/render/view2d/main.ts` zwischen Leinwand und Tastatur
  * eingeklemmt war. Hier steht sie allein, und genau deshalb ist sie in Vitest im Node-Umfeld
- * prüfbar: dieses Modul importiert nichts aus `src/render` und nichts aus `src/platform`.
+ * prüfbar: `src/modes` kennt weder `src/render` noch Babylon, und ESLint erzwingt das – statisch wie
+ * dynamisch (`tests/node/eslint-boundaries.test.ts`). Aus `src/platform` importiert dieses Modul
+ * heute nichts; das ist Absicht, aber keine erzwungene Grenze (die Schicht darf es).
  *
  * Der Kern liest nie eine Datei (D12): `levelJson` und `balanceJson` kommen als `unknown` herein
  * und gehen unverändert in die Loader.
@@ -70,6 +72,27 @@ function needAxis(value: number, name: string): void {
 function needFinite(value: number, name: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new RangeError(`teleport: ${name} erwartet eine endliche Zahl, bekam ${String(value)}`);
+  }
+}
+
+/**
+ * EINE Stelle für die Grenzen von `setInput`. `src/render/gameMain.ts` prüft am Haken noch einmal –
+ * er ist der äußere Rand, `cmd.setInput` nimmt `unknown[]` –, benutzt dafür aber genau diese
+ * Funktion: die beiden Kopien standen Zeile für Zeile in beiden Dateien und liefen beim ersten neuen
+ * Grenzwert auseinander (Abschlussreview MIN-15).
+ */
+export function assertInputRange(mx: number, mz: number, buttons: number): void {
+  needAxis(mx, 'mx');
+  needAxis(mz, 'mz');
+  if (!Number.isInteger(buttons) || buttons < 0 || buttons > 255) {
+    throw new RangeError(`setInput: buttons erwartet eine ganze Zahl in [0, 255], bekam ${String(buttons)}`);
+  }
+}
+
+/** Dasselbe für `advance(n)`: ganze Zahl in [0, MAX_ADVANCE], sonst `RangeError` mit dem Wert. */
+export function assertAdvanceRange(ticks: number): void {
+  if (!Number.isInteger(ticks) || ticks < 0 || ticks > MAX_ADVANCE) {
+    throw new RangeError(`advance erwartet eine ganze Zahl in [0, ${String(MAX_ADVANCE)}], bekam ${String(ticks)}`);
   }
 }
 
@@ -155,9 +178,12 @@ export function createSoloSession(options: SoloSessionOptions): SoloSession {
     hash: () => hashState(world),
 
     advance(ticks: number): number {
-      if (!Number.isInteger(ticks) || ticks < 0 || ticks > MAX_ADVANCE) {
-        throw new RangeError(`advance erwartet eine ganze Zahl in [0, ${MAX_ADVANCE}], bekam ${String(ticks)}`);
-      }
+      assertAdvanceRange(ticks);
+      // HIER und nicht nur in `advanceTicks`: der Vertrag verspricht das Leeren fuer JEDEN
+      // `advance()`, und `loop.advance(0)` meldet `hooks.advance` nicht (richtig – es gibt nichts zu
+      // rechnen). Ohne diese Zeile bekaeme ein Abnehmer nach einem `advance(0)` dieselben Ereignisse
+      // ein zweites Mal (Task-2-Review, Minor 2); genau so wartet der Tor-Spec auf das erste Bild.
+      events.length = 0;
       loop.advance(ticks);
       return world.tick;
     },
@@ -165,11 +191,7 @@ export function createSoloSession(options: SoloSessionOptions): SoloSession {
     setInput(slot: number, mx: number, mz: number, buttons: number): void {
       const held = sticky[slot];
       if (held === undefined) throw new RangeError(`setInput: Platz ${slot} gibt es nicht`);
-      needAxis(mx, 'mx');
-      needAxis(mz, 'mz');
-      if (!Number.isInteger(buttons) || buttons < 0 || buttons > 255) {
-        throw new RangeError(`setInput: buttons erwartet eine ganze Zahl in [0, 255], bekam ${String(buttons)}`);
-      }
+      assertInputRange(mx, mz, buttons);
       held.mx = mx;
       held.mz = mz;
       held.buttons = buttons;

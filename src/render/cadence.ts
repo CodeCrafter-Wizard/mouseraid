@@ -11,7 +11,14 @@ export const PANEL_WARMUP_FRAMES = 10;
 export const PANEL_SAMPLE_FRAMES = 60;
 /** Panel-Rate noch nicht gemessen – auch der Wert bei `?clock=manual`. */
 export const PANEL_HZ_UNKNOWN = 0;
-/** Die optionale Halbierung aus M17 (`fpsLimit`); jeder andere Wert lässt den Teiler in Ruhe. */
+/**
+ * Die optionale Halbierung aus M17 (`fpsLimit`); jeder andere Wert lässt den Teiler in Ruhe.
+ *
+ * RESERVIERT für M17 (Akku-/Budget-Schalter): die Produktion ruft `renderDivider` heute immer mit
+ * EINEM Argument (`gameMain.ts`), der zweite Parameter hat also nur Tests als Abnehmer. Beides bleibt
+ * stehen, weil die Tabelle mit Halbierung schon gepinnt ist und der Schalter genau hier andockt –
+ * eine Kadenz-Entscheidung gehört nicht in zwei Module.
+ */
 export const FPS_LIMIT_HALF = 30;
 
 /**

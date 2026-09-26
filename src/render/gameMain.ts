@@ -2,8 +2,8 @@
  * Verdrahtung der Spielseite: Engine -> Szene -> Sitzung -> Schleife -> Kamera -> Overlay -> Haken.
  *
  * Die EINZIGE Stelle, die alles kennt. `src/modes/**` bleibt Babylon-frei und `src/modes/hook.ts`
- * importfrei – deshalb entsteht das `MbHook`-Objekt hier und nicht in der Sitzung: `stats()` traegt
- * die Babylon-Zaehler, die Panel-Rate, die Qualitaetsstufe und die INJIZIERTE Build-ID.
+ * importfrei – deshalb entsteht das `MbHook`-Objekt hier und nicht in der Sitzung: `stats()` trägt
+ * die Babylon-Zähler, die Panel-Rate, die Qualitätsstufe und die INJIZIERTE Build-ID.
  *
  * Wie `view2d/main.ts` ist das auch die Stelle, die JSON-Dateien importiert – der Kern tut das nie
  * (D12), er bekommt sie hier als `unknown` in die Loader gereicht.
@@ -13,9 +13,9 @@ import levelJson from '../data/levels/feinkost.json';
 import { loadBalance } from '../core/data/balanceLoad';
 import { TICK_RATE } from '../core/sim/tick';
 import { createKeyboard } from '../input/keyboard';
-import { MAX_ADVANCE, installGameHook } from '../modes/hook';
+import { installGameHook } from '../modes/hook';
 import type { MbCommand, MbHook, MbStats } from '../modes/hook';
-import { createSoloSession } from '../modes/soloSession';
+import { DEFAULT_SEED, assertAdvanceRange, assertInputRange, createSoloSession } from '../modes/soloSession';
 import { DEFAULT_SETTINGS, applySearchOverrides, openSettingsStore } from '../platform/storage';
 import type { Settings, SettingsBackend, SettingsStore } from '../platform/storage';
 import { applyActors } from './actors';
@@ -26,9 +26,7 @@ import { createEngine } from './engine';
 import type { QualityTier } from './quality';
 import { buildSceneRoot } from './sceneRoot';
 
-/** Als ZEICHENKETTE: `seedRng` hasht den Saat-TEXT, `seedRng('1')` und `seedRng(1)` sind gleich. */
-export const DEFAULT_SEED = '1';
-/** Kantenlaenge des Rasters von `cmd.grid`, wenn der Aufrufer keine nennt: 16 x 16 = 256 Proben. */
+/** Kantenlänge des Rasters von `cmd.grid`, wenn der Aufrufer keine nennt: 16 x 16 = 256 Proben. */
 export const GRID_STEP = 16;
 /** Fenster, aus dem `stats().fps` seinen Median zieht – `engine.getFps()` log gemessen 60 bei 132/s. */
 const FPS_WINDOW = 30;
@@ -38,7 +36,7 @@ const MAX_GRID_STEP = 256;
 export interface MountGameOptions {
   /** INJIZIERT – `hook.ts` und `debugOverlay.ts` erreichen `platform/buildInfo` nie. */
   buildId: string;
-  /** `installErrorPanel().report` aus `src/main.ts` – am Handy der einzige Rueckkanal. */
+  /** `installErrorPanel().report` aus `src/main.ts` – am Handy der einzige Rückkanal. */
   report?(value: unknown): void;
 }
 
@@ -49,21 +47,27 @@ function asNumber(value: unknown, path: string): number {
   return value;
 }
 
-/** Grenzen des DRAHTFORMATS (wie in M4): ein `setInput(0, NaN, 0, 0)` fiel sonst erst im Hash auf. */
-function needAxis(value: number, name: string): void {
-  if (!Number.isInteger(value) || value < -127 || value > 127) {
-    throw new RangeError(`setInput: ${name} erwartet eine ganze Zahl in [-127, 127], bekam ${String(value)}`);
-  }
+/**
+ * Welcher Overlay-Zustand gilt, wenn der ASYNCHRONE Speicher antwortet?
+ *
+ * Hat der Nutzer bis dahin schon F3 getippt (`touched`), gewinnt SEIN Zustand – sonst der
+ * gespeicherte. Ohne diese Merkzelle nahm der Erfüllungszweig von `openSettingsStore()` die
+ * Umschaltung still zurück (Task-6-Review, Minor 4): das Fenster ist schmal, aber ein Test oder ein
+ * langsamer privater Modus mit Rückfall trifft es. Die Regel steht als REINE Funktion hier, damit
+ * genau sie prüfbar ist – die Verdrahtung darum ist es nicht (sie braucht eine echte Engine).
+ */
+export function effectiveOverlay(stored: boolean, touched: boolean, current: boolean): boolean {
+  return touched ? current : stored;
 }
 
 /**
- * Haengt die Graybox an die Leinwand. `host` ist die Stelle, an die das F3-Overlay kommt
+ * Hängt die Graybox an die Leinwand. `host` ist die Stelle, an die das F3-Overlay kommt
  * (`document.body` – eine Leinwand kann kein Kind tragen).
  *
- * URL-Parameter, nur Entwicklung und Tests: `?clock=manual` (kein rAF, gerechnet wird ueber
+ * URL-Parameter, nur Entwicklung und Tests: `?clock=manual` (kein rAF, gerechnet wird über
  * `__mb.advance`), `?seed=` (Vorgabe '1'), `?tier=low|medium|high` und `?overlay=1` (beide
- * ueberschreiben den gespeicherten Wert – bei DPR 1,0 ist der Stufen-Sweep am Entwicklungsrechner
- * sonst gar nicht auszuloesen). `?autostart=1` ist RESERVIERT und tut nichts: das Gate ist M6.
+ * überschreiben den gespeicherten Wert – bei DPR 1,0 ist der Stufen-Sweep am Entwicklungsrechner
+ * sonst gar nicht auszulösen). `?autostart=1` ist RESERVIERT und tut nichts: das Gate ist M6.
  */
 export function mountGame(
   canvas: HTMLCanvasElement, host: HTMLElement, search: URLSearchParams, options: MountGameOptions,
@@ -80,6 +84,8 @@ export function mountGame(
   const panelMeter = createPanelMeter();
   const cpuP95 = createPercentiles();
   const frameDeltas: number[] = [];
+  /** F3 getippt? Dann darf der nachträglich gelesene Speicher den Zustand nicht zurückdrehen. */
+  let overlayTouched = false;
 
   let steps = 0;
   let frameMs = 0;
@@ -106,6 +112,13 @@ export function mountGame(
     manual,
   });
 
+  // DIESE VIER liest `drawFrame`, und sie entstehen NACH der Sitzung – `buildSceneRoot` braucht
+  // `session.runtime`, die Reihenfolge ist also keine Wahl. Die Sitzung startet die Schleife selbst
+  // (R9), das erste Bild fällt aber nicht vor dem Ende dieser Funktion: `clock.requestFrame` ist
+  // `window.requestAnimationFrame` und ruft NIE synchron zurück, und der einzige synchrone Weg ins
+  // Bild ist `session.loop.advance(0)` in der letzten Zeile. Wer die Uhr in einem Test synchron
+  // planen ließe, bekäme hier einen TDZ-`ReferenceError` – dann gehört der Aufbau umgebaut, nicht
+  // die Uhr.
   const root = buildSceneRoot(gameEngine.scene, session.runtime, balance);
   const rig = createCameraRig(gameEngine.camera, session.runtime, root.meshes);
   const instrumentation = createInstrumentation(gameEngine.engine, gameEngine.scene);
@@ -114,15 +127,15 @@ export function mountGame(
 
   /**
    * Ein Bild. Die Reihenfolge ist Vertrag: Figuren setzen, Kamera setzen, zeichnen – und ERST DANN
-   * die Zaehler lesen, weil Babylon sie je Bild zurueckstellt.
+   * die Zähler lesen, weil Babylon sie je Bild zurückstellt.
    *
    * `alpha` ist der Mischanteil; gelesen wird er von `applyActors` und `rig.update` aus
    * `session.view.alpha`, das die Sitzung unmittelbar vor diesem Aufruf setzt. Die eigene
-   * Zeitmessung liefert `dtMs` (Kamera-Glaettung), `cpuMs` (vor `scene.render()`) und `frameMs`.
+   * Zeitmessung liefert `dtMs` (Kamera-Glättung), `cpuMs` (vor `scene.render()`) und `frameMs`.
    */
   function drawFrame(alpha: number): void {
     // Das Argument ist nur die NAHT: der Mischanteil kommt aus `session.view.alpha`, das die Sitzung
-    // unmittelbar vor diesem Aufruf setzt. Zwei Wahrheiten waeren eine zu viel.
+    // unmittelbar vor diesem Aufruf setzt. Zwei Wahrheiten wären eine zu viel.
     void alpha;
     const started = performance.now();
     const dtMs = lastRenderAt < 0 ? 0 : started - lastRenderAt;
@@ -192,7 +205,7 @@ export function mountGame(
     };
   }
 
-  /** Schreibt `pos`, nullt `vel` und SCHNAPPT die Kamera; den Raum loest der naechste Tick auf (Q7). */
+  /** Schreibt `pos`, nullt `vel` und SCHNAPPT die Kamera; den Raum löst der nächste Tick auf (Q7). */
   function teleport(...args: unknown[]): unknown {
     const slot = asNumber(args[0], 'teleport(slot)');
     const x = asNumber(args[1], 'teleport(x)');
@@ -202,15 +215,15 @@ export function mountGame(
     return { slot, x, z, room: session.roomOf(slot) };
   }
 
-  /** Wird bei der ersten Probe auf die Bildgroesse gebracht und danach wiederverwendet. */
+  /** Wird bei der ersten Probe auf die Bildgröße gebracht und danach wiederverwendet. */
   let pixels = new Uint8Array(0);
 
   /**
    * Pixelprobe: `scene.render()` und `readPixels` in EINEM synchronen Block. GEMESSEN: aus einem
    * eigenen `page.evaluate` liefert `readPixels` rgb(0,0,0) – ohne `preserveDrawingBuffer` ist der
-   * Puffer danach weg. Bei `gl === null` kommt `samples: 0` zurueck, damit das Tor LAUT faellt statt
-   * still gruen zu bleiben. `hash` ist FNV-1a ueber die RGB-Proben und nur Diagnose (er haengt an
-   * Treiber und Fenstergroesse), `center` die Probe in der Bildmitte.
+   * Puffer danach weg. Bei `gl === null` kommt `samples: 0` zurück, damit das Tor LAUT fällt statt
+   * still grün zu bleiben. `hash` ist FNV-1a über die RGB-Proben und nur Diagnose (er hängt an
+   * Treiber und Fenstergröße), `center` die Probe in der Bildmitte.
    */
   function grid(...args: unknown[]): unknown {
     const step = args[0] === undefined ? GRID_STEP : asNumber(args[0], 'grid(step)');
@@ -227,8 +240,8 @@ export function mountGame(
     drawCalls = instrumentation.drawCalls();
     triangles = instrumentation.triangles();
 
-    // `readPixels` zaehlt y von UNTEN; fuer ein symmetrisches Raster und die Bildmitte ist das
-    // gleichgueltig, deshalb wird nicht gespiegelt.
+    // `readPixels` zählt y von UNTEN; für ein symmetrisches Raster und die Bildmitte ist das
+    // gleichgültig, deshalb wird nicht gespiegelt.
     const at = (px: number, py: number): [number, number, number] => {
       const index = (py * width + px) * 4;
       return [pixels[index] ?? 0, pixels[index + 1] ?? 0, pixels[index + 2] ?? 0];
@@ -249,32 +262,30 @@ export function mountGame(
     return { samples: step * step, nonBlack, hash: hash >>> 0, center: at(width >> 1, height >> 1) };
   }
 
+  // Der Haken ist der AEUSSERE Rand (`cmd.setInput` nimmt `unknown[]`), deshalb prüft er noch
+  // einmal – aber aus DERSELBEN Funktion wie die Sitzung. Die beiden Kopien in dieser Datei waren
+  // Zeile für Zeile `soloSession.ts` und liefen beim ersten neuen Grenzwert auseinander
+  // (Abschlussreview MIN-15).
   function setInput(slot: number, mx: number, mz: number, buttons: number): void {
-    needAxis(mx, 'mx');
-    needAxis(mz, 'mz');
-    if (!Number.isInteger(buttons) || buttons < 0 || buttons > 255) {
-      throw new RangeError(`setInput: buttons erwartet eine ganze Zahl in [0, 255], bekam ${String(buttons)}`);
-    }
+    assertInputRange(mx, mz, buttons);
     session.setInput(slot, mx, mz, buttons);
   }
 
   const hook: MbHook = {
     advance(ticks) {
-      if (!Number.isInteger(ticks) || ticks < 0 || ticks > MAX_ADVANCE) {
-        throw new RangeError(`advance erwartet eine ganze Zahl in [0, ${String(MAX_ADVANCE)}], bekam ${String(ticks)}`);
-      }
+      assertAdvanceRange(ticks);
       // GENAU EIN Bild mit alpha = 1: `session.advance` reicht an `loop.advance(ticks)` weiter, und
-      // das rechnet die Ticks UND zeichnet dieses eine Bild (R18). Ein zusaetzliches
-      // `session.loop.advance(0)` waere ein ZWEITES Bild je Aufruf – der Vertrag sagt eins.
+      // das rechnet die Ticks UND zeichnet dieses eine Bild (R18). Ein zusätzliches
+      // `session.loop.advance(0)` wäre ein ZWEITES Bild je Aufruf – der Vertrag sagt eins.
       return session.advance(ticks);
     },
     tick: () => session.tick(),
     hash: () => session.hash(),
     stats,
     setInput,
-    // DASSELBE Funktionsobjekt in `cmd` – der Tor-Spec darf `mb.cmd.setInput === mb.setInput` pruefen.
+    // DASSELBE Funktionsobjekt in `cmd` – der Tor-Spec darf `mb.cmd.setInput === mb.setInput` prüfen.
     // Der Cast ist unvermeidbar: `MbCommand` nimmt `unknown[]`, und `unknown` ist nicht zu `number`
-    // zuweisbar; die Argumentpruefung steht deshalb IM Koerper von `setInput`.
+    // zuweisbar; die Argumentprüfung steht deshalb IM Körper von `setInput`.
     cmd: { pose, camera, teleport, setInput: setInput as unknown as MbCommand, grid },
   };
   installGameHook(hook);
@@ -283,7 +294,11 @@ export function mountGame(
     if (event.code === OVERLAY_TOGGLE_CODE) {
       event.preventDefault();
       const visible = overlay.toggle();
+      overlayTouched = true;
       if (visible) overlay.update(stats());
+      // Vor dem Öffnen des Speichers ist `store` noch `undefined` – der Schreibvorgang fällt dann
+      // weg, und `overlayTouched` ist der Grund, warum der Zustand trotzdem nicht zurückgedreht
+      // wird. Der Erfüllungszweig unten holt das Schreiben nach.
       void store?.set('overlay', visible);
       return;
     }
@@ -292,10 +307,10 @@ export function mountGame(
   window.addEventListener('keyup', (event) => {
     if (session.keyUp(event.code)) event.preventDefault();
   });
-  // Ohne Fokus kommt kein `keyup` mehr an: eine gehaltene Taste bliebe fuer immer gehalten.
+  // Ohne Fokus kommt kein `keyup` mehr an: eine gehaltene Taste bliebe für immer gehalten.
   window.addEventListener('blur', () => { session.resetInput(); });
-  // `visibilitychange` feuert an DOCUMENT, nicht an `window` (gemessen: der Hoerer an `window` in
-  // `view2d/main.ts` feuerte nie). Im Hintergrund laeuft KEINE Zeit auf – `resume` setzt die Uhr neu.
+  // `visibilitychange` feuert an DOCUMENT, nicht an `window` (gemessen: der Hörer an `window` in
+  // `view2d/main.ts` feuerte nie). Im Hintergrund läuft KEINE Zeit auf – `resume` setzt die Uhr neu.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
       session.resetInput();
@@ -313,7 +328,7 @@ export function mountGame(
   void openSettingsStore().then((opened) => {
     store = opened;
     storage = opened.backend();
-    // Der gespeicherte Wert kommt NACHTRAEGLICH – die URL uebersteuert ihn weiterhin, also laeuft er
+    // Der gespeicherte Wert kommt NACHTRAEGLICH – die URL übersteuert ihn weiterhin, also läuft er
     // durch DIESELBE Funktion (R12).
     const effective = applySearchOverrides(
       { qualityTier: opened.get('qualityTier'), overlay: opened.get('overlay') }, search,
@@ -322,17 +337,25 @@ export function mountGame(
       tier = effective.qualityTier;
       gameEngine.applyTier(tier, window.devicePixelRatio);
     }
-    overlay.setVisible(effective.overlay);
+    // Hat der Nutzer in der Zwischenzeit F3 getippt, gewinnt SEIN Zustand – und die verlorene
+    // Schreiboperation wird nachgeholt, damit der nächste Seitenaufruf sie sieht.
+    const wantOverlay = effectiveOverlay(effective.overlay, overlayTouched, overlay.visible());
+    overlay.setVisible(wantOverlay);
+    if (overlayTouched) void opened.set('overlay', wantOverlay);
   }, (error: unknown) => { options.report?.(error); });
 
-  // Das erste Bild faellt sofort – auch bei `?clock=manual`: ohne es waere die Leinwand schwarz und
-  // `cmd.grid` haette nichts zu lesen.
+  // Das erste Bild fällt sofort – auch bei `?clock=manual`: ohne es wäre die Leinwand schwarz und
+  // `cmd.grid` hätte nichts zu lesen.
   //
   // ACHTUNG, GEMESSEN: dieses erste Bild zeichnet noch KEIN Mesh. Babylon holt die Shader
   // (`default.vertex`/`default.fragment`) per `import()` nachgeladen – bis sie da sind, ist kein
   // `StandardMaterial` bereit, `drawCallsCounter.current` bleibt 0 und die Leinwand zeigt nur
-  // `CLEAR_COLOR`. Bei laufender Schleife faellt das nicht auf (das naechste rAF-Bild zeichnet);
+  // `CLEAR_COLOR`. Bei laufender Schleife fällt das nicht auf (das nächste rAF-Bild zeichnet);
   // bei `?clock=manual` treibt der Tor-Spec die Bilder selbst, bis `stats().drawCalls > 0` ist.
+  //
+  // KEIN `session.loop.start()` danach: `createSoloSession` startet die Schleife selbst, sobald
+  // `manual` nicht gesetzt ist (R9, `soloSession.ts`). Der Aufruf hier war ein Leerzug – er traf
+  // immer auf `active === true` und kehrte sofort zurück – und ließ die Stelle so lesen, als läge
+  // der Start bei `gameMain` (Abschlussreview, contract Minor 3).
   session.loop.advance(0);
-  if (!manual) session.loop.start();
 }

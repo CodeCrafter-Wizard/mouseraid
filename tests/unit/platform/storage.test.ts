@@ -63,6 +63,12 @@ describe('normalizeSettings', () => {
   it('nimmt ein Array nicht als Datensatz und liefert die Vorgaben', () => {
     expect(normalizeSettings([])).toEqual(DEFAULT_SETTINGS);
     expect(normalizeSettings(['low'])).toEqual(DEFAULT_SETTINGS);
+    // Task-5-Review, Minor 4: die beiden Zeilen oben belegen den `Array.isArray`-Riegel NICHT – ohne
+    // ihn faenden `raw['qualityTier']`/`raw['overlay']` dort nur `undefined`, das Ergebnis waere
+    // dasselbe, nur aus dem falschen Grund. Nur ein Array, das die FELDER wirklich traegt, trennt die
+    // beiden Fassungen – und genau so etwas kann aus einer aelteren Schema-Fassung kommen.
+    expect(normalizeSettings(Object.assign(['x'], { qualityTier: 'low', overlay: true })))
+      .toEqual(DEFAULT_SETTINGS);
   });
 
   it('gibt immer ein FRISCHES Objekt – niemand bekommt `DEFAULT_SETTINGS` in die Hand', () => {

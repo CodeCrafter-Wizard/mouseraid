@@ -30,7 +30,15 @@ export function hardwareScaling(tier: QualityTier, dpr: number): number {
   return 1 / devicePixels(tier, dpr);
 }
 
-/** Position in `QUALITY_TIERS` (0 … 2); -1 für einen unbekannten Namen. */
+/**
+ * Position in `QUALITY_TIERS` (0 … 2); -1 für einen unbekannten Namen.
+ *
+ * RESERVIERT für M6 – wie `?autostart=1`: in M5 liest sie niemand (nachgemessen: kein Aufrufer in
+ * `src/**`). Ihr Abnehmer ist der Stufen-Sweep des Regler-Panels, der eine Stufe auf- und abzählen
+ * muss; der Vertrag von M5 verlangt den Export bereits. Die Zusicherung in
+ * `tests/unit/render/quality.test.ts` hält die Reihenfolge und den -1-Rückfall fest, damit eine
+ * vierte Stufe im Einstellungs-Schema nicht still an `QUALITY_TIERS` vorbeiwächst.
+ */
 export function tierIndex(tier: QualityTier): number {
   return QUALITY_TIERS.indexOf(tier);
 }

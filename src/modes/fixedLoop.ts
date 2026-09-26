@@ -119,7 +119,7 @@ export function createFixedLoop(hooks: FixedLoopHooks, clock: FixedLoopClock, di
       steps += 1;
     }
     // Der ÜBERSCHUSS oberhalb des Deckels wird verworfen und GEZÄHLT; der Rest unter TICK_MS bleibt
-    // im Akkumulator (ein verworfener Rest liesse die Simulation dauerhaft hinter der Wanduhr
+    // im Akkumulator (ein verworfener Rest ließe die Simulation dauerhaft hinter der Wanduhr
     // zurückfallen). Ohne das Verwerfen liefen nach einem Zeitsprung mehrere Bilder am Deckel.
     while (accumulator >= TICK_MS) {
       accumulator -= TICK_MS;
@@ -142,6 +142,13 @@ export function createFixedLoop(hooks: FixedLoopHooks, clock: FixedLoopClock, di
   function frame(): void {
     if (!active || halted) return;
     pump();
+    // ERNEUT prüfen: `render` und `onFrame` laufen IN `pump()` und dürfen `pause()`/`stop()` rufen.
+    // Ohne diese Zeile überschrieb die Nachbestellung unten den eben abgesagten Handle – gemessen
+    // lagen nach `resume()` dann zwei offene Rückrufe in der Warteschlange, und beide planten je
+    // einen Nachfolger: die Schleife zeichnete ab da zweimal je Bildschirmbild (Task-2-Review,
+    // Minor 1). Auf dem M5-Weg unerreichbar (`pause()` kommt nur aus `visibilitychange`, und ein
+    // DOM-Ereignis schiebt sich nicht in einen rAF-Rückruf) – M6 pausiert aus dem Bild heraus.
+    if (!active || halted) return;
     handle = clock.requestFrame(frame);
   }
 

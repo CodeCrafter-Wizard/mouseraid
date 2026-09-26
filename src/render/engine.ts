@@ -20,8 +20,20 @@ export interface GameEngine {
   readonly gl: WebGL2RenderingContext | null;
   applyTier(tier: QualityTier, dpr: number): void;
   resize(): void;
+  /**
+   * Der Skalierungsfaktor, den die Engine WIRKLICH fährt – die Gegenprobe zu `applyTier`. In M5 liest
+   * ihn niemand (nachgemessen, auch kein Test: ein `GameEngine` braucht einen echten WebGL2-Kontext,
+   * den keine Node-Attrappe liefert; geprüft ist deshalb nur die reine Funktion `hardwareScaling` aus
+   * `quality.ts`). RESERVIERT für M6: am Handy ist DPR ≠ 1, und erst dort ist der Stufen-Sweep
+   * überhaupt messbar.
+   */
   hardwareScaling(): number;
   renderSize(): { width: number; height: number };
+  /**
+   * RESERVIERT für M20 (`webglcontextlost`): der Kontextverlust ist die eine Stelle, an der Szene und
+   * Engine wirklich abgebaut und neu aufgebaut werden müssen. In M5 ruft das niemand – `gameMain` hat
+   * bewusst keinen Abbauweg, die Seite lebt so lange wie das Dokument.
+   */
   dispose(): void;
 }
 

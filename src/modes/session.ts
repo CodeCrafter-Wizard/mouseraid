@@ -1,9 +1,9 @@
 /**
  * Die Naht, an der eine Partie hängt – NUR Typen und eine Konstante.
  *
- * `src/modes` orchestriert Kern, Eingabe und Darstellung, kennt aber KEIN Babylon: die Grafik kommt
- * als Rückruf `render(alpha)` herein. Genau deshalb ist eine Sitzung in Vitest im Node-Umfeld ohne
- * DOM prüfbar.
+ * `src/modes` orchestriert Kern und Eingabe, kennt aber weder `src/render` noch Babylon (ESLint
+ * erzwingt es): die Grafik kommt als Rückruf `render(alpha)` herein. Genau deshalb ist eine Sitzung
+ * in Vitest im Node-Umfeld ohne DOM prüfbar.
  *
  * `host` und `client` kommen mit M9 und sollen DIESELBE Naht bedienen; M5 füllt nur `solo`. Der
  * Haken `window.__mb` gehört bewusst NICHT zum Rückgabewert: `MbStats` trägt Babylon-Zähler, die
@@ -29,7 +29,8 @@ export interface GameSession {
   readonly runtime: LevelRuntime;
   /** DASSELBE Objekt in jedem Bild – `prev`/`curr` werden getauscht, nie neu angelegt. */
   readonly view: RenderView;
-  /** Wird bei JEDEM Tick-Stapel zuerst geleert; Überschuss über EVENT_BUFFER_MAX fällt weg. */
+  /** Wird bei JEDEM `advance()` zuerst geleert – auch bei `advance(0)`; Überschuss über
+   *  EVENT_BUFFER_MAX fällt weg. */
   readonly events: GameEvent[];
   /** Verworfene Ereignisse, LAUFENDE Summe – Diagnose, kein Spielzustand. */
   droppedEvents(): number;

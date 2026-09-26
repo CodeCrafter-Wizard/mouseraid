@@ -241,7 +241,32 @@ describe('ESLint-Leitplanken', () => {
     },
   );
 
-  it.each(['../core/sim/views', '../input/keyboard', '../render/engine', '../platform/storage', '../ui/strings', './session'])(
+  // Abschlussreview (quality MAJOR-3): `'../render/engine'` stand hier als „bleibt erlaubt" – und
+  // genau diese Datei zieht `./babylonRegistry` mit den 17 Nebenwirkungs-Importen. Ein Test, der die
+  // Luecke bestaetigt, die eine Regel schliessen soll, darf nicht stehen bleiben. GEMESSEN importiert
+  // `src/modes/**` wirklich nur `../core/**`, `../input/keyboard` und die eigenen Geschwister; die
+  // Richtung ist render -> modes (Typ-Import in `debugOverlay`, Wert-Import in `gameMain`).
+  it.each(['../render/engine', '../render/gameMain', './../render/engine', '..//render/engine',
+    '.././render/engine', '../../src/render/engine'])(
+    'modes: der Weg %s nach render/ ist verboten',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/modes/soloSession.ts');
+      expect(ids).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['../render/engine', '../render/debugOverlay'])(
+    'modes: der DYNAMISCHE import(%s) nach render/ ist verboten',
+    async (source) => {
+      const ids = await ruleIds(
+        `export async function load(): Promise<unknown> {\n  return await import('${source}');\n}\n`,
+        'src/modes/fixedLoop.ts',
+      );
+      expect(ids).toContain('no-restricted-syntax');
+    },
+  );
+
+  it.each(['../core/sim/views', '../input/keyboard', '../platform/storage', '../ui/strings', './session'])(
     'modes: %s bleibt erlaubt',
     async (source) => {
       const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/modes/soloSession.ts');
@@ -249,6 +274,77 @@ describe('ESLint-Leitplanken', () => {
       expect(ids).not.toContain('no-restricted-syntax');
     },
   );
+
+  // Abschlussreview (quality MAJOR-2): `src/platform/storage.ts:1` und `src/render/quality.ts:6`
+  // nennen „platform kennt render nicht" als REGEL – erzwungen war sie nicht. `src/platform/**` trug
+  // nur den allgemeinen `src/**`-Block und durfte `../render/quality` statisch WIE dynamisch
+  // importieren; das baute zugleich den Zyklus platform -> render -> platform, weil `quality.ts`
+  // schon `storage.ts` liest.
+  it.each(['../render/quality', '../modes/soloSession', '../lab/report', '../net/protocol',
+    './../render/quality', '..//modes/soloSession', '../../src/lab/report'])(
+    'platform: der Weg %s in eine hoehere Schicht ist verboten',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/platform/storage.ts');
+      expect(ids).toContain('no-restricted-imports');
+    },
+  );
+
+  it.each(['../render/quality', '../modes/hook', '../lab/report'])(
+    'platform: der DYNAMISCHE import(%s) ist verboten',
+    async (source) => {
+      const ids = await ruleIds(
+        `export async function load(): Promise<unknown> {\n  return await import('${source}');\n}\n`,
+        'src/platform/storage.ts',
+      );
+      expect(ids).toContain('no-restricted-syntax');
+    },
+  );
+
+  // Die Gegenprobe: genau das, was `src/platform` HEUTE importiert, muss durchkommen – `idb`, die
+  // eigenen Geschwister, `src/ui` (Texte, Huellen-Typ) und `virtual:pwa-register`.
+  it.each(['./buildInfo', './errorLog', 'idb', 'virtual:pwa-register', '../ui/strings', '../ui/shell',
+    '../core/sim/state'])(
+    'platform: %s bleibt erlaubt',
+    async (source) => {
+      const ids = await ruleIds(`import { a } from '${source}';\nexport const b = a;\n`, 'src/platform/pwa.ts');
+      expect(ids).not.toContain('no-restricted-imports');
+      expect(ids).not.toContain('no-restricted-syntax');
+    },
+  );
+
+  // Abschlussreview (determinism Minor 1): `src/platform/**`, `src/ui/**` und `src/audio/**` trugen
+  // GAR KEINE Babylon-Schranke – ein tiefer Import war dort statisch wie dynamisch erlaubt
+  // (gemessen mit `ESLint#lintText` gegen die alte Konfiguration). Folge: `src/ui/shell.ts` und
+  // `src/platform/storage.ts` haengen am EIFRIGEN Einstiegs-Chunk, ein Babylon-Import dort zoege den
+  // ~980-kB-Chunk aus dem lazy `gameMain`-Chunk in den Einstieg – und die Code-Teilung, auf der M5
+  // aufbaut, waere still weg.
+  it.each(['src/ui/shell.ts', 'src/ui/strings.ts', 'src/audio/sfx.ts', 'src/audio/audioBus.ts',
+    'src/platform/storage.ts'])(
+    '%s darf Babylon weder statisch noch dynamisch importieren',
+    async (filePath) => {
+      const statisch = await ruleIds(
+        `import { Vector3 } from '@babylonjs/core/Maths/math.vector';\nexport const v = Vector3;\n`,
+        filePath,
+      );
+      const dynamisch = await ruleIds(
+        `export async function load(): Promise<unknown> {\n  return await import('@babylonjs/core/Maths/math.vector');\n}\n`,
+        filePath,
+      );
+      expect(statisch).toContain('no-restricted-imports');
+      expect(dynamisch).toContain('no-restricted-syntax');
+    },
+  );
+
+  // `src/ui` bekommt die net/lab-Sperre bewusst NICHT: `strings.ts` importiert einen TYP aus
+  // `src/net/failureCodes`, und `no-restricted-imports` kennt kein `allowTypeImports`.
+  it('ui darf weiter einen Typ aus src/net importieren – genau das tut strings.ts', async () => {
+    const ids = await ruleIds(
+      `import type { FailureCode } from '../net/failureCodes';\nexport type F = FailureCode;\n`,
+      'src/ui/strings.ts',
+    );
+    expect(ids).not.toContain('no-restricted-imports');
+    expect(ids).not.toContain('no-restricted-syntax');
+  });
 
   // M5/D11: die 2D-Ansicht ist der Babylon-FREIE Entwickler- und Rueckfallweg; ihr Chunk bleibt
   // klein. Der engere view2d-Block muss den weiteren `src/render/**`-Block ueberschreiben – bei Flat

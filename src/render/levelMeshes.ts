@@ -119,8 +119,9 @@ export interface LevelMeshes {
 }
 
 /**
- * Einzel-Meshes, KEINE Thin Instances: im Browser-Probelauf gemessen (T6s Pixelprobe) 19
- * Zeichenaufrufe bei 46 Meshes (Budget 60) – die Instanzen kommen mit den Requisiten in M9. Und KEIN
+ * Einzel-Meshes, KEINE Thin Instances: im Browser gemessen 21–25 Zeichenaufrufe bei 46 Meshes im
+ * Tor-Fenster 844 × 390 und 15–19 bei 1920 × 1080 (Budget 60; die Spanne ist die Kamerapose, siehe
+ * `docs/decisions.md`, „Budgets nach M5") – die Instanzen kommen mit den Requisiten in M9. Und KEIN
  * `scene.freezeActiveMeshes` (Entscheidung 22): der Gewinn ist bei 46 Meshes nicht messbar, die
  * bekannte Einfrier-Falle ist ungeprüft.
  */

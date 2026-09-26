@@ -23,9 +23,27 @@ describe('actors: capsuleHeight', () => {
 });
 
 describe('actors: lerp', () => {
-  it('trifft die Enden genau', () => {
+  it('trifft t = 0 bitgenau und t = 1 nur numerisch', () => {
+    // `t = 0` ist exakt: `a + (b - a) * 0` ist `a`, in IEEE-754 immer.
     expect(lerp(-60, -51, 0)).toBe(-60);
-    expect(lerp(-60, -51, 1)).toBe(-51);
+    // `t = 1` ist es NICHT im Allgemeinen – hier faellt es nur zufaellig zusammen, weil 9 und 60
+    // beide exakt darstellbar sind. Deshalb steht hier `toBeCloseTo`, wie es die Regel am Modul fuer
+    // JEDEN Vergleich gegen einen Zustandswert verlangt (Task-3-Review, Minor 4).
+    expect(lerp(-60, -51, 1)).toBeCloseTo(-51, 12);
+  });
+
+  // Abschlussreview MIN-22: auf dieser Messung steht eine PROJEKTWEITE Regel (`actors.ts:36-40`,
+  // `levelMeshes.ts:43`, `graybox-bounds.test.ts`: Mesh- und Posenwerte immer mit `toBeCloseTo`
+  // vergleichen) – gepinnt war sie nicht. Ein `lerp`, das bei `t === 1` kurzschliesst, waere gruen
+  // gewesen, und der Kommentar samt Regel waere still falsch geworden.
+  it('trifft b bei t = 1 NICHT bitgenau – die Messung, auf der die toBeCloseTo-Regel steht', () => {
+    const a = -60;
+    const b = -12.3456789;
+    // GEMESSEN: Abweichung 3,55e-15 (rund 16 ULP bei dieser Groessenordnung).
+    expect(lerp(a, b, 1)).not.toBe(b);
+    expect(lerp(a, b, 1)).toBeCloseTo(b, 12);
+    expect(Math.abs(lerp(a, b, 1) - b)).toBeLessThan(1e-14);
+    expect(Math.abs(lerp(a, b, 1) - b)).toBeGreaterThan(0);
   });
 
   it('mischt in der Mitte', () => {

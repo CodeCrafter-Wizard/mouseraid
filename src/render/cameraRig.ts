@@ -60,9 +60,9 @@ export function createCameraRig(camera: TargetCamera, runtime: LevelRuntime, mes
         meshes.resetVisibility();
         groups.length = 0;
       } else {
-        // Ein Wechsel AUS dem Diorama ist ein Sprung, kein Nachziehen: `pose` traegt dort noch
-        // `distance` rund um 30 u (Task-4-Review, Major 1) – ohne den Modus-Vergleich zoege der
-        // Abstand ueber eine knappe halbe Sekunde durch die Wand nach innen, statt sofort zu klemmen.
+        // Ein Wechsel AUS dem Diorama ist ein Sprung, kein Nachziehen: `pose` trägt dort noch
+        // `distance` rund um 30 u (Task-4-Review, Major 1) – ohne den Modus-Vergleich zöge der
+        // Abstand über eine knappe halbe Sekunde durch die Wand nach innen, statt sofort zu klemmen.
         stepBoom(pose, x, z, facing, dtMs, runtime.colliders, initial || pose.mode !== 'follow');
         occluderGroups(pose, runtime.colliders, groups);
         // ERST alles zurücksetzen, DANN die Gruppen dieses Bildes setzen – sonst bliebe ein Kasten

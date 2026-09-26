@@ -51,7 +51,11 @@ describe('Qualitätsstufen', () => {
     expect(hardwareScaling('high', 1)).toBe(1);
   });
 
-  it('tierIndex gibt die Position in QUALITY_TIERS', () => {
+  // `tierIndex` hat in M5 KEINEN Aufrufer (Abschlussreview MIN-11, nachgemessen) – der Export ist
+  // Vertrag und für M6s Stufen-Sweep im Regler-Panel RESERVIERT, wie `?autostart=1`. Die beiden Fälle
+  // hier sind deshalb bewusst Pins der Reihenfolge und des Rückfalls, keine Verhaltensprüfung eines
+  // Aufrufers; der Grund steht an der Funktion.
+  it('tierIndex gibt die Position in QUALITY_TIERS (reserviert für M6)', () => {
     expect(tierIndex('low')).toBe(0);
     expect(tierIndex('medium')).toBe(1);
     expect(tierIndex('high')).toBe(2);

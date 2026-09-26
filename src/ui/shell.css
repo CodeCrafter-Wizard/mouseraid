@@ -104,10 +104,16 @@ html, body {
 }
 #app.game-strip .chip, #app.game-strip .btn { pointer-events: auto; }
 #app.game-strip .shell-title { font-size: clamp(18px, 3vw, 26px); }
+/* `:not(.shell-note--mismatch)`: der Build-Mismatch-Hinweis ist der Rückkanal des Handy-Loops
+   (`?expect=<Build-ID>`, CLAUDE.md) und bleibt AUCH eingeklappt sichtbar – die Spielseite startet
+   eingeklappt, ohne diese Ausnahme wäre die Meldung stumm. */
 #app.game-strip[data-collapsed='true'] .shell-sub,
-#app.game-strip[data-collapsed='true'] .shell-note,
+#app.game-strip[data-collapsed='true'] .shell-note:not(.shell-note--mismatch),
 #app.game-strip[data-collapsed='true'] .shell-actions,
 #app.game-strip[data-collapsed='true'] .info-list { display: none; }
+/* Er liegt über der Leinwand und soll lesbar sein, nicht nur vorhanden: voller Kontrast, und er darf
+   Platz beanspruchen. Angefasst wird er nicht (`pointer-events` bleibt beim Streifen). */
+#app.game-strip .shell-note--mismatch { opacity: 1; color: var(--c-warn); }
 
 /* F3-Overlay: über der Leinwand, nimmt keine Eingabe an. */
 .debug-overlay {

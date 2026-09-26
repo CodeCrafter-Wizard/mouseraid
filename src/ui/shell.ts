@@ -37,10 +37,12 @@ export function mountShell(root: HTMLElement, options: ShellOptions): ShellHandl
   const sub = el('p', 'shell-sub', options.subtitle);
   const note = el('p', 'shell-note', options.note);
 
-  // Zwei zusätzliche Klassen: `shell-status` bleibt im eingeklappten Streifen sichtbar (Titel,
-  // Offline-Chip und Build-Chip sind Tor-relevant – `offline-smoke.spec.ts`), `shell-actions`
-  // verschwindet mit. Beide hießen vorher nur `shell-row`; die Klasse bleibt für das Layout.
-  const status = el('div', 'shell-row shell-status');
+  // Der Status-Streifen trägt KEINE eigene Klasse: sichtbar bleibt er im eingeklappten Streifen
+  // dadurch, dass er NICHT in der Ausblendliste von `shell.css` steht (Titel, Offline-Chip und
+  // Build-Chip sind Tor-relevant – `offline-smoke.spec.ts`). `shell-actions` steht dort und
+  // verschwindet mit. Eine Klasse ohne Regel und ohne Selektor wäre nur ein Kommentar, der auf
+  // nichts zeigt (Abschlussreview MIN-25).
+  const status = el('div', 'shell-row');
   const offline = el('span', 'chip', S.pwa.offlinePending);
   offline.dataset.testid = 'offline-badge';
   offline.dataset.state = 'pending';
@@ -76,7 +78,9 @@ export function mountShell(root: HTMLElement, options: ShellOptions): ShellHandl
   const collapsible = options.collapsible;
   if (collapsible !== undefined) {
     let collapsed = collapsible.collapsed;
-    const toggle = el('button', 'btn secondary shell-toggle', collapsed ? collapsible.expandLabel : collapsible.collapseLabel);
+    // Kein `shell-toggle` in der `class`: gegriffen wird der Knopf über `data-testid` (das Tor tut
+    // genau das), gestylt über `.btn.secondary`.
+    const toggle = el('button', 'btn secondary', collapsed ? collapsible.expandLabel : collapsible.collapseLabel);
     toggle.type = 'button';
     toggle.dataset.testid = 'shell-toggle';
     const paint = (): void => {
@@ -92,8 +96,16 @@ export function mountShell(root: HTMLElement, options: ShellOptions): ShellHandl
     paint();
   }
 
+  // EIGENE Klasse für den Build-Mismatch-Hinweis: `shell.css` blendet `.shell-note` im eingeklappten
+  // Streifen aus, und das traf genau diesen Hinweis mit – die Spielseite startet eingeklappt, also
+  // zeigte `?expect=<Build-ID>` am Handy eine stumme, scheinbar richtige Seite (Abschlussreview,
+  // quality MAJOR-1). Der Handy-Loop aus CLAUDE.md beruht auf diesem Hinweis; die Ausblendregel nimmt
+  // ihn deshalb per `:not(.shell-note--mismatch)` aus.
   if (expectation === 'mismatch') {
-    root.append(el('p', 'shell-note', fmt(S.shell.buildMismatch, { expected: expectedBuild(location.search) ?? '' })));
+    const mismatch = el('p', 'shell-note shell-note--mismatch',
+      fmt(S.shell.buildMismatch, { expected: expectedBuild(location.search) ?? '' }));
+    mismatch.dataset.testid = 'build-mismatch';
+    root.append(mismatch);
   }
   if (options.info !== undefined && options.info.length > 0) {
     const list = el('ul', 'info-list');

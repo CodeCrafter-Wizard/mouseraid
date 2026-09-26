@@ -64,6 +64,13 @@ function layerImportRegex(layers) {
   return `(?:^|/)(?:\\.\\.|src)/+(?:\\./+)*(?:${layers.join('|')})(?:/|$)`;
 }
 const RENDER_IMPORT = { regex: layerImportRegex(['render']), message: 'Diese Schicht darf render/ nicht importieren.' };
+// M5/Abschlussreview (quality MAJOR-2): `src/platform` liegt UNTER render/ und modes/ – `quality.ts`
+// leitet `QualityTier` aus dem Einstellungs-Schema ab, und ein Import in der anderen Richtung baute
+// den Zyklus platform → render → platform.
+const RENDER_MODES_IMPORT = {
+  regex: layerImportRegex(['render', 'modes']),
+  message: 'Diese Schicht liegt unter render/ und modes/ und darf sie nicht importieren.',
+};
 const NON_CORE_IMPORT = {
   regex: layerImportRegex(['render', 'ui', 'net', 'platform', 'input', 'audio', 'modes', 'lab']),
   message: 'core/ darf keine andere Schicht importieren.',
@@ -102,6 +109,8 @@ function dynamicImportBan(layers, message) {
 }
 const NO_NET_LAB_DYNAMIC = dynamicImportBan(['net', 'lab'], NET_LAB_IMPORT.message);
 const NO_INPUT_FOREIGN_DYNAMIC = dynamicImportBan(INPUT_FOREIGN_LAYERS, INPUT_FOREIGN_IMPORT.message);
+const NO_RENDER_DYNAMIC = dynamicImportBan(['render'], RENDER_IMPORT.message);
+const NO_RENDER_MODES_DYNAMIC = dynamicImportBan(['render', 'modes'], RENDER_MODES_IMPORT.message);
 
 const NO_BABYLON_NAMESPACE = {
   selector: 'ImportDeclaration[source.value=/^@babylonjs\\u002F/] > ImportNamespaceSpecifier',
@@ -160,9 +169,43 @@ export default tseslint.config(
     },
   },
   {
-    // Ersetzt die Liste oben absichtlich: genau hier darf der eine AudioContext entstehen.
+    // M5/Abschlussreview (determinism Minor 1): `src/platform/**`, `src/ui/**` und `src/audio/**`
+    // trugen GAR KEINE Babylon-Schranke – der allgemeine `src/**`-Block sperrt nur die drei
+    // Sammel-Einstiege und das Legacy-Barrel, `SYNTAX_BANS` enthält `NO_BABYLON_DYNAMIC` nicht. Ein
+    // TIEFER Babylon-Import war dort also statisch wie dynamisch erlaubt (gemessen). `src/ui/shell.ts`
+    // und `src/platform/storage.ts` hängen am EIFRIGEN Einstiegs-Chunk: ein Babylon-Import dort zöge
+    // den ~980-kB-Chunk aus dem lazy `gameMain`-Chunk in den Einstieg, und die Code-Teilung, auf der
+    // M5 aufbaut, wäre still weg. `src/ui` bekommt die net/lab-Sperre bewusst NICHT (`strings.ts`
+    // importiert einen Typ aus `src/net/failureCodes`).
+    files: ['src/ui/**/*.ts', 'src/audio/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT] }],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_BABYLON_DYNAMIC],
+    },
+  },
+  {
+    // M5/Abschlussreview (quality MAJOR-2): `src/platform` ist die UNTERSTE Browser-Schicht.
+    // `storage.ts:1` und `render/quality.ts:6` nannten „platform kennt render nicht" als Regel, ohne
+    // dass sie erzwungen war – und ein solcher Import baute zugleich den Zyklus
+    // platform → render → platform, weil `quality.ts` schon `storage.ts` liest. Erlaubt bleibt genau,
+    // was die Schicht heute braucht: die eigenen Geschwister, `src/ui` (Texte, Hüllen-Typ), `idb` und
+    // `virtual:pwa-register`.
+    files: ['src/platform/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        paths: BABYLON_BARREL_PATHS,
+        patterns: [LEGACY_IMPORT, BABYLON_IMPORT, RENDER_MODES_IMPORT, NET_LAB_IMPORT],
+      }],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_BABYLON_DYNAMIC, NO_RENDER_MODES_DYNAMIC, NO_NET_LAB_DYNAMIC],
+    },
+  },
+  {
+    // Ersetzt die Liste oben absichtlich: genau hier darf der eine AudioContext entstehen. Steht NACH
+    // dem `src/audio/**`-Block (bei Flat Config gewinnt der spätere) und trägt `NO_BABYLON_DYNAMIC`
+    // mit, weil Flat Config die Optionen einer Regel ERSETZT und nicht summiert – sonst wäre genau
+    // diese eine Datei das Loch in der neuen Babylon-Schranke.
     files: ['src/audio/audioBus.ts'],
-    rules: { 'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE] },
+    rules: { 'no-restricted-syntax': ['error', NO_BABYLON_NAMESPACE, NO_BABYLON_DYNAMIC] },
   },
   {
     // T1-Review, Minor 5: `no-restricted-imports` sieht nur den STATISCHEN Weg – ein
@@ -174,7 +217,9 @@ export default tseslint.config(
     files: ['src/net/**/*.ts', 'src/lab/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, RENDER_IMPORT] }],
-      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_BABYLON_DYNAMIC],
+      // `NO_RENDER_DYNAMIC` gehört dazu, seit es die Konstante gibt: die statische Sperre stand hier
+      // schon, der dynamische Weg nach render/ war offen.
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_BABYLON_DYNAMIC, NO_RENDER_DYNAMIC],
     },
   },
   {
@@ -192,14 +237,21 @@ export default tseslint.config(
     },
   },
   {
-    // M5/Q4: `src/modes/**` orchestriert core + input + render + platform + ui über die öffentliche
-    // API von render – es kennt weder net/ und lab/ noch Babylon. Genau deshalb sind `fixedLoop` und
-    // `soloSession` in Vitest ohne DOM prüfbar: die Grafik kommt als Rückruf `render(alpha)` herein.
+    // M5/Q4: `src/modes/**` orchestriert core + input + platform – es kennt weder net/ und lab/ noch
+    // Babylon. Genau deshalb sind `fixedLoop` und `soloSession` in Vitest ohne DOM prüfbar: die Grafik
+    // kommt als Rückruf `render(alpha)` herein.
+    // M5/Abschlussreview (quality MAJOR-3): `render/` ist jetzt AUCH gesperrt. `no-restricted-imports`
+    // vergleicht nur den Spezifizierer der Datei selbst, ein `import … from '../render/engine'` wäre
+    // also lint- und typecheck-grün gewesen – und `engine.ts` ist genau die Datei, die
+    // `./babylonRegistry` mit seinen 17 Nebenwirkungs-Importen zieht. Die Richtung ist render → modes
+    // (Typ-Import in `debugOverlay`, Wert-Import in `gameMain`), nie umgekehrt.
     // LEGACY_IMPORT und SYNTAX_BANS stehen wieder mit in der Liste (Flat Config ersetzt, summiert nicht).
     files: ['src/modes/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [LEGACY_IMPORT, BABYLON_IMPORT, NET_LAB_IMPORT] }],
-      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_NET_LAB_DYNAMIC, NO_BABYLON_DYNAMIC],
+      'no-restricted-imports': ['error', {
+        patterns: [LEGACY_IMPORT, BABYLON_IMPORT, NET_LAB_IMPORT, RENDER_IMPORT],
+      }],
+      'no-restricted-syntax': ['error', ...SYNTAX_BANS, NO_NET_LAB_DYNAMIC, NO_BABYLON_DYNAMIC, NO_RENDER_DYNAMIC],
     },
   },
   {

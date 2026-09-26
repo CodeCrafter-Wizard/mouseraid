@@ -6,32 +6,34 @@ import type { Scene } from '@babylonjs/core/scene.pure';
 import type { MbStats } from '../modes/hook';
 import { S } from '../ui/strings';
 
-/** F3 schaltet das Overlay. Verdrahtet wird die Taste in `gameMain` – das Overlay hoert nichts ab. */
+/** F3 schaltet das Overlay. Verdrahtet wird die Taste in `gameMain` – das Overlay hört nichts ab. */
 export const OVERLAY_TOGGLE_CODE = 'F3';
 /** Fenster des p95 in Bildern (bei 60 Hz also zwei Sekunden). */
 export const P95_WINDOW = 120;
 /**
- * Nach so vielen Bildern gilt ein GPU-Zaehler von 0 als endgueltig (Q2). GEMESSEN blieb
+ * Aufwärmfenster des GPU-Zählers in Bildern: `createDebugOverlay` zeigt `gpuMs` die ersten
+ * GPU_PROBE_FRAMES Bilder lang als Strich, egal was der Zähler meldet – in diesen Bildern stecken
+ * die Shader-Kompilate (gemessen 1542 ms für das erste kalte Bild), ein Wert daraus wäre Unsinn.
+ * Nach dem Fenster gilt auch eine 0 als endgültig (Q2): GEMESSEN blieb
  * `gpuFrameTimeCounter.current` auch nach 396 Bildern 0 – unter SwiftShader (kein
  * `EXT_disjoint_timer_query_webgl2`) UND unter Intel/D3D11 (Erweiterung vorhanden). `gpuMs` wird
- * deshalb nur gezeigt, wenn der Wert groesser 0 ist; die Zahl hier benennt die Messgrundlage und ist
- * der Anker fuer M8s Perf-Bank.
+ * deshalb nur gezeigt, wenn der Wert größer 0 ist. Dieselbe Zahl ist der Anker für M8s Perf-Bank.
  */
 export const GPU_PROBE_FRAMES = 60;
 
 const MS_PER_NS = 1e-6;
 
 /**
- * Rang des p95 in einer AUFSTEIGEND sortierten Liste von `count` Werten: naechstgroesserer Rang,
- * kein Interpolieren. `count <= 0` -> -1 (kein Wert). GEMESSEN fuer count = 1 … 400: `ceil(0.95 * n)`
- * und `ceil(19 * n / 20)` stimmen ueberall ueberein – die Fliesskomma-Schreibweise ist hier
+ * Rang des p95 in einer AUFSTEIGEND sortierten Liste von `count` Werten: nächstgrößerer Rang,
+ * kein Interpolieren. `count <= 0` -> -1 (kein Wert). GEMESSEN für count = 1 … 400: `ceil(0.95 * n)`
+ * und `ceil(19 * n / 20)` stimmen überall überein – die Fließkomma-Schreibweise ist hier
  * unbedenklich.
  */
 function rank95(count: number): number {
   return count <= 0 ? -1 : Math.ceil(0.95 * count) - 1;
 }
 
-/** REIN: p95 ueber eine KOPIE, die Liste des Aufrufers bleibt unangetastet. Leer -> 0. */
+/** REIN: p95 über eine KOPIE, die Liste des Aufrufers bleibt unangetastet. Leer -> 0. */
 export function percentile95(samples: readonly number[]): number {
   const rank = rank95(samples.length);
   if (rank < 0) return 0;
@@ -47,10 +49,18 @@ export interface Percentiles {
 
 /**
  * Ringpuffer der letzten `window` Werte. Er allokiert einmal beim Bauen und dann nie wieder: der
- * Puffer ist ein `Float64Array`, die Sortierflaeche ein festes `number[]`, das je Abfrage nur neu
- * gefuellt wird. Ohne diese Vorsorge legte ein Overlay je Bild eine Kopie an.
+ * Puffer ist ein `Float64Array`, die Sortierfläche ein festes `number[]`, das je Abfrage nur neu
+ * gefüllt wird. Ohne diese Vorsorge legte ein Overlay je Bild eine Kopie an.
  */
 export function createPercentiles(window: number = P95_WINDOW): Percentiles {
+  // LAUT abweisen, nicht klemmen: `Math.max(1, Math.floor(NaN))` ist NaN, und
+  // `new Float64Array(NaN).length` ist 0 – der Ring verschluckte dann jeden Wert und meldete für
+  // immer 0 (gemessen an 200 Werten). Ein p95, der still zur Dauer-Null wird, ist schlimmer als ein
+  // Wurf beim Bauen; dasselbe Argument steht bei `gpuMs` (Q2). `Infinity` warf schon vorher, nur mit
+  // dem Text der Typed-Array-Länge statt mit einer eigenen Aussage.
+  if (!Number.isFinite(window)) {
+    throw new RangeError(`createPercentiles: Fenster erwartet eine endliche Zahl, bekam ${String(window)}`);
+  }
   const size = Math.max(1, Math.floor(window));
   const ring = new Float64Array(size);
   const scratch: number[] = [];
@@ -66,8 +76,8 @@ export function createPercentiles(window: number = P95_WINDOW): Percentiles {
       const rank = rank95(count);
       if (rank < 0) return 0;
       scratch.length = 0;
-      // Die Reihenfolge im Ring ist nach dem Ueberlauf gedreht – das ist gleichgueltig, es wird
-      // ohnehin sortiert. Gelesen werden genau die `count` beschriebenen Plaetze.
+      // Die Reihenfolge im Ring ist nach dem Überlauf gedreht – das ist gleichgültig, es wird
+      // ohnehin sortiert. Gelesen werden genau die `count` beschriebenen Plätze.
       for (let index = 0; index < count; index += 1) scratch.push(ring[index] ?? 0);
       scratch.sort((a, b) => a - b);
       return scratch[rank] ?? 0;
@@ -90,9 +100,9 @@ export interface Instrumentation {
 }
 
 /**
- * Verdrahtet die beiden Babylon-Zaehler. Die Nebenwirkungs-Importe dafuer
+ * Verdrahtet die beiden Babylon-Zähler. Die Nebenwirkungs-Importe dafür
  * (`Engines/Extensions/engine.query` und `Engines/AbstractEngine/abstractEngine.timeQuery`) stehen in
- * `src/render/babylonRegistry.ts` und kommen ueber `src/render/engine.ts` in die Seite. OHNE sie
+ * `src/render/babylonRegistry.ts` und kommen über `src/render/engine.ts` in die Seite. OHNE sie
  * WIRFT die Zeile `captureGPUFrameTime = true` zur Laufzeit („captureGPUFrameTime is not a function") –
  * kein Build- und kein Typfehler. Hier wird ABSICHTLICH nicht gefangen: ein fehlender
  * Nebenwirkungs-Import soll laut auffallen (das Fehler-Panel zeigt ihn), statt still eine Null zu
@@ -106,7 +116,7 @@ export function createInstrumentation(engine: Engine, scene: Scene): Instrumenta
     drawCalls: (): number => sceneMeter.drawCallsCounter.current,
     triangles: (): number => Math.round(scene.getActiveIndices() / 3),
     gpuMs: (): number => {
-      // Der Zaehler liefert NANOsekunden.
+      // Der Zähler liefert NANOsekunden.
       const nanos = engineMeter.gpuFrameTimeCounter.current;
       return nanos > 0 ? nanos * MS_PER_NS : 0;
     },
@@ -140,7 +150,7 @@ function tierLabel(tier: string): string {
 /**
  * REIN: der ganze Text des Overlays. Die BEZEICHNER kommen aus `S.debug.*` (Q3), die ZAHLENFORMATE
  * stehen hier. Die Spaltenbreite wird aus den Bezeichnern GERECHNET, nicht gepinnt – so bleibt die
- * Tafel ausgerichtet, wenn ein Text in `strings.ts` laenger wird.
+ * Tafel ausgerichtet, wenn ein Text in `strings.ts` länger wird.
  */
 export function formatOverlay(stats: MbStats): string {
   const rows: readonly Row[] = [
@@ -156,7 +166,7 @@ export function formatOverlay(stats: MbStats): string {
     { label: S.debug.steps, value: integer(stats.steps) },
     { label: S.debug.tier, value: tierLabel(stats.tier) },
     // `storage` und `buildId` sind technische Kennungen ('idb'/'memory', Kurz-SHA) – sie stehen so im
-    // Haken und werden hier nur zitiert, nicht uebersetzt.
+    // Haken und werden hier nur zitiert, nicht übersetzt.
     { label: S.debug.storage, value: stats.storage },
     { label: S.debug.build, value: stats.buildId },
   ];
@@ -177,8 +187,8 @@ export interface DebugOverlay {
 }
 
 /**
- * Ein `<pre class="debug-overlay">` ueber der Leinwand (Stil in `src/ui/shell.css`, T6:
- * `position: fixed`, `pointer-events: none`). Es hoert selbst nichts ab – F3 verdrahtet `gameMain`,
+ * Ein `<pre class="debug-overlay">` über der Leinwand (Stil in `src/ui/shell.css`, T6:
+ * `position: fixed`, `pointer-events: none`). Es hört selbst nichts ab – F3 verdrahtet `gameMain`,
  * damit es genau EINEN Tastaturweg auf der Seite gibt.
  */
 export function createDebugOverlay(host: HTMLElement): DebugOverlay {
@@ -189,6 +199,8 @@ export function createDebugOverlay(host: HTMLElement): DebugOverlay {
   host.append(pre);
   let shown = false;
   let last = '';
+  /** Bilder seit dem Bauen – gezählt werden ALLE `update`-Aufrufe, auch die verborgenen. */
+  let frames = 0;
 
   function setVisible(visible: boolean): void {
     shown = visible;
@@ -203,9 +215,15 @@ export function createDebugOverlay(host: HTMLElement): DebugOverlay {
       return shown;
     },
     update: (stats: MbStats): void => {
+      // ERST zählen, dann der Sparweg: das Aufwärmfenster des GPU-Zählers hängt an BILDERN, nicht
+      // an sichtbaren Bildern – sonst wärmte ein F3 nach zehn Minuten noch einmal 60 Bilder auf.
+      if (frames <= GPU_PROBE_FRAMES) frames += 1;
       // Verborgen kostet das Overlay nichts: kein Formatieren, kein Schreiben in den DOM.
       if (!shown) return;
-      const text = formatOverlay(stats);
+      // Im Aufwärmfenster wird `gpuMs` auf 0 gesetzt, und `formatOverlay` macht daraus den Strich
+      // (Q2). Die Kopie fällt nur in diesen höchstens GPU_PROBE_FRAMES Bildern an; danach geht das
+      // Objekt des Aufrufers unverändert durch, und je Bild wird nichts mehr allokiert.
+      const text = formatOverlay(frames <= GPU_PROBE_FRAMES ? { ...stats, gpuMs: 0 } : stats);
       // Gleicher Text -> kein Schreiben: `textContent` wirft sonst je Bild einen Layout-Lauf an.
       if (text === last) return;
       pre.textContent = text;

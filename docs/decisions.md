@@ -1361,8 +1361,9 @@ M6. Der Kern wurde an **einer** Stelle angefasst (`sim/views.ts`), die fünf Gol
   leicht als unbenutzt, ein benannter nicht, und die Zahl ist pinnbar). Jede andere Datei importiert nur
   Bindungen aus tiefen Pfaden. Gemessen: alle 17 Pfade existieren in 9.27.1 **und** stehen in Babylons
   `sideEffects`-Allowlist – Rolldown darf keinen wegkürzen.
-- **Die Registry ist eine TEILMENGE, keine Kopie.** Von den 21 Nebenwirkungs-Zeilen, die
-  `@babylonjs/core/Engines/engine.js` selbst zieht, sind **9** übernommen und **11** bewusst
+- **Die Registry ist eine TEILMENGE, keine Kopie.** Von den **20** Nebenwirkungs-Zeilen, die
+  `@babylonjs/core/Engines/engine.js` selbst zieht (nachgezählt in 9.27.1: genau 20 `import '…';`,
+  sonst keine Importe), sind **9** übernommen und **11** bewusst
   weggelassen: Textur-Lader, Render-Targets, Ladebildschirm und `loadFile`. Die beiden Zeilen
   `Engines/Extensions/engine.query` und `AbstractEngine/abstractEngine.timeQuery` kommen **nicht** aus
   `engine.js`, sondern aus dem Instrumentierungsbedarf (Q2). Bewiesen wird die Registrierung im Test
@@ -1422,6 +1423,11 @@ powerPreference: 'high-performance' }, false)`. Vier Festlegungen mit Grund:
   am Handy der einzige Rückkanal. Der Text ist **sichtbar**, gehört also nach `strings.ts` (Q3). Auch
   Babylons **eigener** Wurf („WebGL not supported") wird abgefangen und als derselbe Text neu geworfen,
   mit dem Original als `cause` – sonst stünde am Handy eine englische Engine-Meldung.
+- **`TargetCamera`, nicht `UniversalCamera`/`FreeCamera`** (Abweichung 8). Die beiden legen einen
+  `FreeCameraInputsManager` an (Tastatur, Maus, Touch) – ohne `attachControl` untätig, aber ein
+  **zweiter Eingabeweg** neben `src/input/keyboard.ts` im Bundle. Gefahren wird die Kamera ohnehin
+  vollständig vom Rig (`cameraRig.ts` schreibt `position` und `setTarget`). M6 bringt Touch und wird
+  an genau dieser Kamera vorbeikommen: die Eingabe gehört in `src/input`, nicht in Babylon.
 - **Stufen in Gerätepixeln, rein gerechnet** (`src/render/quality.ts`): `low` = **hart 1,0**,
   `medium` = `min(dpr, 1,5)`, `high` = `min(dpr, 2)`, danach
   `setHardwareScalingLevel(1 / devicePixels)` + `engine.resize()`. Gemessen mit dpr 2,5: **1 / 1,5 / 2**;
@@ -1501,9 +1507,19 @@ es je Bild ein Objekt mit vier Unterobjekten an). `hashState` und `cloneState` b
 `RenderView` wird nie gehasht und nie geklont: **5× `(unveraendert)`**.
 
 ### Sitzung, importfreier Haken und die URL-Parameter (D6)
-`src/modes/**` ist eine **neue Schicht**: sie orchestriert Kern + Eingabe und kennt **kein Babylon**, kein
-`src/net` und kein `src/lab` (ESLint-Block, auch für `import()`). Genau deshalb ist die Sitzung in Vitest
-im Node-Umfeld prüfbar – sie importiert nichts aus `render/` oder `platform/`.
+`src/modes/**` ist eine **neue Schicht**: sie orchestriert Kern + Eingabe und kennt weder **Babylon** noch
+`src/render`, `src/net` oder `src/lab` (ESLint-Block, auch für `import()`). Genau deshalb ist die Sitzung in
+Vitest im Node-Umfeld prüfbar. Die Richtung ist **render → modes** (Typ-Import in `debugOverlay`,
+Wert-Import in `gameMain`), nie umgekehrt; `src/platform` **darf** die Schicht importieren, tut es heute
+aber nicht.
+
+**Die render-Sperre kam erst aus dem Abschlussreview** (quality MAJOR-3). Vorher stand „modes kennt kein
+Babylon" nur in drei Kommentaren, und `tests/node/eslint-boundaries.test.ts` führte `'../render/engine'`
+ausdrücklich als *erlaubt* – also genau die Datei, die `./babylonRegistry` mit seinen 17
+Nebenwirkungs-Importen zieht. `no-restricted-imports` vergleicht nur den Spezifizierer der Datei selbst,
+ein solcher Import wäre lint-grün, typecheck-grün und (Babylon lädt unter Node) auch test-grün gewesen;
+aufgefallen wäre der Bruch erst im Bundle. Ein Test, der die Lücke bestätigt, die eine Regel schließen
+soll, ist schlimmer als kein Test.
 
 - `createSoloSession({ levelJson, balanceJson, seed, keyboard, clock, render })`: laden → `LevelRuntime`
   → Anfangszustand → `StepContext` → zwei Schnappschüsse → `createFixedLoop`. Die Schleife wird dabei
@@ -1559,6 +1575,12 @@ Gemessen als Gegenprobe zum Kern: der Zustandshash nach **300 neutralen Ticks** 
 Ein `CreateBox` je Kollider, ein `CreateGround` je Raumgrenze, fünf Kapseln. Für `feinkost`:
 39 Kästen + 2 Böden + 5 Kapseln = **46 Meshes**, **13 Materialien** (Mini-Level: 16 + 1 + 5 = **22**
 Meshes, **8** Materialien).
+
+Die im Plan vorgesehenen Module `colliderBox.ts`, `roomShell.ts` und `occluders.ts` **entfallen**
+(Abweichung 13): ihre reinen Funktionen wohnen in `levelMeshes.ts` (`createBoxTransform`,
+`colliderToBoxTransform`, `colliderCorners`, `colliderKindOf`) bzw. in `cameraBoom.ts`
+(`occluderGroups`, `OCCLUDER_YRANGE`). Drei Dateien mit je zwei Funktionen hätten dieselbe Grenze
+dreimal gezogen; die Kopfkommentare der beiden Module sagen es selbst.
 
 - **`rotationY = -collider.rot`, gemessen und nicht geraten.** Babylon ist linkshändig. Bewiesen wird das
   **Ecke für Ecke durch die Weltmatrix** (`mesh.getWorldMatrix()` nach `computeWorldMatrix(true)`) gegen
@@ -1762,8 +1784,9 @@ Version 1, **ein** Datensatz unter dem Schlüssel `v1`.
 - Das Spiel startet am Desktop **sofort** – kein Start-Gate (M6). `src/main.ts` entscheidet **exklusiv**
   zwischen `?view=2d` und dem Spiel und fängt `mountGame` in `try/catch` ans Fehler-Panel.
 
-### E2E-Tor: 14 → 15 Tests
-`tests/e2e/graybox.spec.ts` trägt **kein** `@local`: SwiftShader-WebGL2 rendert mit den vorhandenen
+### E2E-Tor: 14 → 17 Tests
+`tests/e2e/graybox.spec.ts` bringt **drei** Tests mit (14 + 3 = **17**); die beiden hinteren kamen aus
+den Reviews und stehen unten unter „Feinschliff". Keiner trägt `@local`: SwiftShader-WebGL2 rendert mit den vorhandenen
 Projekt-Flags nicht-schwarz (gemessen **256/256** Proben, Anteil 1,00), und ohne `finishRun` braucht der
 Spec auch kein `local-network-access`. Er prüft in **einem** Test und in dieser Reihenfolge: Haken
 vorhanden und `stats()` plausibel → Spawn unverändert nach `advance(60)` mit neutraler Eingabe →
@@ -1802,8 +1825,8 @@ der ein Bild erzeugt, braucht deshalb einen Schritt, in dem jemand **hinsieht**.
 | Spiel-JS gzip | 318,9 kB | 900 kB | die **+~300 kB gzip sind Babylon** |
 | Lab-JS gzip | 61,9 kB | 150 kB | unverändert, Labor bleibt Babylon-frei |
 | Precache | 26 Dateien / 1567,6 kB | 80 MB | vorher 17 Dateien / 287,8 kB |
-| Precache-Rohzählung von Workbox | 29 Einträge / 1567,07 KiB | – | **andere Menge** als `check-dist` – maßgeblich ist `check-dist` |
-| größte Einzeldatei | 979,31 kB (Babylon-Chunk) | 30 MiB (`maximumFileSizeToCacheInBytes`) | gzip 236,65 kB |
+| Precache-Rohzählung von Workbox | 29 Einträge / 1567,1 KiB | – | **andere Menge** als `check-dist` – maßgeblich ist `check-dist` |
+| größte Einzeldatei | 979,19 kB (Babylon-Chunk) | 30 MiB (`maximumFileSizeToCacheInBytes`) | gzip 236,68 kB |
 | Zeichenaufrufe @844×390 | 21–25 | 60 | @1920×1080: 15–19 |
 | aktive Dreiecke @844×390 | 1162–1976 | 60 000 | @1920×1080: 1090–1904 |
 | Render-Mittel @844×390 headless | 0,12–0,17 ms | – | p95 0,30–0,50 ms |
@@ -1818,7 +1841,7 @@ deckt `.js` ab, `check-dist` ist das Gate, und der Offline-Reload im Tor ist der
 **Die Precache-Zahl wackelt um 0,1 kB, und das ist die Build-ID.** Gemessen am selben Baum: mit sauberer
 Arbeitskopie (Build-ID `<8-stelliger Kurz-SHA>`) meldet `check-dist` **1567,6 kB**, mit einem
 Dirty-Build (`<sha>-dirty-<HHmmss>`, zwölf Zeichen länger) **1567,7 kB**. Der Babylon-Chunk ist dabei
-bitgleich (979,31 kB / 236,65 kB gzip, nur der Inhalts-Hash im Dateinamen wandert). Wer die Zahlen
+bitgleich (nur der Inhalts-Hash im Dateinamen wandert). Wer die Zahlen
 vergleicht, vergleicht also saubere mit sauberen Builds.
 
 ### Werkzeug-Fallen, die M5 dreimal gekostet haben
@@ -1832,6 +1855,91 @@ vergleicht, vergleicht also saubere mit sauberen Builds.
   sieht dabei wie ein grünes Ergebnis aus.
 - **Die Zeilenzahl einer Datei ist `(Get-Content f).Count`**, nicht `Measure-Object -Line`: `-Line` zählt
   leere Zeilen nicht mit.
+- **Playwrights ESM-Lader löst Babylons erweiterungslose Deep-Importe nicht auf** (Entscheidung 24 /
+  R6). Ein Tor-Spec, der eine Konstante aus einem Modul zieht, das (auch nur mittelbar) Babylon
+  erreicht, stirbt beim Sammeln mit `Cannot find module '…/Materials/standardMaterial'. Did you mean
+  to import '…/Materials/standardMaterial.js'?` und danach `No tests found` – und
+  `tsc -p tsconfig.node.json` sieht davon **nichts**, weil TypeScript den Spezifizierer anders
+  auflöst als Playwrights Lader. Deshalb wohnen `GRAYBOX_COLORS`/`CLEAR_COLOR`/`GRAYBOX_KINDS` im
+  **Babylon-freien Leaf** `src/render/grayboxColors.ts` (0 Importe) und `materials.ts` re-exportiert
+  sie nur. Wer in M6 einen Tor-Spec schreibt, der eine Zahl aus `src/render/**` importiert, prüft
+  zuerst den Importgraphen dieser Datei.
+
+### Feinschliff nach dem Abschlussreview (drei Linsen: contract, determinism, quality)
+Der Abschlussreview meldete **0 Blocker, 3 Majors, 35 Minors**. Was davon eine Entscheidung ist:
+
+- **Der `?expect=`-Hinweis bleibt im eingeklappten Streifen sichtbar** (quality MAJOR-1). Die
+  Streifen-Regel aus D11/Q6 blendet `.shell-sub`, `.shell-note`, `.shell-actions` und `.info-list`
+  aus – und traf damit den Build-Mismatch-Hinweis mit, denn die Spielseite startet **eingeklappt**.
+  `?expect=<Build-ID>` zeigte am Handy also eine stumme, scheinbar richtige Seite, und genau darauf
+  beruht der ganze Handy-Loop. Der Hinweis trägt jetzt `shell-note--mismatch`, die Ausblendregel
+  nimmt ihn per `:not(…)` aus, und das Tor prüft ihn **auf der Spielseite** (`toBeVisible`, nicht nur
+  „vorhanden"). Der bestehende Fall in `offline-smoke.spec.ts` fiel nicht: er ruft `?view=2d`, und
+  dort wird `game-strip` nie gesetzt.
+- **Drei neue ESLint-Blöcke, null Lockerungen.** `src/modes/**` darf `src/render/**` nicht mehr
+  importieren (quality MAJOR-3: der Boundaries-Test führte `'../render/engine'` ausdrücklich als
+  *erlaubt* – also genau die Datei, die `babylonRegistry` zieht). `src/platform/**` darf weder
+  `src/render`, `src/modes`, `src/net`, `src/lab` noch Babylon sehen (quality MAJOR-2: zwei
+  Kommentare behaupteten die Regel, erzwungen war sie nicht, und ein solcher Import baute den Zyklus
+  platform → render → platform). `src/ui/**` und `src/audio/**` bekommen die Babylon-Schranke
+  statisch **und** dynamisch (determinism Minor 1) – beide hängen am **eifrigen** Einstiegs-Chunk,
+  ein Babylon-Import dort zöge den ~980-kB-Chunk aus dem lazy `gameMain`-Chunk in den Einstieg.
+  `src/ui` bleibt bewusst **ohne** net/lab-Sperre (`strings.ts` importiert einen Typ aus
+  `src/net/failureCodes`). `tests/node/eslint-boundaries.test.ts` wächst dafür von 117 auf **147**
+  Fälle.
+- **`advance(0)` leert den Ereignispuffer** (Task-2-Review, Minor 2). Der Vertrag sagt „bei JEDEM
+  `advance()`"; geleert wurde er aber in `advanceTicks`, und `loop.advance(0)` meldet `hooks.advance`
+  zu Recht nicht. Wer `advance(0)` als „Bild ohne Tick" benutzt – das tut der Tor-Spec in
+  `waitForGeometry` –, bekam dieselben Ereignisse ein zweites Mal.
+- **Die Schleife bestellt nach einem `pause()` aus dem Bild heraus kein zweites rAF** (Task-2-Review,
+  Minor 1): `frame()` prüft `active`/`halted` jetzt auch **nach** `pump()`. Gemessen liefen sonst nach
+  `resume()` zwei rAF-Ketten, also zwei `render` je Bildschirmbild. Auf dem M5-Weg unerreichbar
+  (`pause()` kommt nur aus `visibilitychange`), aber M6 pausiert aus dem Bild heraus.
+- **`createPercentiles(NaN)` wirft, statt still 0 zu melden** (Task-5-Review, Minor 3):
+  `Math.max(1, Math.floor(NaN))` ist NaN, `new Float64Array(NaN).length` ist 0 – der Ring verschluckte
+  jeden Wert und meldete für immer 0. Dieselbe Begründung wie bei `gpuMs` (Q2): eine stille Null ist
+  schlimmer als ein Wurf.
+- **`GPU_PROBE_FRAMES` hat einen Leser bekommen** (quality MIN-10). Die Konstante benannte eine
+  Messgrundlage, die niemand las. Jetzt ist sie das **Aufwärmfenster** des Overlays: die ersten
+  60 Bilder zeigt `gpuMs` den Strich, egal was der Zähler meldet – in diesen Bildern stecken die
+  Shader-Kompilate (gemessen 1542 ms für das erste kalte Bild). Danach gilt auch eine 0 als endgültig.
+- **`openSettingsStore()` hält seine Zusage auch für einen werfenden `indexedDB`-Getter**
+  (determinism Minor 2): der `typeof`-Wächter steht jetzt **im** `try`. Nicht reproduziert (Chromium
+  liefert hier einen Wert) – der Befund ist die Abweichung zwischen zugesagtem und tatsächlichem
+  Verhalten.
+- **Eine `DEFAULT_SEED`, und sie ist eine Zahl** (contract Minor 2 / quality MIN-12). `gameMain` hatte
+  eine eigene `DEFAULT_SEED = '1'` (Zeichenkette) neben `soloSession`s `1`, ohne Test, der sie
+  aneinanderhält. **Abweichung vom Interface Contract:** `src/render/gameMain.ts` exportiert
+  `DEFAULT_SEED` nicht mehr, es importiert sie. Dass Text und Zahl denselben Zustand ergeben, ist der
+  Vertrag von `seedRng` (FNV-1a über `String(seed)`) und jetzt gepinnt.
+  `src/render/view2d/main.ts` behält seine eigene Konstante: die 2D-Ansicht soll den Sitzungs-Graphen
+  nicht in ihren Chunk ziehen (M4-Code, hier nicht angefasst).
+- **F3 vor dem Öffnen des Speichers gewinnt** (Task-6-Review, Minor 4). Der Erfüllungszweig von
+  `openSettingsStore()` setzte `overlay.setVisible(effective.overlay)` und nahm eine Umschaltung des
+  Nutzers still zurück. Die Merkzelle `overlayTouched` und die reine Funktion `effectiveOverlay`
+  entscheiden das jetzt; die verlorene Schreiboperation wird nachgeholt.
+- **`if (!manual) session.loop.start()` in `gameMain` ist entfallen** (contract Minor 3): ein Leerzug,
+  weil `createSoloSession` die Schleife selbst startet (R9). Die Reihenfolge-Empfindlichkeit
+  (`drawFrame` liest `root`/`rig`/`instrumentation`/`overlay`, die **nach** der Sitzung entstehen)
+  ist jetzt ausgeschrieben: `requestAnimationFrame` ruft nie synchron zurück, der erste synchrone Weg
+  ins Bild ist `session.loop.advance(0)` in der letzten Zeile.
+- **Zwei neue Tor-Tests** (Task-6-Review, Minor 3 und quality MAJOR-1), das Tor geht auf **17**:
+  `?clock=manual&tier=low&overlay=1` prüft die Verdrahtung von `?tier=`, `?overlay=`, `stats().storage`
+  und der F3-Taste (sie hing nur an einem gelöschten Wegwerf-Spec), und `?clock=manual&expect=…` prüft
+  den Build-Mismatch-Hinweis. Die Diorama-Pose wird im ersten Test jetzt über **alle acht** Felder
+  geprüft (vorher fünf – ein falscher Gierwinkel wäre durchgekommen).
+- **Was NICHT gemacht wurde:** `GameEngine.hardwareScaling()` bleibt ohne Test. Ein `GameEngine`
+  braucht einen echten WebGL2-Kontext; geprüft ist deshalb nur die reine Funktion `hardwareScaling`
+  aus `quality.ts`. Der WebGL1-Zweig von `createEngine` **ist** jetzt getestet (quality MIN-21) – mit
+  einer Kontext-Attrappe, die auf `webgl`/`experimental-webgl` antwortet und auf `webgl2` nicht; die
+  beiden Zweige unterscheidet die `cause`. `engine.dispose()` in diesem Zweig bleibt unbewiesen:
+  Babylons `dispose()` hängt das `webglcontextlost`-Ereignis nur ab, wenn `IsWindowObjectExist()` gilt,
+  und eine frisch gebaute Engine hat nichts zu löschen (gemessen: der Zweig ruft auf dem Kontext genau
+  `pixelStorei`, mit und ohne `dispose()`).
+- **Schreibweise:** die vier Dateien mit ASCII-transliterierten Kommentaren (`gameMain.ts`,
+  `storage.ts`, `debugOverlay.ts`, `cameraRig.ts`) schreiben jetzt Umlaute wie der Rest des Repos –
+  **138** Wörter, dazu ein `ließe` in `fixedLoop.ts`. Die Testdateien sind bewusst **nicht**
+  mitgezogen (sie sind in sich einheitlich).
 
 ### Was in M5 NICHT entschieden wurde
 - **Auf M6 verschoben:** Touch-Eingabe, Start-Gate (AudioV2-Unlock, Wake Lock, Fullscreen),
@@ -1843,9 +1951,13 @@ vergleicht, vergleicht also saubere mit sauberen Builds.
   dem Regler-Panel aus M6. Dasselbe gilt für `BOOM_YAW_PER_S`/`BOOM_POS_PER_S`, für die Frage, ob der
   Diorama-Modus als Blick in den Bau überhaupt das richtige Mittel ist, und dafür, dass die Maus das Bild
   füllt, sobald der Boom auf `BOOM_MIN_DISTANCE` klemmt.
-- **Zwei Polish-Punkte aus den Reviews**, beide ohne Wirkung auf M5: `pause()` aus einem Bild heraus kann
-  eine zweite rAF-Kette hinterlassen, und `advance(0)` leert den Ereignispuffer noch nicht.
-  `createPercentiles(NaN)` ist ebenfalls unbehandelt.
+- **Die Polish-Punkte aus den Reviews sind ERLEDIGT** (Feinschliff-Runde nach dem Abschlussreview):
+  `pause()` aus einem Bild heraus bestellt kein zweites rAF mehr, `advance(0)` leert den
+  Ereignispuffer, `createPercentiles(NaN)` wirft, `openSettingsStore()` hält seinen Rückfall auch für
+  einen werfenden `indexedDB`-Getter, `src/platform`/`src/ui`/`src/audio` haben eine Babylon-Schranke,
+  `src/modes` darf `src/render` nicht importieren, und der `?expect=`-Hinweis bleibt im eingeklappten
+  Streifen sichtbar. Der vollständige Stand je Punkt steht im Ledger
+  (`.superpowers/sdd/2026-09-26-m5-graybox/{progress,polish-report}.md`, git-ignoriert).
 - **M8 besitzt die Perf-Bank:** Schatten, `freezeActiveMeshes`, Kantenglättung, die WGSL-Trimmung und die
   Frage, ob 30 fps am Handy reichen.
 - **M9 besitzt die Requisiten** und damit Thin Instances; dort (bzw. im Look-Durchgang M18) entscheidet
