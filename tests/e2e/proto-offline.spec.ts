@@ -11,6 +11,10 @@ import { expect, test } from '@playwright/test';
  * `spiel/**` im Precache.
  */
 test('Prototyp /spiel/ startet online und offline ohne Fremd-Hosts', async ({ context, page, baseURL }) => {
+  // Gemessen auf dem Linux-Runner (Lauf 36269310993): Precache (3,1 MB, 40 Dateien) plus der erste
+  // Weltaufbau des Prototyps unter SwiftShader brauchten 53 s – der Standard-Timeout von 60 s ließ dem
+  // Offline-Reload nur 7 s, obwohl die Seite (Screencast) längst stand. Lokal dauert alles 3 s.
+  test.setTimeout(240_000);
   const origin = new URL(baseURL ?? '').origin;
   const foreign: string[] = [];
   // Am Kontext, nicht an der Seite: so zählen auch die Anfragen des Service Workers mit.
@@ -23,22 +27,24 @@ test('Prototyp /spiel/ startet online und offline ohne Fremd-Hosts', async ({ co
   await expect(page.getByTestId('offline-badge')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
 
   const assertPrototypeRuns = async (): Promise<void> => {
+    // `window.__mb` setzt die letzte Zeile der IIFE, also NACH `buildWorld()`: ein stiller Absturz
+    // beim Weltaufbau würde `#fatal` nicht zeigen und wäre sonst unsichtbar. Der Weltaufbau läuft
+    // synchron im Inline-Skript – auf einem langsamen Runner dauert er deutlich länger als lokal,
+    // deshalb wird HIER gewartet (bis 120 s) und nicht auf das `load`-Ereignis der Navigation.
+    await page.waitForFunction(() => '__mb' in window, undefined, { timeout: 120_000 });
     await expect(page.locator('#fatal')).toBeHidden();
     await expect(page.locator('#title')).toBeVisible();
     await expect(page.locator('canvas#gl')).toHaveCount(1);
     // three.js kommt aus ./vendor/ – ohne die Bibliothek zeigt die Seite ihren `#fatal`-Schirm.
     expect(await page.evaluate(() => typeof (window as unknown as { THREE?: unknown }).THREE)).toBe('object');
-    // `window.__mb` setzt die letzte Zeile der IIFE, also NACH `buildWorld()`: ein stiller Absturz
-    // beim Weltaufbau würde `#fatal` nicht zeigen und wäre sonst unsichtbar.
-    expect(await page.evaluate(() => '__mb' in window)).toBe(true);
   };
 
-  await page.goto('./spiel/');
+  await page.goto('./spiel/', { waitUntil: 'domcontentloaded' });
   await assertPrototypeRuns();
   expect(foreign, 'Prototyp darf online keine Fremd-Hosts ansprechen').toEqual([]);
 
   await context.setOffline(true);
-  await page.reload();
+  await page.reload({ waitUntil: 'domcontentloaded' });
   await assertPrototypeRuns();
 
   // Die Schriften liegen als woff2 daneben und sind vorgecacht – ohne sie fiele die Seite still
